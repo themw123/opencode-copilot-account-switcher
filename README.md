@@ -22,15 +22,13 @@ Local plugin to switch between multiple GitHub Copilot OAuth tokens in OpenCode.
 ### Installation
 
 #### For Humans
-1. Build the plugin:
-```bash
-npm install
-npm run build
-```
-2. Add to OpenCode config (`~/.config/opencode/opencode.json`):
+Add the plugin to your OpenCode config. OpenCode will automatically download it from npm at startup.
+
+`~/.config/opencode/opencode.json`
 ```json
 {
-  "plugin": ["file:///absolute/path/to/copilot-account-switcher/dist/index.js"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-copilot-account-switcher"]
 }
 ```
 
@@ -38,11 +36,25 @@ npm run build
 <details>
 <summary>Click to expand agent instructions</summary>
 
-Install via npm:
+**Goal:** Add the plugin to OpenCode so it auto-installs from npm (no local build, no file path).
+
+**Steps:**
+1. Open `~/.config/opencode/opencode.json`.
+2. Ensure it includes:
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": ["opencode-copilot-account-switcher"]
+   }
+   ```
+3. Restart OpenCode (it will fetch the plugin automatically).
+
+**Verification:**
+Run:
 ```bash
-npm install opencode-copilot-account-switcher
+opencode auth login github-copilot
 ```
-And then configure it in OpenCode.
+and confirm the menu appears.
 </details>
 
 ### Usage
@@ -80,15 +92,13 @@ Accounts are stored in:
 ### 安装
 
 #### 针对人类用户
-1. 构建插件:
-```bash
-npm install
-npm run build
-```
-2. 添加到 OpenCode 配置 (`~/.config/opencode/opencode.json`):
+只需要在配置里加入插件名，OpenCode 会在启动时自动从 npm 下载，无需本地安装或指定路径。
+
+`~/.config/opencode/opencode.json`
 ```json
 {
-  "plugin": ["file:///绝对路径/to/copilot-account-switcher/dist/index.js"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-copilot-account-switcher"]
 }
 ```
 
@@ -96,11 +106,25 @@ npm run build
 <details>
 <summary>展开智能体指令</summary>
 
-通过 npm 安装:
+**目标：** 让 OpenCode 自动从 npm 安装插件（无需本地构建/路径）。
+
+**步骤：**
+1. 打开 `~/.config/opencode/opencode.json`。
+2. 写入/合并以下内容：
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": ["opencode-copilot-account-switcher"]
+   }
+   ```
+3. 重启 OpenCode（会自动拉取插件）。
+
+**验证：**
+运行：
 ```bash
-npm install opencode-copilot-account-switcher
+opencode auth login github-copilot
 ```
-然后在 OpenCode 中配置。
+确认出现账号管理菜单。
 </details>
 
 ### 使用
