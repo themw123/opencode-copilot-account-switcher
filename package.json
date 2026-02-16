@@ -1,0 +1,49 @@
+{
+  "name": "opencode-copilot-account-switcher",
+  "version": "0.1.0",
+  "description": "GitHub Copilot account switcher plugin for OpenCode",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "license": "MIT",
+  "author": "jiwangyihao",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jiwangyihao/opencode-copilot-account-switcher.git"
+  },
+  "homepage": "https://github.com/jiwangyihao/opencode-copilot-account-switcher#readme",
+  "bugs": {
+    "url": "https://github.com/jiwangyihao/opencode-copilot-account-switcher/issues"
+  },
+  "keywords": [
+    "opencode",
+    "github",
+    "copilot",
+    "plugin",
+    "auth"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^0.15.30",
+    "xdg-basedir": "^5.1.0"
+  }
+}
