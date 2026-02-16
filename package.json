@@ -5,7 +5,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
-  "license": "MIT",
+  "license": "MPL-2.0",
   "author": "jiwangyihao",
   "repository": {
     "type": "git",

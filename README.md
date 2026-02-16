@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/opencode-copilot-account-switcher.svg)](https://www.npmjs.com/package/opencode-copilot-account-switcher)
 [![npm downloads](https://img.shields.io/npm/dw/opencode-copilot-account-switcher.svg)](https://www.npmjs.com/package/opencode-copilot-account-switcher)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-brightgreen.svg)](LICENSE)
 
 [English](#english) | [中文](#中文)
 
@@ -246,4 +246,4 @@ opencode auth login github-copilot
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MPL-2.0 License. See [LICENSE](LICENSE) for details.
