@@ -11,6 +11,10 @@ permissions:
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    env:
+      # Ensure no token-based auth takes precedence over OIDC.
+      # npm Trusted Publishing should use GitHub OIDC id-token instead.
+      NODE_AUTH_TOKEN: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,6 +27,11 @@ jobs:
 
       - name: Install
         run: npm install
+
+      - name: Versions
+        run: |
+          node --version
+          npm --version
 
       - name: Build
         run: npm run build
