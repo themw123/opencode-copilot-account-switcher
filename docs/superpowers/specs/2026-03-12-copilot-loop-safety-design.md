@@ -1,117 +1,180 @@
-# Copilot Loop Safety Design
+# Copilot Guided Loop Safety 设计
 
-## Goal
+## 目标
 
-Add a user-toggleable Loop Safety mode to the existing `opencode-copilot-account-switcher` plugin so GitHub Copilot sessions bias toward tool-loop-safe behavior:
+在现有 `opencode-copilot-account-switcher` 插件中，把用户可开关的 `Loop Safety` 能力升级为更易理解的 `Guided Loop Safety`：
 
-- prefer the `question` tool for user-facing reports when that tool is available and allowed
-- avoid unnecessary `task` / subagent delegation because it consumes extra quota
-- fall back to direct assistant text when `question` is unavailable or unsuitable
+- 仅对 `github-copilot` 与 `github-copilot-enterprise` 会话生效
+- 通过 `experimental.chat.system.transform` 注入固定 system policy
+- 在 `question` 工具可用且未被拒绝时，强制所有用户可见汇报必须走 `question`
+- 通过更细的提示词规则，减少不必要的对话中断与不必要的 `task` / 子代理调用
+- 在需要时引导模型把长报告拆成分页或分批的 `question` 汇报，而不是一次塞满
+- 在现有 Copilot 账号菜单中提供更易懂的开关名称与说明文案
 
-This behavior must apply only to `github-copilot` and `github-copilot-enterprise` sessions, and the toggle must live inside the existing Copilot account menu.
+## 非目标
 
-## Non-Goals
+- 不修改 OpenCode core。
+- 不修改 `superpowers` 插件。
+- 不通过 `agent.prompt` 覆盖 provider prompt。
+- 不影响非 Copilot provider。
+- 不新增第二个持久化开关字段；已有 `loopSafetyEnabled` 保持兼容即可。
+- 不改变当前插件的账号管理、配额查询、模型检查等原有能力。
 
-- Do not modify OpenCode core.
-- Do not modify the `superpowers` plugin.
-- Do not override provider system prompts via `agent.prompt`.
-- Do not affect non-Copilot providers.
-- Do not make `question` mandatory without fallback.
+## 约束与证据
 
-## Constraints And Evidence
+- OpenCode 会通过 `experimental.chat.system.transform` 在 provider prompt 与 instructions 之后追加插件提供的 system 文本；因此它是本功能的正确接入点。
+- 当前发布版 `@opencode-ai/plugin` 类型未声明 `experimental.chat.system.transform`，实现必须继续使用本地扩展 hook 类型。
+- 现有插件已经拥有 Copilot 登录菜单与持久化 store `~/.config/opencode/copilot-accounts.json`，因此应该直接复用，不新增额外控制面板。
+- OpenCode CLI 的正确 smoke test 命令是 `opencode auth login --provider github-copilot`；`opencode auth login github-copilot` 会把参数当作 URL 处理，不适合作为本功能验证命令。
 
-- OpenCode appends plugin-provided system text after provider and instruction prompts through `experimental.chat.system.transform` in `packages/opencode/src/session/llm.ts`.
-- `question` blocks and waits for a user reply, so the injected rule must preserve fallback behavior for non-interactive or denied sessions.
-- The published `@opencode-ai/plugin` type definitions do not currently declare `experimental.chat.system.transform`, so the implementation must add a local augmented hook type instead of relying on upstream typings.
-- The existing plugin already owns the Copilot auth menu and the persistent store at `~/.config/opencode/copilot-accounts.json`, so the feature should reuse those entry points instead of creating a separate control surface.
+## 推荐方案
 
-## Recommended Approach
+保持单一运行时插件导出，并在现有结构内做最小修改：
 
-Keep a single runtime plugin export, but split the new behavior into a dedicated module.
+1. 更新 `src/loop-safety-plugin.ts` 中的固定 policy 文本与 Copilot-only prompt 注入语义
+2. 更新 `src/ui/menu.ts` 中的 `Guided Loop Safety` 菜单文案与说明
+3. 更新 `README.md` 与测试，使新命名和严格规则保持一致
 
-Why this approach:
+这样做的原因：
 
-- it avoids uncertain multi-export plugin loading behavior
-- it keeps auth/menu code separate from prompt-policy logic
-- it integrates naturally with the existing Copilot account menu and store
+- 用户可见命名和运行时行为可以同时变得更清晰
+- 内部持久化字段不需要迁移，兼容已有 store
+- 变更仍然集中在少数既有文件内，不需要重构主 auth 流程
 
-## User-Facing Behavior
+## 用户可见行为
 
-### Menu
+### 菜单命名与说明
 
-The existing `GitHub Copilot accounts` menu gains a new action:
+现有 `GitHub Copilot accounts` 菜单中的开关改为：
 
-- `Enable loop safety` when the feature is off
-- `Disable loop safety` when the feature is on
+- `Enable guided loop safety`
+- `Disable guided loop safety`
 
-The action appears with the other utility actions and includes a short hint such as `Copilot only` or `question-first reports`.
+该菜单项仍然位于 `Actions` 分组中、`Set refresh interval` 之后、分隔线之前。
 
-Toggling it immediately updates the persistent store. No extra confirmation is needed.
+菜单 hint 应从当前过于模糊的短文本，改成更可理解的效果说明。推荐固定文案：
 
-### Session Behavior
+```text
+Prompt-guided: fewer report interruptions, fewer unnecessary subagents
+```
 
-When Loop Safety is enabled and the session provider is `github-copilot` or `github-copilot-enterprise`, the plugin appends one extra system block containing a compact policy:
+这条 hint 需要明确告诉用户：
 
-- when the `question` tool is available and permitted, user-facing reports about status, findings, conclusions, completion, or next steps should go through `question`
-- when `question` is unavailable, denied, or unsuitable for the current interaction mode, direct assistant text is allowed as a fallback
-- `task` / subagent delegation is expensive and should be avoided unless it materially improves the result
-- if subagents are used, keep the count minimal and briefly explain why
+- 这是提示词引导，而不是硬规则引擎
+- 目标是减少汇报时的打断感
+- 目标是减少不必要的子代理调用
 
-When Loop Safety is disabled, or when the provider is not a Copilot provider, no extra system text is injected.
+### 精确注入的 Policy
 
-## Architecture
+注入的 system block 应保持固定字符串，便于测试、审阅与后续行为对齐。
+
+```text
+Guided Loop Safety Policy
+- When the question tool is available and permitted in the current session, all user-facing reports must be delivered through the question tool.
+- The question tool is considered available and permitted when it appears in the active tool list and the current session has not denied its use.
+- Direct assistant text is allowed only when the question tool is unavailable, denied, or absent from the current session.
+- When reporting multiple related items, prefer a single question tool call with multiple well-grouped questions instead of multiple separate interruptions.
+- Group related items into clear question batches such as current progress, key findings, and next-step choices.
+- For long or complex reports, split the report into paginated or sequential question batches instead of overloading one large message.
+- Present the highest-priority information first and defer secondary details to later question batches when needed.
+- Even when no explicit decision is required, prefer brief question-tool status updates over direct assistant text whenever the tool is available.
+- Avoid unnecessary question frequency; combine small related updates when a single question call can cover them clearly.
+- Dispatching task or subagent work is expensive and should be avoided unless it materially improves the result.
+- Materially improves the result means clearly beneficial cases such as parallel analysis of independent areas; it does not include routine local searches, small file reads, or straightforward edits.
+- If task or subagent delegation is used, keep the number minimal and explain the reason briefly through the question tool when available.
+```
+
+实现约束：
+
+- 必须完整、原样注入，不做动态改写
+- 在一次 transform 中最多追加一次
+- 如果 `system` 任意位置已经包含这段完整文本，则不得重复追加
+
+### 会话行为
+
+当 `Guided Loop Safety` 开启，且 provider 为 `github-copilot` 或 `github-copilot-enterprise` 时：
+
+- 追加上面的完整 policy
+- 模型在所有用户可见汇报中都必须优先使用 `question`
+- 当有多个相关汇报事项时，必须优先合并到一次 `question` 调用中
+- 当报告很长时，必须拆成分页或分批的 question，而不是单次倾倒全部内容
+- 对简单本地任务应避免先发 `task` / 子代理，而优先使用直接本地工具
+
+当功能关闭，或 provider 不是 Copilot 时：
+
+- 不注入任何额外 system 文本
+
+## 架构
 
 ### `src/loop-safety-plugin.ts`
 
-Add a new module dedicated to Loop Safety behavior. Responsibilities:
+继续作为 Guided Loop Safety 的核心模块，职责更新为：
 
-- define the injected policy text
-- expose a provider guard such as `isCopilotProvider(providerID)`
-- expose a system-transform hook factory that reads the persisted setting and conditionally appends the policy
-- define a local augmented hook type for `experimental.chat.system.transform`
+- 定义新的固定 policy 文本
+- 暴露 `isCopilotProvider(providerID)`
+- 暴露纯函数 `applyLoopSafetyPolicy()`，判断是否追加 policy
+- 暴露 `createLoopSafetySystemTransform()`，每次调用时重新读取 store 状态
+- 继续定义本地 `experimental.chat.system.transform` hook 类型
 
-This module should not depend on auth flow or menu rendering.
+规则约束：
+
+- provider 非 Copilot 或开关关闭时，必须原样返回已有 `system`
+- provider 为 Copilot 且开关开启时，只能在尾部追加一个新字符串
+- 不得清空、替换、重排已有 system entries
+- 必须保持幂等
 
 ### `src/store.ts`
 
-Extend `StoreFile` with a new top-level field:
+内部持久化字段继续保留：
 
 ```ts
 loopSafetyEnabled?: boolean
 ```
 
-Compatibility rules:
+即使用户可见名称升级为 `Guided Loop Safety`，也不额外引入 `guidedLoopSafetyEnabled` 之类的新字段，避免迁移与兼容成本。
 
-- missing field means `false`
-- older store files keep working without migration
-- writes persist the new flag alongside existing account and refresh settings
+兼容规则保持不变：
+
+- 缺失字段等价于 `false`
+- 老 store 文件无需迁移
+- 读写路径继续共享同一套规范化逻辑
 
 ### `src/ui/menu.ts`
 
-Extend `MenuAction` with:
+菜单动作类型保持：
 
 ```ts
 { type: "toggle-loop-safety" }
 ```
 
-Extend `showMenu()` inputs so the menu can render current Loop Safety state. The label should invert based on current state.
+但用户可见文案更新为 `Guided Loop Safety`：
+
+- label 精确为 `Enable guided loop safety` / `Disable guided loop safety`
+- hint 精确为上文推荐的说明文本
+- 原有 placement 约束不变
+
+若现有 `buildMenuItems()` 已存在，则继续保留并仅做最小文案修改，因为这次重命名与 hint 细化仍然最适合通过确定性测试验证。
 
 ### `src/plugin.ts`
 
-Keep `CopilotAccountSwitcher` as the single plugin export, but merge two responsibilities in the returned hook object:
+`CopilotAccountSwitcher` 继续作为唯一插件导出。
 
-- existing `auth` provider behavior
-- new `experimental.chat.system.transform` behavior imported from `src/loop-safety-plugin.ts`
+需要保持的行为：
 
-`runMenu()` handles `toggle-loop-safety` by flipping `store.loopSafetyEnabled`, writing the store, and returning to the menu loop.
+- 菜单读取并显示当前 `loopSafetyEnabled`
+- 切换开关时翻转 `store.loopSafetyEnabled`
+- 通过 `writeStore()` 持久化
+- 返回值继续同时包含 `auth` 与 `experimental.chat.system.transform`
+
+本次不应改动现有 OAuth 登录、导入、配额查询、模型检查等分支逻辑。
 
 ### `src/index.ts`
 
-Keep the current single export unless implementation needs helper re-exports. No second plugin export is required.
+如果测试仍然依赖 `applyMenuAction` / `buildPluginHooks` re-export，则继续保留这些测试出口。
 
-## Hook Typing Strategy
+## Hook 类型策略
 
-Because the current plugin package types do not declare `experimental.chat.system.transform`, define a local extended type similar to:
+由于 upstream typings 仍未声明 `experimental.chat.system.transform`，本地扩展类型继续保持类似：
 
 ```ts
 type ExperimentalChatSystemTransformHook = (
@@ -124,66 +187,87 @@ type CopilotPluginHooks = Hooks & {
 }
 ```
 
-This preserves strict typing without using `any`, and allows the plugin to return an object with the experimental hook while staying assignable to upstream `Hooks`.
+这次变更只更新 policy 文本与相关语义，不改变 hook 的运行时 contract。
 
-## Data Flow
+## 数据流
 
-### Toggle Flow
+### 开关流程
 
-1. User opens `opencode auth login github-copilot`
-2. Plugin reads `copilot-accounts.json`
-3. Menu shows current Loop Safety state
-4. User selects toggle action
-5. Plugin flips `store.loopSafetyEnabled`
-6. Plugin persists the updated store
-7. Menu redraws with the new state
+1. 用户运行 `opencode auth login --provider github-copilot`
+2. 插件读取 `copilot-accounts.json`
+3. 菜单显示当前 `Guided Loop Safety` 状态
+4. 用户切换开关
+5. 插件翻转 `store.loopSafetyEnabled`
+6. 插件持久化 store
+7. 菜单重新渲染，显示新的文案状态
 
-### Prompt Injection Flow
+### Prompt 注入流程
 
-1. OpenCode assembles provider + instruction system prompts
-2. Plugin receives `experimental.chat.system.transform`
-3. Plugin checks `model.providerID`
-4. Plugin reads Loop Safety state from store
-5. If provider is Copilot and feature is enabled, append the policy text to `output.system`
-6. Otherwise do nothing
+1. OpenCode 组装 provider + instructions system prompts
+2. 插件收到 `experimental.chat.system.transform`
+3. 插件检查 `model.providerID`
+4. 插件即时读取 store 中的 `loopSafetyEnabled`
+5. 如果 provider 是 Copilot 且功能开启，则追加新的 `Guided Loop Safety Policy`
+6. 否则不做任何修改
 
-## Error Handling
+## 错误处理
 
-- If the store file does not exist, default to `{ accounts: {} }` with Loop Safety off.
-- If reading the store fails during prompt injection, fail open by skipping policy injection instead of breaking the chat request.
-- If the menu cannot persist the setting, surface the existing file write failure rather than silently pretending success.
-- The injected policy itself must explicitly allow direct-text fallback so the agent does not deadlock in denied or non-interactive sessions.
+- store 文件不存在时，默认视为 `{ accounts: {} }` 且开关关闭
+- prompt 注入读取 store 失败时继续 fail-open，跳过 policy 注入而不是中断请求
+- 菜单路径读取或写入 store 失败时，继续向用户暴露错误，不静默吞掉
+- policy 文本本身不再允许“只要 question 可用仍可直接文本 fallback”的宽松规则
+- direct text fallback 只在 `question` 不可用、被拒绝、或当前会话根本没有该工具时才允许
 
-## Testing Plan
+## 测试计划
 
-### Build And Type Safety
+### 自动化测试
 
-- `npm run build`
-- verify the local augmented hook type compiles cleanly
+需要更新并保留以下测试覆盖：
 
-### Behavior Tests
+1. policy 常量必须精确匹配新的 `Guided Loop Safety Policy` 文本
+2. Copilot provider + 开启状态时只追加一次
+3. 非 Copilot provider 或关闭状态时完全不追加
+4. 菜单项文案改为 `Enable guided loop safety` / `Disable guided loop safety`
+5. 菜单 hint 改为新的解释型文案
+6. 位置约束仍然成立：在 `Set refresh interval` 之后、Actions 分隔线之前
+7. `applyMenuAction()` 仍能正确翻转并持久化 `loopSafetyEnabled`
+8. `buildPluginHooks()` 仍暴露 `auth` 与 `experimental.chat.system.transform`
 
-1. Loop Safety off + Copilot session
-   - no extra policy should be injected
-2. Loop Safety on + Copilot session
-   - agent should show stronger bias toward `question` for user-facing reports
-3. Loop Safety on + non-Copilot session
-   - no policy should be injected
-4. Fallback case
-   - in a session where `question` is unavailable or denied, agent should still respond with direct text rather than hanging
-5. Subagent thrift
-   - simple tasks should prefer direct tools over dispatching subagents
-6. Persistence
-   - toggled state survives restarting OpenCode
+### 手工 Smoke Test
 
-## Open Questions Resolved
+使用正确命令：
 
-- Scope: Copilot-only
-- Control surface: existing account menu
-- Default state: disabled by default
+```bash
+opencode auth login --provider github-copilot
+```
 
-## Implementation Notes
+验证点：
 
-- Keep the injected policy compact. It should bias behavior, not duplicate `superpowers`.
-- Avoid adding more than one new persisted field unless implementation uncovers a concrete need.
-- Prefer one new module plus focused changes to existing files over a broad refactor.
+1. 菜单里出现 `Enable guided loop safety`
+2. hint 文案能明显表达“提示词引导、减少打断、减少子代理”
+3. 开启后再次进入菜单，文案变成 `Disable guided loop safety`
+4. `~/.config/opencode/copilot-accounts.json` 中的 `loopSafetyEnabled` 与菜单状态一致
+
+### 置信度验证
+
+该功能本质上是 prompt 注入，不是运行时硬约束；但只要 `question` 工具存在且可用，规格要求注入文本必须明确表达为严格 `question-first`，不能再写成宽松的“偏向”规则。
+
+可用的观察点：
+
+- 对多项状态汇报，模型更倾向在一次 `question` 调用里合并多个相关问题
+- 对长报告，模型更倾向拆分成分页或分批 question
+- 对简单任务，模型更少无必要地调用 `task` / 子代理
+
+## 已确认结论
+
+- 用户可见命名采用 `Guided Loop Safety`
+- policy 采用严格 `question-first`
+- 只要 `question` 可用且被允许，就不允许退回直接文本
+- 菜单说明需要更直白地解释“提示词引导、减少中断、减少子代理”
+- 文档与测试都应同步新的命名与语义
+
+## 实现备注
+
+- 尽量只改命名、policy 文本、README 和相关测试，不做额外结构性重构。
+- 若测试里已经依赖旧文案，应先按 TDD 改红，再最小改绿。
+- README 中所有示例命令应同步修正为 `opencode auth login --provider github-copilot`，避免继续误导用户。

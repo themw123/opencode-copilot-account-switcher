@@ -52,7 +52,7 @@ Install the opencode-copilot-account-switcher plugin by following: https://raw.g
 3. **Login** to GitHub Copilot:
 
    ```bash
-   opencode auth login github-copilot
+   opencode auth login --provider github-copilot
    ```
 
 </details>
@@ -80,7 +80,7 @@ Install the opencode-copilot-account-switcher plugin by following: https://raw.g
 ### Verification
 
 ```bash
-opencode auth login github-copilot
+opencode auth login --provider github-copilot
 ```
 
 </details>
@@ -92,7 +92,7 @@ opencode auth login github-copilot
 Run inside the GitHub Copilot auth flow:
 
 ```bash
-opencode auth login github-copilot
+opencode auth login --provider github-copilot
 ```
 
 You will see an interactive menu (arrow keys + enter) with actions:
@@ -100,9 +100,12 @@ You will see an interactive menu (arrow keys + enter) with actions:
 - **Add account**
 - **Import from auth.json**
 - **Check quotas**
+- **Guided Loop Safety** — prompt-guided reporting that favors `question`, reduces report interruptions, and avoids unnecessary subagent calls
 - **Switch account**
 - **Remove account**
 - **Remove all**
+
+If you want stricter question-first reporting and fewer unnecessary subagent calls in GitHub Copilot sessions, enable Guided Loop Safety from the account menu.
 
 ---
 
@@ -170,7 +173,7 @@ No. It uses the official provider and only adds account switching + quota checks
 3. **登录 GitHub Copilot**：
 
    ```bash
-   opencode auth login github-copilot
+   opencode auth login --provider github-copilot
    ```
 
 </details>
@@ -198,7 +201,7 @@ No. It uses the official provider and only adds account switching + quota checks
 ### 验证
 
 ```bash
-opencode auth login github-copilot
+opencode auth login --provider github-copilot
 ```
 
 </details>
@@ -210,7 +213,7 @@ opencode auth login github-copilot
 在 Copilot 认证流程中运行：
 
 ```bash
-opencode auth login github-copilot
+opencode auth login --provider github-copilot
 ```
 
 会出现交互式菜单（方向键 + 回车）：
@@ -218,9 +221,12 @@ opencode auth login github-copilot
 - **添加账号**
 - **从 auth.json 导入**
 - **检查配额**
+- **Guided Loop Safety 开关** — 通过提示词引导模型优先使用 `question` 汇报、减少汇报打断，并避免不必要的子代理调用
 - **切换账号**
 - **删除账号**
 - **全部删除**
+
+如果你希望 GitHub Copilot 会话更严格地优先使用 `question` 工具汇报、减少汇报打断，并避免不必要的子代理调用，可以在账号菜单中开启 Guided Loop Safety。
 
 ---
 
