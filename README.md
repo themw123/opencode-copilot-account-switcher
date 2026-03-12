@@ -12,14 +12,14 @@
 
 ## English
 
-Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, and an optional **Guided Loop Safety** mode — it **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
+Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, and an optional **Guided Loop Safety** mode that can help Copilot keep a single premium request working longer with fewer report interruptions before it truly needs user input. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
 
 ## What You Get
 
 - **Multi-account support** — add multiple Copilot accounts and switch anytime
 - **Quota check** — view remaining quota per account
 - **Auth import** — import Copilot tokens from OpenCode auth storage
-- **Guided Loop Safety** — inject a stricter question-first Copilot policy with fewer report interruptions and fewer unnecessary subagent calls
+- **Guided Loop Safety** — a stricter Copilot-only question-first policy designed to reduce report interruptions, avoid unnecessary subagent calls, and help cut avoidable quota burn caused by repeated status interruptions
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -106,7 +106,7 @@ You will see an interactive menu (arrow keys + enter) with actions:
 - **Remove account**
 - **Remove all**
 
-If you want stricter question-first reporting and fewer unnecessary subagent calls in GitHub Copilot sessions, enable Guided Loop Safety from the account menu.
+If you want GitHub Copilot sessions to stay in a single premium request longer, enable Guided Loop Safety from the account menu. It is a prompt-guided, Copilot-only question-first mode: when `question` is available and permitted, user-facing reports are steered through it so waiting for a reply is less interruption-heavy than repeatedly stopping for direct status messages, while also reducing unnecessary subagent calls.
 
 ---
 
@@ -134,14 +134,14 @@ No. It uses the official provider and only adds account switching + quota checks
 
 ## 中文
 
-在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**以及可选的 **Guided Loop Safety** 模式，**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
+在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**以及可选的 **Guided Loop Safety** 模式，帮助 Copilot 在一次 premium request 里更持续地工作，并尽量减少真正需要你输入之前的汇报打断。**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
 
 ## 功能一览
 
 - **多账号管理** — 添加多个 Copilot 账号，随时切换
 - **配额查询** — 查看每个账号的剩余额度
 - **导入认证** — 可从 OpenCode 认证存储导入
-- **Guided Loop Safety** — 为 Copilot 注入更严格的 question-first 提示词规则，减少汇报打断，并避免不必要的子代理调用
+- **Guided Loop Safety** — 仅对 Copilot 生效的更严格 question-first 提示词策略，减少汇报打断、避免不必要的子代理调用，并帮助降低因反复中断带来的无谓配额消耗
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -228,7 +228,7 @@ opencode auth login --provider github-copilot
 - **删除账号**
 - **全部删除**
 
-如果你希望 GitHub Copilot 会话更严格地优先使用 `question` 工具汇报、减少汇报打断，并避免不必要的子代理调用，可以在账号菜单中开启 Guided Loop Safety。
+如果你希望 GitHub Copilot 会话在一次 premium request 中尽量持续工作、更少被汇报打断，可以在账号菜单中开启 Guided Loop Safety。它是仅对 Copilot 生效的 prompt 引导式 question-first 模式：当 `question` 工具在当前会话中可用且被允许时，用户可见汇报会更倾向通过它完成，因此等待回复通常不会像反复插入直接状态消息那样容易带来额外的无谓配额消耗，同时也会减少不必要的子代理调用。
 
 ---
 
