@@ -12,13 +12,14 @@
 
 ## English
 
-Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin only adds account switching and quota checks — it **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
+Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, and an optional **Guided Loop Safety** mode — it **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
 
 ## What You Get
 
 - **Multi-account support** — add multiple Copilot accounts and switch anytime
 - **Quota check** — view remaining quota per account
 - **Auth import** — import Copilot tokens from OpenCode auth storage
+- **Guided Loop Safety** — inject a stricter question-first Copilot policy with fewer report interruptions and fewer unnecessary subagent calls
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -100,7 +101,7 @@ You will see an interactive menu (arrow keys + enter) with actions:
 - **Add account**
 - **Import from auth.json**
 - **Check quotas**
-- **Guided Loop Safety** — prompt-guided reporting that favors `question`, reduces report interruptions, and avoids unnecessary subagent calls
+- **Guided Loop Safety** — prompt-guided question-first reporting that requires `question` for user-facing reports when available, reduces report interruptions, and avoids unnecessary subagent calls
 - **Switch account**
 - **Remove account**
 - **Remove all**
@@ -133,13 +134,14 @@ No. It uses the official provider and only adds account switching + quota checks
 
 ## 中文
 
-在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件只提供**账号切换与配额查询**，**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
+在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**以及可选的 **Guided Loop Safety** 模式，**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
 
 ## 功能一览
 
 - **多账号管理** — 添加多个 Copilot 账号，随时切换
 - **配额查询** — 查看每个账号的剩余额度
 - **导入认证** — 可从 OpenCode 认证存储导入
+- **Guided Loop Safety** — 为 Copilot 注入更严格的 question-first 提示词规则，减少汇报打断，并避免不必要的子代理调用
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -221,7 +223,7 @@ opencode auth login --provider github-copilot
 - **添加账号**
 - **从 auth.json 导入**
 - **检查配额**
-- **Guided Loop Safety 开关** — 通过提示词引导模型优先使用 `question` 汇报、减少汇报打断，并避免不必要的子代理调用
+- **Guided Loop Safety 开关** — 通过提示词引导模型在可用时必须使用 `question` 做用户可见汇报、减少汇报打断，并避免不必要的子代理调用
 - **切换账号**
 - **删除账号**
 - **全部删除**
