@@ -9,6 +9,8 @@ import {
 } from "../dist/loop-safety-plugin.js"
 
 const EXPECTED_POLICY = `Guided Loop Safety Policy
+- Continue working on any remaining non-blocked task before stopping to report or wait for more instructions.
+- If you are not fully blocked, do not stop just because you feel ready to pause; finish the work that can still be done safely.
 - When the question tool is available and permitted in the current session, all user-facing reports must be delivered through the question tool.
 - The question tool is considered available and permitted when it appears in the active tool list and the current session has not denied its use.
 - Direct assistant text is allowed only when the question tool is unavailable, denied, or absent from the current session.
@@ -18,6 +20,7 @@ const EXPECTED_POLICY = `Guided Loop Safety Policy
 - Present the highest-priority information first and defer secondary details to later question batches when needed.
 - Even when no explicit decision is required, prefer brief question-tool status updates over direct assistant text whenever the tool is available.
 - Avoid unnecessary question frequency; combine small related updates when a single question call can cover them clearly.
+- When no further action can be taken safely and no non-blocked work remains, use the question tool to ask for the next task or clarification instead of ending with direct assistant text.
 - Dispatching task or subagent work is expensive and should be avoided unless it materially improves the result.
 - Materially improves the result means clearly beneficial cases such as parallel analysis of independent areas; it does not include routine local searches, small file reads, or straightforward edits.
 - If task or subagent delegation is used, keep the number minimal and explain the reason briefly through the question tool when available.`

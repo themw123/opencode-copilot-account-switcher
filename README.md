@@ -19,7 +19,7 @@ Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. 
 - **Multi-account support** — add multiple Copilot accounts and switch anytime
 - **Quota check** — view remaining quota per account
 - **Auth import** — import Copilot tokens from OpenCode auth storage
-- **Guided Loop Safety** — a stricter Copilot-only question-first policy designed to reduce report interruptions, avoid unnecessary subagent calls, and help cut avoidable quota burn caused by repeated status interruptions
+- **Guided Loop Safety** — a stricter Copilot-only question-first policy designed to keep non-blocked work moving, require `question` for user-facing reports when available, and help cut avoidable quota burn caused by repeated status interruptions
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -101,12 +101,12 @@ You will see an interactive menu (arrow keys + enter) with actions:
 - **Add account**
 - **Import from auth.json**
 - **Check quotas**
-- **Guided Loop Safety** — prompt-guided question-first reporting that requires `question` for user-facing reports when available, reduces report interruptions, and avoids unnecessary subagent calls
+- **Guided Loop Safety** — prompt-guided question-first reporting that requires `question` for user-facing reports when available, keeps non-blocked work moving, and avoids unnecessary subagent calls
 - **Switch account**
 - **Remove account**
 - **Remove all**
 
-If you want GitHub Copilot sessions to stay in a single premium request longer, enable Guided Loop Safety from the account menu. It is a prompt-guided, Copilot-only question-first mode: when `question` is available and permitted, user-facing reports are steered through it so waiting for a reply is less interruption-heavy than repeatedly stopping for direct status messages, while also reducing unnecessary subagent calls.
+If you want GitHub Copilot sessions to stay in a single premium request longer, enable Guided Loop Safety from the account menu. It is a prompt-guided, Copilot-only question-first mode: when `question` is available and permitted, user-facing reports must go through it; if safe non-blocked work remains, Copilot should keep going instead of pausing early; only when no safe action remains should it use `question` to ask for the next task or clarification, while also reducing unnecessary subagent calls.
 
 ---
 
@@ -141,7 +141,7 @@ No. It uses the official provider and only adds account switching + quota checks
 - **多账号管理** — 添加多个 Copilot 账号，随时切换
 - **配额查询** — 查看每个账号的剩余额度
 - **导入认证** — 可从 OpenCode 认证存储导入
-- **Guided Loop Safety** — 仅对 Copilot 生效的更严格 question-first 提示词策略，减少汇报打断、避免不必要的子代理调用，并帮助降低因反复中断带来的无谓配额消耗
+- **Guided Loop Safety** — 仅对 Copilot 生效的更严格 question-first 提示词策略，推动非阻塞工作持续执行、在可用时要求用户可见汇报走 `question`，并帮助降低因反复中断带来的无谓配额消耗
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -223,12 +223,12 @@ opencode auth login --provider github-copilot
 - **添加账号**
 - **从 auth.json 导入**
 - **检查配额**
-- **Guided Loop Safety 开关** — 通过提示词引导模型在可用时必须使用 `question` 做用户可见汇报、减少汇报打断，并避免不必要的子代理调用
+- **Guided Loop Safety 开关** — 通过提示词引导模型在可用时必须使用 `question` 做用户可见汇报、继续完成非阻塞工作，并避免不必要的子代理调用
 - **切换账号**
 - **删除账号**
 - **全部删除**
 
-如果你希望 GitHub Copilot 会话在一次 premium request 中尽量持续工作、更少被汇报打断，可以在账号菜单中开启 Guided Loop Safety。它是仅对 Copilot 生效的 prompt 引导式 question-first 模式：当 `question` 工具在当前会话中可用且被允许时，用户可见汇报会更倾向通过它完成，因此等待回复通常不会像反复插入直接状态消息那样容易带来额外的无谓配额消耗，同时也会减少不必要的子代理调用。
+如果你希望 GitHub Copilot 会话在一次 premium request 中尽量持续工作、更少被汇报打断，可以在账号菜单中开启 Guided Loop Safety。它是仅对 Copilot 生效的 prompt 引导式 question-first 模式：当 `question` 工具在当前会话中可用且被允许时，用户可见汇报必须通过它完成；只要还有安全的非阻塞工作可做，Copilot 就应继续执行而不是提前暂停；只有在当前确实没有可安全执行的动作时，才应通过 `question` 询问下一项任务或所需澄清，同时也会减少不必要的子代理调用。
 
 ---
 
