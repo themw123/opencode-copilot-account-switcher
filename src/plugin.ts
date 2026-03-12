@@ -1,9 +1,11 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
-import { isTTY } from "./ui/ansi"
-import { showAccountActions, showMenu, type AccountInfo } from "./ui/menu"
-import { authPath, readAuth, readStore, writeStore, type AccountEntry, type StoreFile } from "./store"
+import { applyMenuAction } from "./plugin-actions.js"
+import { buildPluginHooks } from "./plugin-hooks.js"
+import { isTTY } from "./ui/ansi.js"
+import { showAccountActions, showMenu, type AccountInfo } from "./ui/menu.js"
+import { authPath, readAuth, readStore, writeStore, type AccountEntry, type StoreFile } from "./store.js"
 
 function now() {
   return Date.now()
@@ -511,6 +513,32 @@ async function switchAccount(client: AuthClient, entry: AccountEntry) {
 }
 
 export const CopilotAccountSwitcher: Plugin = async ({ client }) => {
+  const methods = [
+    {
+      type: "oauth" as const,
+      label: "Manage GitHub Copilot accounts",
+      async authorize() {
+        const entry = await runMenu()
+        return {
+          url: "",
+          instructions: "",
+          method: "auto" as const,
+          async callback() {
+            if (!entry) return { type: "failed" as const }
+            return {
+              type: "success" as const,
+              provider: entry.enterpriseUrl ? "github-copilot-enterprise" : "github-copilot",
+              refresh: entry.refresh,
+              access: entry.access,
+              expires: entry.expires,
+              ...(entry.enterpriseUrl ? { enterpriseUrl: entry.enterpriseUrl } : {}),
+            }
+          },
+        }
+      },
+    },
+  ]
+
   async function runMenu(): Promise<AccountEntry | undefined> {
     const store = await readStore()
     const auth = await readAuth().catch(() => ({}))
@@ -610,10 +638,13 @@ export const CopilotAccountSwitcher: Plugin = async ({ client }) => {
           : undefined,
       }))
       const refresh = { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 }
-      const action = await showMenu(accounts, refresh, store.lastQuotaRefresh)
+      const action = await showMenu(accounts, refresh, store.lastQuotaRefresh, store.loopSafetyEnabled === true)
       if (action.type === "cancel") {
         const active = store.active ? store.accounts[store.active] : undefined
         return active
+      }
+      if (await applyMenuAction({ action, store, writeStore })) {
+        continue
       }
       if (action.type === "add") {
         const mode = await promptText("Add via device login? (y/n): ")
@@ -749,34 +780,10 @@ export const CopilotAccountSwitcher: Plugin = async ({ client }) => {
     }
   }
 
-  return {
+  return buildPluginHooks({
     auth: {
       provider: "github-copilot",
-      methods: [
-        {
-          type: "oauth",
-          label: "Manage GitHub Copilot accounts",
-          async authorize() {
-            const entry = await runMenu()
-            return {
-              url: "",
-              instructions: "",
-              method: "auto" as const,
-              async callback() {
-                if (!entry) return { type: "failed" as const }
-                return {
-                  type: "success" as const,
-                  provider: entry.enterpriseUrl ? "github-copilot-enterprise" : "github-copilot",
-                  refresh: entry.refresh,
-                  access: entry.access,
-                  expires: entry.expires,
-                  ...(entry.enterpriseUrl ? { enterpriseUrl: entry.enterpriseUrl } : {}),
-                }
-              },
-            }
-          },
-        },
-      ],
+      methods,
     },
-  }
+  })
 }

@@ -60,6 +60,7 @@ export type StoreFile = {
   autoRefresh?: boolean
   refreshMinutes?: number
   lastQuotaRefresh?: number
+  loopSafetyEnabled?: boolean
 }
 
 const filename = "copilot-accounts.json"
@@ -75,16 +76,34 @@ export function authPath(): string {
   return path.join(dataDir, "opencode", authFile)
 }
 
-export async function readStore(): Promise<StoreFile> {
-  const file = storePath()
-  const raw = await fs.readFile(file, "utf-8").catch(() => "")
+export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
   if (!data.accounts) data.accounts = {}
+  if (data.loopSafetyEnabled !== true) data.loopSafetyEnabled = false
   for (const [name, entry] of Object.entries(data.accounts)) {
     const info = entry as AccountEntry
     if (!info.name) info.name = name
   }
   return data
+}
+
+export async function readStore(filePath = storePath()): Promise<StoreFile> {
+  const raw = await fs.readFile(filePath, "utf-8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return ""
+    throw error
+  })
+  return parseStore(raw)
+}
+
+export async function readStoreSafe(filePath = storePath()): Promise<StoreFile | undefined> {
+  try {
+    const raw = await fs.readFile(filePath, "utf-8")
+    return parseStore(raw)
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") return parseStore("")
+    return undefined
+  }
 }
 
 export async function readAuth(filePath?: string): Promise<Record<string, AccountEntry>> {

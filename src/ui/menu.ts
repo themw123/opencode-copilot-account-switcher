@@ -1,6 +1,6 @@
-import { ANSI } from "./ansi"
-import { select, type MenuItem } from "./select"
-import { confirm } from "./confirm"
+import { ANSI } from "./ansi.js"
+import { select, type MenuItem } from "./select.js"
+import { confirm } from "./confirm.js"
 
 export type AccountStatus = "active" | "expired" | "unknown"
 
@@ -34,6 +34,7 @@ export type MenuAction =
   | { type: "check-models" }
   | { type: "toggle-refresh" }
   | { type: "set-interval" }
+  | { type: "toggle-loop-safety" }
   | { type: "switch"; account: AccountInfo }
   | { type: "remove"; account: AccountInfo }
   | { type: "remove-all" }
@@ -59,29 +60,37 @@ function getStatusBadge(status: AccountStatus | undefined): string {
   return ""
 }
 
-export async function showMenu(
-  accounts: AccountInfo[],
-  refresh?: { enabled: boolean; minutes: number },
-  lastQuotaRefresh?: number,
-): Promise<MenuAction> {
-  const quotaHint = lastQuotaRefresh ? `last ${formatRelativeTime(lastQuotaRefresh)}` : undefined
-    const items: MenuItem<MenuAction>[] = [
-      { label: "Actions", value: { type: "cancel" }, kind: "heading" },
-      { label: "Add account", value: { type: "add" }, color: "cyan", hint: "device login or manual" },
-      { label: "Import from auth.json", value: { type: "import" }, color: "cyan" },
-      { label: "Check quotas", value: { type: "quota" }, color: "cyan", hint: quotaHint },
-      { label: "Refresh identity", value: { type: "refresh-identity" }, color: "cyan" },
-      { label: "Check models", value: { type: "check-models" }, color: "cyan" },
+export function buildMenuItems(input: {
+  accounts: AccountInfo[]
+  refresh?: { enabled: boolean; minutes: number }
+  lastQuotaRefresh?: number
+  loopSafetyEnabled: boolean
+}): MenuItem<MenuAction>[] {
+  const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
+
+  return [
+    { label: "Actions", value: { type: "cancel" }, kind: "heading" },
+    { label: "Add account", value: { type: "add" }, color: "cyan", hint: "device login or manual" },
+    { label: "Import from auth.json", value: { type: "import" }, color: "cyan" },
+    { label: "Check quotas", value: { type: "quota" }, color: "cyan", hint: quotaHint },
+    { label: "Refresh identity", value: { type: "refresh-identity" }, color: "cyan" },
+    { label: "Check models", value: { type: "check-models" }, color: "cyan" },
     {
-      label: refresh?.enabled ? "Disable auto refresh" : "Enable auto refresh",
+      label: input.refresh?.enabled ? "Disable auto refresh" : "Enable auto refresh",
       value: { type: "toggle-refresh" },
       color: "cyan",
-      hint: refresh ? `${refresh.minutes}m` : undefined,
+      hint: input.refresh ? `${input.refresh.minutes}m` : undefined,
     },
     { label: "Set refresh interval", value: { type: "set-interval" }, color: "cyan" },
+    {
+      label: input.loopSafetyEnabled ? "Disable guided loop safety" : "Enable guided loop safety",
+      value: { type: "toggle-loop-safety" },
+      color: "cyan",
+      hint: "Prompt-guided: fewer report interruptions, fewer unnecessary subagents",
+    },
     { label: "", value: { type: "cancel" }, separator: true },
     { label: "Accounts", value: { type: "cancel" }, kind: "heading" },
-    ...accounts.map((account) => {
+    ...input.accounts.map((account) => {
       const statusBadge = getStatusBadge(account.status)
       const currentBadge = account.isCurrent ? ` ${ANSI.cyan}*${ANSI.reset}` : ""
       const format = (s?: { remaining?: number; entitlement?: number; unlimited?: boolean }) =>
@@ -108,6 +117,20 @@ export async function showMenu(
     { label: "Danger zone", value: { type: "cancel" }, kind: "heading" },
     { label: "Remove all accounts", value: { type: "remove-all" }, color: "red" },
   ]
+}
+
+export async function showMenu(
+  accounts: AccountInfo[],
+  refresh?: { enabled: boolean; minutes: number },
+  lastQuotaRefresh?: number,
+  loopSafetyEnabled = false,
+): Promise<MenuAction> {
+  const items = buildMenuItems({
+    accounts,
+    refresh,
+    lastQuotaRefresh,
+    loopSafetyEnabled,
+  })
 
   while (true) {
     const result = await select(items, {
