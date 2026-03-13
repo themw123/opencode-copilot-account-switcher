@@ -9,6 +9,10 @@ export const LOOP_SAFETY_POLICY = `Guided Loop Safety Policy
 - MANDATORY: In this workflow, the question tool is both the question channel and the report channel for user-visible communication.
 - MANDATORY: Do not reinterpret "keep working unless blocked" as permission to send direct assistant text. If you need to report, report through the question tool.
 - MANDATORY: Do not reinterpret "don't ask unnecessary questions" as permission to skip the question tool. Use fewer question batches, not a different reporting channel.
+- MANDATORY: If the user says a report was sent the wrong way, first check whether you used the wrong channel before analyzing verbosity, timing, or wording.
+- MANDATORY: When reflecting on mistakes, check report-channel violations before any secondary critique.
+- MANDATORY: Do not turn a pure report into a preference question, permission question, or route-selection question just to satisfy the question tool requirement.
+- MANDATORY: When no user decision is needed, use the question tool as a report container with the smallest sensible option set.
 - NO EXCEPTIONS: Do not switch to direct assistant text just because the report is long, detailed, complex, or contains multiple related items.
 - The question tool is considered available and permitted when it appears in the active tool list and the current session has not denied its use.
 - Direct assistant text is allowed only when the question tool is unavailable, denied, or absent from the current session.
@@ -22,6 +26,7 @@ export const LOOP_SAFETY_POLICY = `Guided Loop Safety Policy
 - Even when no explicit decision is required, use brief question-tool status updates instead of direct assistant text whenever the tool is available.
 - Avoid unnecessary question frequency; combine small related updates when a single question call can cover them clearly.
 - When no further action can be taken safely and no non-blocked work remains, use the question tool to ask for the next task or clarification instead of ending with direct assistant text.
+- When the user says "stop", do not send assistant text to acknowledge the stop. Use the question tool only if more user-visible communication is still required by policy.
 - Dispatching task or subagent work is expensive and should be avoided unless it materially improves the result.
 - Materially improves the result means clearly beneficial cases such as parallel analysis of independent areas; it does not include routine local searches, small file reads, or straightforward edits.
 - If task or subagent delegation is used, keep the number minimal and explain the reason briefly through the question tool when available.`
