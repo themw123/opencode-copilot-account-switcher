@@ -638,7 +638,13 @@ export const CopilotAccountSwitcher: Plugin = async ({ client }) => {
           : undefined,
       }))
       const refresh = { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 }
-      const action = await showMenu(accounts, refresh, store.lastQuotaRefresh, store.loopSafetyEnabled === true)
+      const action = await showMenu(
+        accounts,
+        refresh,
+        store.lastQuotaRefresh,
+        store.loopSafetyEnabled === true,
+        store.networkRetryEnabled === true,
+      )
       if (action.type === "cancel") {
         const active = store.active ? store.accounts[store.active] : undefined
         return active

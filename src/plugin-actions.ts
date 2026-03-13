@@ -6,9 +6,17 @@ export async function applyMenuAction(input: {
   store: StoreFile
   writeStore: (store: StoreFile) => Promise<void>
 }): Promise<boolean> {
-  if (input.action.type !== "toggle-loop-safety") return false
+  if (input.action.type === "toggle-loop-safety") {
+    input.store.loopSafetyEnabled = input.store.loopSafetyEnabled !== true
+    await input.writeStore(input.store)
+    return true
+  }
 
-  input.store.loopSafetyEnabled = input.store.loopSafetyEnabled !== true
-  await input.writeStore(input.store)
-  return true
+  if (input.action.type === "toggle-network-retry") {
+    input.store.networkRetryEnabled = input.store.networkRetryEnabled !== true
+    await input.writeStore(input.store)
+    return true
+  }
+
+  return false
 }

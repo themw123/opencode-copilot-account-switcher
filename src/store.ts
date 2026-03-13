@@ -61,6 +61,7 @@ export type StoreFile = {
   refreshMinutes?: number
   lastQuotaRefresh?: number
   loopSafetyEnabled?: boolean
+  networkRetryEnabled?: boolean
 }
 
 const filename = "copilot-accounts.json"
@@ -80,6 +81,7 @@ export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
   if (!data.accounts) data.accounts = {}
   if (data.loopSafetyEnabled !== true) data.loopSafetyEnabled = false
+  if (data.networkRetryEnabled !== true) data.networkRetryEnabled = false
   for (const [name, entry] of Object.entries(data.accounts)) {
     const info = entry as AccountEntry
     if (!info.name) info.name = name

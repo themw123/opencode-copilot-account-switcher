@@ -32,6 +32,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "sync:copilot-snapshot": "node scripts/sync-copilot-upstream.mjs --output src/upstream/copilot-plugin.snapshot.ts",
+    "check:copilot-sync": "node scripts/sync-copilot-upstream.mjs --output src/upstream/copilot-plugin.snapshot.ts --check",
     "test": "npm run build && node --test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"

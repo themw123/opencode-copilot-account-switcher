@@ -12,7 +12,7 @@
 
 ## English
 
-Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, and an optional **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
+Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, an optional **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input, and an optional **Copilot Network Retry** switch for retryable network and certificate failures. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
 
 ## What You Get
 
@@ -20,6 +20,7 @@ Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. 
 - **Quota check** — view remaining quota per account
 - **Auth import** — import Copilot tokens from OpenCode auth storage
 - **Guided Loop Safety** — a stricter Copilot-only question-first policy designed to keep non-blocked work moving, keep one premium request productive for hours, and cut avoidable quota burn by replacing repeated interruption turns with `question`-based waiting
+- **Copilot Network Retry** — optional and off by default; normalizes retryable Copilot network or TLS failures so OpenCode's native retry path can handle them
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -102,11 +103,35 @@ You will see an interactive menu (arrow keys + enter) with actions:
 - **Import from auth.json**
 - **Check quotas**
 - **Guided Loop Safety** — prompt-guided question-first reporting that requires `question` for user-facing reports when available, keeps non-blocked work moving, reduces repeated interruptions, and avoids unnecessary subagent calls
+- **Copilot Network Retry** — off by default; only affects the Copilot request `fetch` path and only for retryable network/certificate-style failures
 - **Switch account**
 - **Remove account**
 - **Remove all**
 
 If you want GitHub Copilot sessions to stay in a single premium request longer, enable Guided Loop Safety from the account menu. In practice, this can keep one request productive for hours: when `question` is available and permitted, user-facing reports must go through it, so waiting for your reply does not keep burning extra quota the way repeated direct-status interruptions do. Fewer interruptions also means less avoidable quota burn. If safe non-blocked work remains, Copilot should keep going instead of pausing early; only when no safe action remains should it use `question` to ask for the next task or clarification, while also reducing unnecessary subagent calls.
+
+If you hit transient Copilot TLS or network failures, you can enable Copilot Network Retry from the same menu. It is off by default. When enabled, the plugin keeps the official Copilot header/baseURL behavior from the upstream loader, only wraps the final Copilot `fetch` path, and converts retryable network-like failures into a shape that OpenCode already treats as retryable. This keeps request retry policy aligned with OpenCode instead of re-implementing a second retry system inside the plugin.
+
+## Copilot Network Retry
+
+- Default: **disabled**
+- Scope: only the official Copilot request `fetch` path returned by `auth.loader`
+- Purpose: limited handling for retryable network and certificate-style failures such as `failed to fetch`, `ECONNRESET`, `unknown certificate`, or `self signed certificate`
+- Strategy: preserve official loader behavior, then normalize retryable failures so OpenCode's native retry pipeline can decide whether and when to retry
+- Risk: because the plugin still wraps the official fetch path, upstream internal behavior may change over time and drift is possible
+
+## Upstream Sync
+
+The repository includes a committed upstream snapshot at `src/upstream/copilot-plugin.snapshot.ts` plus a sync/check script at `scripts/sync-copilot-upstream.mjs`.
+
+Useful commands:
+
+```bash
+npm run sync:copilot-snapshot -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
+npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
+```
+
+The script generates or checks the committed snapshot, requires upstream metadata for repository snapshot updates, and helps catch drift from the official `opencode` `copilot.ts` implementation.
 
 ---
 
@@ -128,13 +153,16 @@ No. This plugin only manages accounts and works with the official `github-copilo
 **Does it replace the official provider?**
 No. It uses the official provider and only adds account switching + quota checks.
 
+**Does Copilot Network Retry replace OpenCode's retry logic?**
+No. The plugin keeps retry policy inside OpenCode by normalizing retryable Copilot network/TLS failures into a shape that OpenCode already recognizes as retryable.
+
 ---
 
 <a name="中文"></a>
 
 ## 中文
 
-在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**以及可选的 **Guided Loop Safety** 模式，让一次 premium request 更容易连续工作好几个小时，并尽量减少真正需要你输入之前的汇报打断。**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
+在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**、可选的 **Guided Loop Safety** 模式，以及默认关闭的 **Copilot Network Retry** 开关；前者帮助一次 premium request 更容易连续工作好几个小时、减少真正需要你输入之前的汇报打断，后者用于处理可重试的网络与证书类失败。**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
 
 ## 功能一览
 
@@ -142,6 +170,7 @@ No. It uses the official provider and only adds account switching + quota checks
 - **配额查询** — 查看每个账号的剩余额度
 - **导入认证** — 可从 OpenCode 认证存储导入
 - **Guided Loop Safety** — 仅对 Copilot 生效的更严格 question-first 提示词策略，推动非阻塞工作持续执行、让一次 premium request 更容易连续工作好几个小时，并通过减少反复中断来降低无谓配额消耗
+- **Copilot Network Retry** — 默认关闭；把可重试的 Copilot 网络或 TLS 失败归一化成 OpenCode 原生重试链路可识别的形态
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -224,11 +253,35 @@ opencode auth login --provider github-copilot
 - **从 auth.json 导入**
 - **检查配额**
 - **Guided Loop Safety 开关** — 通过提示词引导模型在可用时必须使用 `question` 做用户可见汇报、继续完成非阻塞工作、减少反复中断，并避免不必要的子代理调用
+- **Copilot Network Retry 开关** — 默认关闭；仅影响 Copilot 请求的 `fetch` 路径，只处理可重试的网络/证书类失败
 - **切换账号**
 - **删除账号**
 - **全部删除**
 
 如果你希望 GitHub Copilot 会话在一次 premium request 中尽量持续工作、更少被汇报打断，可以在账号菜单中开启 Guided Loop Safety。实际使用中，它可以让一次 request 更容易连续工作好几个小时：当 `question` 工具在当前会话中可用且被允许时，用户可见汇报必须通过它完成，因此等待你的回复本身不会像反复插入直接状态消息那样继续额外消耗配额；少一次中断，本身就少一次无谓的配额消耗。只要还有安全的非阻塞工作可做，Copilot 就应继续执行而不是提前暂停；只有在当前确实没有可安全执行的动作时，才应通过 `question` 询问下一项任务或所需澄清，同时也会减少不必要的子代理调用。
+
+如果你遇到 Copilot 的瞬时 TLS 或网络失败，也可以在同一菜单中开启 Copilot Network Retry。它默认关闭。开启后，插件会先保留 upstream 官方 loader 生成的 `baseURL`、认证头和 `fetch` 行为，只在最后一跳 Copilot `fetch` 路径上做最小包装，把可重试的网络类失败归一化成 OpenCode 已有重试链路能识别的形态，而不是在插件内部重新定义一套独立的请求重试策略。
+
+## Copilot Network Retry
+
+- 默认：**关闭**
+- 作用范围：仅影响 `auth.loader` 返回的官方 Copilot 请求 `fetch` 路径
+- 用途：有限处理 `failed to fetch`、`ECONNRESET`、`unknown certificate`、`self signed certificate` 等可重试网络/证书类失败
+- 实现策略：尽量保留官方 loader 行为，再把可重试失败归一化给 OpenCode 原生重试链路判断是否重试
+- 风险提示：因为插件仍然包裹了官方 fetch 路径，若 upstream 后续内部实现变化，仍可能产生行为漂移
+
+## Upstream 同步机制
+
+仓库中提交了一份 upstream 快照 `src/upstream/copilot-plugin.snapshot.ts`，并提供同步/校验脚本 `scripts/sync-copilot-upstream.mjs`。
+
+常用命令：
+
+```bash
+npm run sync:copilot-snapshot -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
+npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
+```
+
+该脚本会生成或校验仓库中提交的 snapshot，并要求在更新正式 snapshot 时显式提供 upstream commit 与同步日期，用来尽早发现与官方 `opencode` `copilot.ts` 的行为漂移。
 
 ---
 
@@ -249,6 +302,9 @@ opencode auth login --provider github-copilot
 
 **会替换官方 provider 吗？**
 不会。它只是在官方 provider 基础上增加账号切换和配额查询。
+
+**Copilot Network Retry 会替代 OpenCode 自己的重试逻辑吗？**
+不会。插件的目标是把可重试的 Copilot 网络/TLS 失败归一化成 OpenCode 已识别的可重试错误形态，真正的是否重试与如何退避仍由 OpenCode 原生链路决定。
 
 ---
 

@@ -35,6 +35,7 @@ export type MenuAction =
   | { type: "toggle-refresh" }
   | { type: "set-interval" }
   | { type: "toggle-loop-safety" }
+  | { type: "toggle-network-retry" }
   | { type: "switch"; account: AccountInfo }
   | { type: "remove"; account: AccountInfo }
   | { type: "remove-all" }
@@ -65,6 +66,7 @@ export function buildMenuItems(input: {
   refresh?: { enabled: boolean; minutes: number }
   lastQuotaRefresh?: number
   loopSafetyEnabled: boolean
+  networkRetryEnabled: boolean
 }): MenuItem<MenuAction>[] {
   const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
 
@@ -87,6 +89,12 @@ export function buildMenuItems(input: {
       value: { type: "toggle-loop-safety" },
       color: "cyan",
       hint: "Prompt-guided: fewer report interruptions, fewer unnecessary subagents",
+    },
+    {
+      label: input.networkRetryEnabled ? "Disable Copilot network retry" : "Enable Copilot network retry",
+      value: { type: "toggle-network-retry" },
+      color: "cyan",
+      hint: "Overrides official fetch path; may drift from upstream",
     },
     { label: "", value: { type: "cancel" }, separator: true },
     { label: "Accounts", value: { type: "cancel" }, kind: "heading" },
@@ -124,12 +132,14 @@ export async function showMenu(
   refresh?: { enabled: boolean; minutes: number },
   lastQuotaRefresh?: number,
   loopSafetyEnabled = false,
+  networkRetryEnabled = false,
 ): Promise<MenuAction> {
   const items = buildMenuItems({
     accounts,
     refresh,
     lastQuotaRefresh,
     loopSafetyEnabled,
+    networkRetryEnabled,
   })
 
   while (true) {

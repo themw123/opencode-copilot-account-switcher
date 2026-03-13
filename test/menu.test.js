@@ -58,3 +58,52 @@ test("guided loop safety toggle stays inside the Actions section before the sepa
   assert.notEqual(separatorIndex, -1)
   assert.equal(toggleIndex < separatorIndex, true)
 })
+
+test("buildMenuItems shows Enable Copilot network retry when disabled", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+  })
+
+  const toggle = items.find((item) => item.label === "Enable Copilot network retry")
+  assert.ok(toggle)
+  assert.match(toggle?.hint ?? "", /Overrides official fetch/)
+})
+
+test("buildMenuItems shows Disable Copilot network retry when enabled", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: true,
+  })
+
+  const toggle = items.find((item) => item.label === "Disable Copilot network retry")
+  assert.ok(toggle)
+  assert.match(toggle?.hint ?? "", /Overrides official fetch/)
+})
+
+test("Copilot network retry toggle is placed after guided loop safety and before the separator", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+  })
+
+  const labels = items.map((item) => item.label)
+  const loopSafetyIndex = labels.indexOf("Enable guided loop safety")
+  const retryIndex = labels.indexOf("Enable Copilot network retry")
+  const separatorIndex = items.findIndex((item) => item.separator === true)
+
+  assert.notEqual(loopSafetyIndex, -1)
+  assert.notEqual(retryIndex, -1)
+  assert.notEqual(separatorIndex, -1)
+  assert.equal(retryIndex, loopSafetyIndex + 1)
+  assert.equal(retryIndex < separatorIndex, true)
+})

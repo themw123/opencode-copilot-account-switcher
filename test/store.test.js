@@ -13,6 +13,18 @@ test("parseStore defaults loopSafetyEnabled to false when missing", () => {
   assert.deepEqual(store.accounts, {})
 })
 
+test("parseStore defaults networkRetryEnabled to false when missing", () => {
+  const store = parseStore('{"accounts":{}}')
+
+  assert.equal(store.networkRetryEnabled, false)
+})
+
+test("parseStore preserves networkRetryEnabled when explicitly true", () => {
+  const store = parseStore('{"accounts":{},"networkRetryEnabled":true}')
+
+  assert.equal(store.networkRetryEnabled, true)
+})
+
 test("parseStore throws on malformed JSON for strict readers", () => {
   assert.throws(() => parseStore("{"))
 })
