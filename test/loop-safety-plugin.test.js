@@ -13,6 +13,9 @@ const EXPECTED_POLICY = `Guided Loop Safety Policy
 - If you are not fully blocked, do not stop just because you feel ready to pause; finish the work that can still be done safely.
 - MANDATORY: When the question tool is available and permitted in the current session, ALL user-facing reports MUST be delivered through the question tool.
 - MANDATORY: Treat progress updates, status reports, summaries, explanations, completion notes, and next-step choices as user-facing reports.
+- MANDATORY: In this workflow, the question tool is both the question channel and the report channel for user-visible communication.
+- MANDATORY: Do not reinterpret "keep working unless blocked" as permission to send direct assistant text. If you need to report, report through the question tool.
+- MANDATORY: Do not reinterpret "don't ask unnecessary questions" as permission to skip the question tool. Use fewer question batches, not a different reporting channel.
 - NO EXCEPTIONS: Do not switch to direct assistant text just because the report is long, detailed, complex, or contains multiple related items.
 - The question tool is considered available and permitted when it appears in the active tool list and the current session has not denied its use.
 - Direct assistant text is allowed only when the question tool is unavailable, denied, or absent from the current session.
