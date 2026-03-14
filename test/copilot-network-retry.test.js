@@ -971,6 +971,56 @@ test("retries once by removing long input ids after copilot 400 validation error
   assert.equal(calls[1].previous_response_id, "resp_123")
 })
 
+test("retries once when too-long input id error is returned as text/plain", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    calls.push(body)
+
+    if (calls.length === 1) {
+      return new Response(
+        "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+        {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        },
+      )
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  const originalBody = {
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "hello" }], id: "short-id" },
+      {
+        role: "assistant",
+        content: [{ type: "output_text", text: "long" }],
+        id: "x".repeat(408),
+      },
+    ],
+    previous_response_id: "resp_123",
+  }
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(originalBody),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].input[2].id.length, 408)
+  assert.equal(calls[1].input[2].id, undefined)
+  assert.equal(calls[1].input[1].id, "short-id")
+  assert.equal(calls[1].previous_response_id, "resp_123")
+})
+
 test("writes debug logs into temp file when enabled", async () => {
   const logFile = join(tmpdir(), `copilot-retry-debug-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
   process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"

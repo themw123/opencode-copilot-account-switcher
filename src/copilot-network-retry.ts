@@ -60,14 +60,15 @@ function getErrorMessage(error: unknown) {
   return String(error instanceof Error ? error.message : error).toLowerCase()
 }
 
-function isJsonContentType(headers: Headers) {
-  return headers.get("content-type")?.toLowerCase().includes("application/json") === true
-}
-
 function isInputIdTooLongErrorBody(payload: unknown) {
   if (!payload || typeof payload !== "object") return false
   const error = (payload as { error?: { message?: unknown } }).error
   const message = String(error?.message ?? "").toLowerCase()
+  return message.includes("invalid 'input[") && message.includes(".id'") && message.includes("string too long")
+}
+
+function isInputIdTooLongMessage(text: string) {
+  const message = text.toLowerCase()
   return message.includes("invalid 'input[") && message.includes(".id'") && message.includes("string too long")
 }
 
@@ -134,21 +135,60 @@ async function maybeRetryInputIdTooLong(
   if (response.status !== 400) return response
 
   const requestPayload = parseJsonBody(init)
-  if (!requestPayload || !hasLongInputIds(requestPayload)) return response
+  if (!requestPayload || !hasLongInputIds(requestPayload)) {
+    debugLog("skip input-id retry: request has no long ids")
+    return response
+  }
 
-  if (!isJsonContentType(response.headers)) return response
+  debugLog("input-id retry candidate", {
+    status: response.status,
+    contentType: response.headers.get("content-type") ?? undefined,
+  })
 
-  const bodyPayload = await response
+  const responseText = await response
     .clone()
-    .json()
-    .catch(() => undefined)
+    .text()
+    .catch(() => "")
 
-  if (!isInputIdTooLongErrorBody(bodyPayload)) return response
+  if (!responseText) {
+    debugLog("skip input-id retry: empty response body")
+    return response
+  }
+
+  let matched = isInputIdTooLongMessage(responseText)
+  if (!matched) {
+    try {
+      const bodyPayload = JSON.parse(responseText)
+      matched = isInputIdTooLongErrorBody(bodyPayload)
+    } catch {
+      matched = false
+    }
+  }
+
+  debugLog("input-id retry detection", {
+    matched,
+    bodyPreview: responseText.slice(0, 200),
+  })
+
+  if (!matched) return response
 
   const sanitized = stripLongInputIds(requestPayload)
-  if (sanitized === requestPayload) return response
+  if (sanitized === requestPayload) {
+    debugLog("skip input-id retry: sanitize made no changes")
+    return response
+  }
 
-  return baseFetch(request, buildRetryInit(init, sanitized))
+  debugLog("input-id retry triggered", {
+    removedLongIds: true,
+    hadPreviousResponseId: typeof requestPayload.previous_response_id === "string",
+  })
+
+  const retried = await baseFetch(request, buildRetryInit(init, sanitized))
+  debugLog("input-id retry response", {
+    status: retried.status,
+    contentType: retried.headers.get("content-type") ?? undefined,
+  })
+  return retried
 }
 
 function toRetryableSystemError(error: unknown): RetryableSystemError {
