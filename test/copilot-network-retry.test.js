@@ -1020,6 +1020,90 @@ test("does not treat server input index as direct payload array index", async ()
   assert.equal(calls[1].input[3].id, "short-id")
 })
 
+test("uses server-reported input index to disambiguate same-length long ids", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    calls.push(body)
+
+    if (calls.length === 1) {
+      return new Response(
+        "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 200 instead.",
+        {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        },
+      )
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "first" }], id: "a".repeat(200) },
+        { role: "assistant", content: [{ type: "output_text", text: "second" }], id: "b".repeat(200) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, "a".repeat(200))
+  assert.equal(calls[1].input[2].id, undefined)
+})
+
+test("uses server-reported input index as a candidate hint instead of direct payload indexing", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    calls.push(body)
+
+    if (calls.length === 1) {
+      return new Response(
+        "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 200 instead.",
+        {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        },
+      )
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "first" }], id: "a".repeat(200) },
+        { role: "assistant", content: [{ type: "output_text", text: "short" }], id: "short-id" },
+        { role: "assistant", content: [{ type: "output_text", text: "second" }], id: "b".repeat(200) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, "a".repeat(200))
+  assert.equal(calls[1].input[2].id, "short-id")
+  assert.equal(calls[1].input[3].id, undefined)
+})
+
 test("writes a debug skip log when too-long input id error lacks a parsable input index", async () => {
   const logFile = join(tmpdir(), `copilot-retry-missing-index-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
   process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
@@ -1478,6 +1562,47 @@ test("repairs multiple too-long input ids one at a time up to the max attempt li
   assert.equal(patchedIds.length, 2)
 })
 
+test("keeps repairing while remaining long-id candidates still justify more retries", async () => {
+  const counts = []
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    const remainingLongIds = body.input.filter((item) => typeof item.id === "string" && item.id.length > 64)
+    counts.push(remainingLongIds.length)
+
+    if (remainingLongIds.length === 0) {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
+
+    return new Response(
+      `Invalid 'input[${remainingLongIds[0].inputIndex}].id': string too long. Expected a string with maximum length 64, but got a string with length ${remainingLongIds[0].id.length} instead.`,
+      { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+    )
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        ...Array.from({ length: 6 }, (_value, index) => ({
+          inputIndex: index + 2,
+          role: "assistant",
+          content: [{ type: "output_text", text: `item-${index}` }],
+          id: "x".repeat(200 + index),
+        })),
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(counts, [6, 5, 4, 3, 2, 1, 0])
+})
+
 test("stops retrying when the same failing id repeats without effective session change", async () => {
   let attempts = 0
   const patchCalls = []
@@ -1535,6 +1660,117 @@ test("stops retrying when the same failing id repeats without effective session 
   assert.equal(response.status, 400)
   assert.equal(attempts, 2)
   assert.equal(patchCalls.length, 1)
+})
+
+test("stops retrying when remaining long-id candidates do not decrease", async () => {
+  const logFile = join(tmpdir(), `copilot-retry-stop-candidates-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE = logFile
+
+  try {
+    let attempts = 0
+    const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?stop-candidates-${Date.now()}`)
+    const wrapped = createCopilotRetryingFetch(async () => {
+      attempts += 1
+      if (attempts > 1) {
+        return new Response("unexpected extra retry", { status: 599 })
+      }
+
+      return new Response(
+        "Invalid 'input[9].id': string too long. Expected a string with maximum length 64, but got a string with length 300 instead.",
+        { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+      )
+    })
+
+    const response = await wrapped("https://api.githubcopilot.com/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "hi" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "first" }], id: "x".repeat(408) },
+          { role: "assistant", content: [{ type: "output_text", text: "second" }], id: "y".repeat(300) },
+          { role: "assistant", content: [{ type: "output_text", text: "third" }], id: "z".repeat(300) },
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 400)
+    assert.equal(attempts, 1)
+
+    const log = await readFile(logFile, "utf8")
+    const progressEntries = log
+      .split("\n")
+      .filter((line) => line.includes("input-id retry progress"))
+      .map((line) => JSON.parse(line.slice(line.indexOf("{"))))
+
+    assert.equal(progressEntries.length, 1)
+    assert.equal(progressEntries[0].remainingLongIdCandidatesBefore, 3)
+    assert.equal(progressEntries[0].remainingLongIdCandidatesAfter, 3)
+    assert.equal(progressEntries[0].stopReason, "remaining-candidates-not-reduced")
+  } finally {
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
+    await rm(logFile, { force: true })
+  }
+})
+
+test("stops retrying when server error details do not change after a cleanup", async () => {
+  const logFile = join(tmpdir(), `copilot-retry-stop-error-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE = logFile
+
+  try {
+    let attempts = 0
+    const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?stop-error-${Date.now()}`)
+    const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+      attempts += 1
+      if (attempts > 2) {
+        return new Response("unexpected extra retry", { status: 599 })
+      }
+
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      if (body.input[1]?.id) {
+        return new Response(
+          "Invalid 'input[2].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+        )
+      }
+
+      return new Response(
+        "Invalid 'input[2].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+        { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+      )
+    })
+
+    const response = await wrapped("https://api.githubcopilot.com/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "hi" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "first" }], id: "x".repeat(408) },
+          { role: "assistant", content: [{ type: "output_text", text: "second" }], id: "y".repeat(200) },
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 400)
+    assert.equal(attempts, 2)
+
+    const log = await readFile(logFile, "utf8")
+    const progressEntries = log
+      .split("\n")
+      .filter((line) => line.includes("input-id retry progress"))
+      .map((line) => JSON.parse(line.slice(line.indexOf("{"))))
+
+    assert.equal(progressEntries.length, 1)
+    assert.equal(progressEntries[0].stopReason, "server-error-unchanged")
+  } finally {
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
+    await rm(logFile, { force: true })
+  }
 })
 
 test("strips internal session header when it arrives via init.headers on the first provider request", async () => {
@@ -1637,6 +1873,95 @@ test("strips internal session header even when session repair falls back after a
   assert.deepEqual(seen, [null, null])
 })
 
+test("keeps session repair failure logs alongside later retry progress logs", async () => {
+  const logFile = join(tmpdir(), `copilot-retry-repair-failure-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE = logFile
+
+  try {
+    const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?repair-failure-${Date.now()}`)
+    const wrapped = createCopilotRetryingFetch(
+      async (_request, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}"))
+
+        if (body.input[2]?.id) {
+          return new Response(
+            "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+            { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+          )
+        }
+
+        if (body.input[4]?.id) {
+          return new Response(
+            "Invalid 'input[5].id': string too long. Expected a string with maximum length 64, but got a string with length 300 instead.",
+            { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+          )
+        }
+
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      },
+      {
+        directory: "C:/repo",
+        serverUrl: new URL("http://localhost:4096"),
+        client: {
+          session: {
+            messages: async () => ({
+              data: [
+                {
+                  info: { id: "msg_1", role: "assistant" },
+                  parts: [
+                    { id: "part_1", messageID: "msg_1", sessionID: "sess-123", type: "text", text: "a", metadata: { openai: { itemId: "a".repeat(408) } } },
+                  ],
+                },
+              ],
+            }),
+            message: async () => ({
+              data: {
+                parts: [
+                  { id: "part_1", messageID: "msg_1", sessionID: "sess-123", type: "text", text: "a", metadata: { openai: { itemId: "a".repeat(408) } } },
+                ],
+              },
+            }),
+          },
+        },
+        patchPart: async () => {
+          throw new Error("patch failed")
+        },
+      },
+    )
+
+    const response = await wrapped("https://api.githubcopilot.com/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+      body: JSON.stringify({
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "hi" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "pad-1" }], id: "short-1" },
+          { role: "assistant", content: [{ type: "output_text", text: "first" }], id: "a".repeat(408) },
+          { role: "assistant", content: [{ type: "output_text", text: "pad-2" }], id: "short-2" },
+          { role: "assistant", content: [{ type: "output_text", text: "second" }], id: "b".repeat(300) },
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 200)
+
+    const log = await readFile(logFile, "utf8")
+    assert.match(log, /input-id retry session repair failed/)
+    assert.match(log, /patch failed/)
+    assert.match(log, /input-id retry progress/)
+    assert.match(log, /"previousServerReportedIndex":3/)
+    assert.match(log, /"currentServerReportedIndex":5/)
+  } finally {
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
+    await rm(logFile, { force: true })
+  }
+})
+
 test("writes detailed input-id repair diagnostics when debug logging is enabled", async () => {
   const logFile = join(tmpdir(), `copilot-retry-diagnostics-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
   process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
@@ -1709,6 +2034,107 @@ test("writes detailed input-id repair diagnostics when debug logging is enabled"
     assert.match(log, /"idLength":408/)
     assert.match(log, /"idPreview":"x{12}\.\.\."/)
     assert.ok(!log.includes("x".repeat(80)))
+  } finally {
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
+    await rm(logFile, { force: true })
+  }
+})
+
+test("writes retry progress logs that show server error index changes across attempts", async () => {
+  const logFile = join(tmpdir(), `copilot-retry-progress-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE = logFile
+
+  try {
+    const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?progress-${Date.now()}`)
+    const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+
+      if (body.input[2]?.id) {
+        return new Response(
+          "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 200 instead.",
+          { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+        )
+      }
+
+      if (body.input[4]?.id) {
+        return new Response(
+          "Invalid 'input[5].id': string too long. Expected a string with maximum length 64, but got a string with length 300 instead.",
+          { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+        )
+      }
+
+      if (body.input[6]?.id) {
+        return new Response(
+          "Invalid 'input[7].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+        )
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    })
+
+    const response = await wrapped("https://api.githubcopilot.com/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "hi" }] },
+          { role: "assistant", content: [{ type: "output_text", text: "pad-1" }], id: "short-1" },
+          { role: "assistant", content: [{ type: "output_text", text: "first" }], id: "a".repeat(200) },
+          { role: "assistant", content: [{ type: "output_text", text: "pad-2" }], id: "short-2" },
+          { role: "assistant", content: [{ type: "output_text", text: "second" }], id: "b".repeat(300) },
+          { role: "assistant", content: [{ type: "output_text", text: "pad-3" }], id: "short-3" },
+          { role: "assistant", content: [{ type: "output_text", text: "third" }], id: "c".repeat(408) },
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 200)
+
+    const log = await readFile(logFile, "utf8")
+    const progressEntries = log
+      .split("\n")
+      .filter((line) => line.includes("input-id retry progress"))
+      .map((line) => JSON.parse(line.slice(line.indexOf("{"))))
+
+    assert.equal(progressEntries.length, 2)
+    assert.deepEqual(
+      progressEntries.map((entry) => ({
+        attempt: entry.attempt,
+        previousServerReportedIndex: entry.previousServerReportedIndex,
+        currentServerReportedIndex: entry.currentServerReportedIndex,
+        serverIndexChanged: entry.serverIndexChanged,
+        remainingLongIdCandidatesBefore: entry.remainingLongIdCandidatesBefore,
+        remainingLongIdCandidatesAfter: entry.remainingLongIdCandidatesAfter,
+      })),
+      [
+        {
+          attempt: 1,
+          previousServerReportedIndex: 3,
+          currentServerReportedIndex: 5,
+          serverIndexChanged: true,
+          remainingLongIdCandidatesBefore: 3,
+          remainingLongIdCandidatesAfter: 2,
+        },
+        {
+          attempt: 2,
+          previousServerReportedIndex: 5,
+          currentServerReportedIndex: 7,
+          serverIndexChanged: true,
+          remainingLongIdCandidatesBefore: 2,
+          remainingLongIdCandidatesAfter: 1,
+        },
+      ],
+    )
+    assert.match(progressEntries[0].previousErrorMessagePreview, /input\[3\]\.id/i)
+    assert.match(progressEntries[0].currentErrorMessagePreview, /input\[5\]\.id/i)
+    assert.match(progressEntries[1].previousErrorMessagePreview, /input\[5\]\.id/i)
+    assert.match(progressEntries[1].currentErrorMessagePreview, /input\[7\]\.id/i)
   } finally {
     delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
     delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
