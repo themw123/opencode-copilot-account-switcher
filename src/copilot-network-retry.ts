@@ -13,8 +13,6 @@ const RETRYABLE_MESSAGES = [
   "self-signed certificate in certificate chain",
 ]
 
-const RETRYABLE_PATH_SEGMENTS = ["/chat/completions", "/responses", "/models", "/token"]
-
 type FetchLike = (request: Request | URL | string, init?: RequestInit) => Promise<Response>
 
 type RetryableSystemError = Error & {
@@ -48,8 +46,7 @@ function isCopilotUrl(request: Request | URL | string) {
     const url = new URL(raw)
     const isCopilotHost =
       url.hostname === "api.githubcopilot.com" || url.hostname.startsWith("copilot-api.")
-    if (!isCopilotHost) return false
-    return RETRYABLE_PATH_SEGMENTS.some((segment) => url.pathname.includes(segment))
+    return isCopilotHost
   } catch {
     return false
   }

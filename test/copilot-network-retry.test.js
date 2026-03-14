@@ -755,6 +755,31 @@ test("normalizes unable to connect errors for copilot urls", async () => {
   )
 })
 
+test("normalizes retryable errors for copilot hosts even on non-whitelisted paths", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    throw new Error("unknown certificate verification error")
+  })
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/internal/test-endpoint", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(attempts, 1)
+      assert.equal(error.code, "ECONNRESET")
+      assert.equal(error.syscall, "fetch")
+      assert.match(error.message, /copilot-network-retry normalized/i)
+      assert.match(error.message, /unknown certificate verification error/i)
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
 test("does not normalize transient errors for non copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
