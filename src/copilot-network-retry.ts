@@ -15,7 +15,7 @@ const RETRYABLE_MESSAGES = [
   "self-signed certificate in certificate chain",
 ]
 
-const MAX_INPUT_ID_REPAIR_ATTEMPTS = 3
+const INPUT_ID_REPAIR_HARD_LIMIT = 64
 
 export type FetchLike = (request: Request | URL | string, init?: RequestInit) => Promise<Response>
 
@@ -106,6 +106,10 @@ function buildIdPreview(id: string) {
   return `${id.slice(0, 12)}...`
 }
 
+function buildMessagePreview(message: string) {
+  return message.slice(0, 160)
+}
+
 function getPayloadCandidates(payload: JsonRecord) {
   const input = payload.input
   if (!Array.isArray(input)) return []
@@ -124,33 +128,60 @@ function hasLongInputIds(payload: JsonRecord) {
   return input.some((item) => typeof (item as { id?: unknown })?.id === "string" && ((item as { id?: string }).id?.length ?? 0) > 64)
 }
 
-function getTargetedLongInputId(payload: JsonRecord, reportedLength?: number) {
-  const input = payload.input
-  if (!Array.isArray(input)) return undefined
+function countLongInputIdCandidates(payload: JsonRecord | undefined) {
+  const input = payload?.input
+  if (!Array.isArray(input)) return 0
+  return input.filter((item) => typeof (item as { id?: unknown })?.id === "string" && ((item as { id?: string }).id?.length ?? 0) > 64)
+    .length
+}
 
-  const matches = input.filter(
-    (item) => typeof (item as { id?: unknown })?.id === "string" && ((item as { id?: string }).id?.length ?? 0) > 64,
-  )
+type LongInputIdCandidate = {
+  item: JsonRecord
+  payloadIndex: number
+  idLength: number
+}
+
+function collectLongInputIdCandidates(payload: JsonRecord) {
+  const input = payload.input
+  if (!Array.isArray(input)) return []
+  return input.flatMap((item, payloadIndex) => {
+    const id = (item as { id?: unknown } | undefined)?.id
+    if (typeof id !== "string" || id.length <= 64) return []
+    return [{ item: item as JsonRecord, payloadIndex, idLength: id.length } satisfies LongInputIdCandidate]
+  })
+}
+
+function pickCandidateByServerIndexHint(candidates: LongInputIdCandidate[], serverReportedIndex: number) {
+  const hintedPayloadIndex = serverReportedIndex - 1
+  return candidates
+    .filter((candidate) => candidate.payloadIndex >= hintedPayloadIndex)
+    .sort((left, right) => left.payloadIndex - right.payloadIndex)[0]
+}
+
+function getTargetedLongInputId(payload: JsonRecord, serverReportedIndex?: number, reportedLength?: number) {
+  const matches = collectLongInputIdCandidates(payload)
   if (matches.length === 0) return undefined
 
   const lengthMatches = reportedLength
-    ? matches.filter((item) => String((item as { id?: unknown }).id ?? "").length === reportedLength)
+    ? matches.filter((item) => item.idLength === reportedLength)
     : matches
-  if (lengthMatches.length === 1) return lengthMatches[0] as JsonRecord
-  if (lengthMatches.length > 1) return lengthMatches[0] as JsonRecord
-  if (matches.length === 1) return matches[0] as JsonRecord
-  return matches.reduce((best, item) => {
-    const bestLength = String((best as { id?: unknown }).id ?? "").length
-    const itemLength = String((item as { id?: unknown }).id ?? "").length
-    return itemLength > bestLength ? (item as JsonRecord) : best
-  }, matches[0] as JsonRecord)
+
+  if (lengthMatches.length === 1) return lengthMatches[0].item
+  if (matches.length === 1) return matches[0].item
+
+  const narrowedCandidates = lengthMatches.length > 0 ? lengthMatches : matches
+  if (typeof serverReportedIndex === "number") {
+    return pickCandidateByServerIndexHint(narrowedCandidates, serverReportedIndex)?.item
+  }
+
+  return undefined
 }
 
-function stripTargetedLongInputId(payload: JsonRecord, reportedLength?: number) {
+function stripTargetedLongInputId(payload: JsonRecord, serverReportedIndex?: number, reportedLength?: number) {
   const input = payload.input
   if (!Array.isArray(input)) return payload
 
-  const target = getTargetedLongInputId(payload, reportedLength)
+  const target = getTargetedLongInputId(payload, serverReportedIndex, reportedLength)
   if (!target) return payload
 
   let changed = false
@@ -194,6 +225,13 @@ function buildRetryInit(init: RequestInit | undefined, payload: JsonRecord): Req
   }
 }
 
+type InputIdRetryState = {
+  previousServerReportedIndex?: number
+  previousErrorMessagePreview: string
+  remainingLongIdCandidatesBefore: number
+  remainingLongIdCandidatesAfter: number
+}
+
 function stripInternalSessionHeaderFromRequest(request: Request | URL | string) {
   if (!(request instanceof Request)) return request
   if (!request.headers.has(INTERNAL_SESSION_HEADER)) return request
@@ -210,8 +248,8 @@ function getHeader(request: Request | URL | string, init: RequestInit | undefine
   return undefined
 }
 
-function getTargetedInputId(payload: JsonRecord, reportedLength?: number) {
-  const target = getTargetedLongInputId(payload, reportedLength)
+function getTargetedInputId(payload: JsonRecord, serverReportedIndex?: number, reportedLength?: number) {
+  const target = getTargetedLongInputId(payload, serverReportedIndex, reportedLength)
   const id = (target as { id?: unknown } | undefined)?.id
   if (typeof id !== "string") return undefined
   return id
@@ -277,23 +315,51 @@ async function repairSessionPart(sessionID: string, failingId: string, ctx?: Cop
   }
 
   if (ctx?.patchPart) {
-    await ctx.patchPart({ url: url.href, init })
+    try {
+      await ctx.patchPart({ url: url.href, init })
+      debugLog("input-id retry session repair", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+      })
+      return true
+    } catch (error) {
+      debugLog("input-id retry session repair failed", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+        error: String(error instanceof Error ? error.message : error),
+      })
+      return false
+    }
+  }
+
+  try {
+    const response = await fetch(url, init)
     debugLog("input-id retry session repair", {
       partID: match.partID,
       messageID: match.messageID,
       sessionID,
+      ok: response.ok,
     })
-    return true
+    if (!response.ok) {
+      debugLog("input-id retry session repair failed", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+        status: response.status,
+      })
+    }
+    return response.ok
+  } catch (error) {
+    debugLog("input-id retry session repair failed", {
+      partID: match.partID,
+      messageID: match.messageID,
+      sessionID,
+      error: String(error instanceof Error ? error.message : error),
+    })
+    return false
   }
-
-  const response = await fetch(url, init)
-  debugLog("input-id retry session repair", {
-    partID: match.partID,
-    messageID: match.messageID,
-    sessionID,
-    ok: response.ok,
-  })
-  return response.ok
 }
 
 async function maybeRetryInputIdTooLong(
@@ -304,12 +370,14 @@ async function maybeRetryInputIdTooLong(
   ctx?: CopilotRetryContext,
   sessionID?: string,
 ) {
-  if (response.status !== 400) return { response, retried: false as const, nextInit: init }
+  if (response.status !== 400) {
+    return { response, retried: false as const, nextInit: init, retryState: undefined as InputIdRetryState | undefined }
+  }
 
   const requestPayload = parseJsonBody(init)
   if (!requestPayload || !hasLongInputIds(requestPayload)) {
     debugLog("skip input-id retry: request has no long ids")
-    return { response, retried: false as const, nextInit: init }
+    return { response, retried: false as const, nextInit: init, retryState: undefined as InputIdRetryState | undefined }
   }
 
   debugLog("input-id retry candidate", {
@@ -324,7 +392,7 @@ async function maybeRetryInputIdTooLong(
 
   if (!responseText) {
     debugLog("skip input-id retry: empty response body")
-    return { response, retried: false as const, nextInit: init }
+    return { response, retried: false as const, nextInit: init, retryState: undefined as InputIdRetryState | undefined }
   }
 
   let parsed = parseInputIdTooLongDetails(responseText)
@@ -351,13 +419,15 @@ async function maybeRetryInputIdTooLong(
     reportedLength: parsed.reportedLength,
   })
 
-  if (!matched) return { response, retried: false as const, nextInit: init }
+  if (!matched) {
+    return { response, retried: false as const, nextInit: init, retryState: undefined as InputIdRetryState | undefined }
+  }
 
   if (parsed.serverReportedIndex === undefined) {
     debugLog("skip input-id retry: missing server input index", {
       reportedLength: parsed.reportedLength,
     })
-    return { response, retried: false as const, nextInit: init }
+    return { response, retried: false as const, nextInit: init, retryState: undefined as InputIdRetryState | undefined }
   }
 
   const payloadCandidates = getPayloadCandidates(requestPayload)
@@ -366,7 +436,7 @@ async function maybeRetryInputIdTooLong(
     candidates: payloadCandidates,
   })
 
-  const failingId = getTargetedInputId(requestPayload, parsed.reportedLength)
+  const failingId = getTargetedInputId(requestPayload, parsed.serverReportedIndex, parsed.reportedLength)
   const targetedPayload = payloadCandidates.find((item) => item.idLength === parsed.reportedLength) ?? payloadCandidates[0]
   if (targetedPayload) {
     debugLog("input-id retry payload target", {
@@ -380,10 +450,20 @@ async function maybeRetryInputIdTooLong(
     await repairSessionPart(sessionID, failingId, ctx).catch(() => false)
   }
 
-  const sanitized = stripTargetedLongInputId(requestPayload, parsed.reportedLength)
+  const sanitized = stripTargetedLongInputId(requestPayload, parsed.serverReportedIndex, parsed.reportedLength)
   if (sanitized === requestPayload) {
     debugLog("skip input-id retry: sanitize made no changes")
-    return { response, retried: false as const, nextInit: init }
+    return {
+      response,
+      retried: false as const,
+      nextInit: init,
+      retryState: {
+        previousServerReportedIndex: parsed.serverReportedIndex,
+        previousErrorMessagePreview: buildMessagePreview(responseText),
+        remainingLongIdCandidatesBefore: countLongInputIdCandidates(requestPayload),
+        remainingLongIdCandidatesAfter: countLongInputIdCandidates(requestPayload),
+      } satisfies InputIdRetryState,
+    }
   }
 
   debugLog("input-id retry triggered", {
@@ -393,11 +473,17 @@ async function maybeRetryInputIdTooLong(
 
   const nextInit = buildRetryInit(init, sanitized)
   const retried = await baseFetch(request, nextInit)
+  const retryState: InputIdRetryState = {
+    previousServerReportedIndex: parsed.serverReportedIndex,
+    previousErrorMessagePreview: buildMessagePreview(responseText),
+    remainingLongIdCandidatesBefore: countLongInputIdCandidates(requestPayload),
+    remainingLongIdCandidatesAfter: countLongInputIdCandidates(parseJsonBody(nextInit)),
+  }
   debugLog("input-id retry response", {
     status: retried.status,
     contentType: retried.headers.get("content-type") ?? undefined,
   })
-  return { response: retried, retried: true as const, nextInit }
+  return { response: retried, retried: true as const, nextInit, retryState }
 }
 
 function toRetryableSystemError(error: unknown): RetryableSystemError {
@@ -420,6 +506,37 @@ function isCopilotUrl(request: Request | URL | string) {
     return isCopilotHost
   } catch {
     return false
+  }
+}
+
+async function getInputIdRetryErrorDetails(response: Response) {
+  if (response.status !== 400) return undefined
+
+  const responseText = await response
+    .clone()
+    .text()
+    .catch(() => "")
+  if (!responseText) return undefined
+
+  let parsed = parseInputIdTooLongDetails(responseText)
+  let matched = parsed.matched
+  let message = responseText
+  if (!matched) {
+    try {
+      const bodyPayload = JSON.parse(responseText)
+      const error = (bodyPayload as { error?: { message?: unknown } }).error
+      message = String(error?.message ?? "")
+      parsed = parseInputIdTooLongDetails(message)
+      matched = parsed.matched || isInputIdTooLongErrorBody(bodyPayload)
+    } catch {
+      matched = false
+    }
+  }
+
+  if (!matched) return undefined
+  return {
+    serverReportedIndex: parsed.serverReportedIndex,
+    errorMessagePreview: buildMessagePreview(message),
   }
 }
 
@@ -503,11 +620,43 @@ export function createCopilotRetryingFetch(
       if (isCopilotUrl(safeRequest)) {
         let currentResponse = response
         let currentInit = effectiveInit
-        for (let attempt = 0; attempt < MAX_INPUT_ID_REPAIR_ATTEMPTS; attempt += 1) {
+        let attempts = 0
+        while (attempts < INPUT_ID_REPAIR_HARD_LIMIT) {
+          const remainingCandidates = countLongInputIdCandidates(parseJsonBody(currentInit))
+          if (remainingCandidates === 0) break
+
           const result = await maybeRetryInputIdTooLong(safeRequest, currentInit, currentResponse, baseFetch, options, sessionID)
           currentResponse = result.response
           currentInit = result.nextInit
+          if (result.retryState) {
+            const currentError = await getInputIdRetryErrorDetails(currentResponse)
+            let stopReason: string | undefined
+            if (result.retryState.remainingLongIdCandidatesAfter >= result.retryState.remainingLongIdCandidatesBefore) {
+              stopReason = "remaining-candidates-not-reduced"
+            } else if (currentError) {
+              const serverIndexChanged = result.retryState.previousServerReportedIndex !== currentError.serverReportedIndex
+              const errorMessageChanged = result.retryState.previousErrorMessagePreview !== currentError.errorMessagePreview
+              if (!serverIndexChanged && !errorMessageChanged) {
+                stopReason = "server-error-unchanged"
+              }
+            }
+            if (currentError || stopReason) {
+              debugLog("input-id retry progress", {
+                attempt: attempts + 1,
+                previousServerReportedIndex: result.retryState.previousServerReportedIndex,
+                currentServerReportedIndex: currentError?.serverReportedIndex,
+                serverIndexChanged: result.retryState.previousServerReportedIndex !== currentError?.serverReportedIndex,
+                previousErrorMessagePreview: result.retryState.previousErrorMessagePreview,
+                currentErrorMessagePreview: currentError?.errorMessagePreview,
+                remainingLongIdCandidatesBefore: result.retryState.remainingLongIdCandidatesBefore,
+                remainingLongIdCandidatesAfter: result.retryState.remainingLongIdCandidatesAfter,
+                stopReason,
+              })
+            }
+            if (stopReason) break
+          }
           if (!result.retried) break
+          attempts += 1
         }
         return withStreamDebugLogs(currentResponse, safeRequest)
       }
