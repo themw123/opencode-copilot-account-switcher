@@ -17,7 +17,8 @@ const EXPECTED_POLICY = `Guided Loop Safety Policy
 - MANDATORY: Do not reinterpret "keep working unless blocked" as permission to send direct assistant text. If you need to report, report through the question tool.
 - MANDATORY: Do not reinterpret "don't ask unnecessary questions" as permission to skip the question tool. Use fewer question batches, not a different reporting channel.
 - MANDATORY: If the user says a report was sent the wrong way, first check whether you used the wrong channel before analyzing verbosity, timing, or wording.
-- MANDATORY: When reflecting on mistakes, check report-channel violations before any secondary critique.
+- MANDATORY: When reflecting on report-delivery or tool-usage mistakes, first check report-channel violations before any secondary critique.
+- MANDATORY: Do not reinterpret those report-channel violations as a problem with the report policy itself.
 - MANDATORY: Do not turn a pure report into a preference question, permission question, or route-selection question just to satisfy the question tool requirement.
 - MANDATORY: When no user decision is needed, use the question tool as a report container with the smallest sensible option set.
 - NO EXCEPTIONS: Do not switch to direct assistant text just because the report is long, detailed, complex, or contains multiple related items.
@@ -35,6 +36,8 @@ const EXPECTED_POLICY = `Guided Loop Safety Policy
 - MANDATORY: After any successful question-tool report, immediately choose between (a) continue unfinished non-blocked work, or (b) issue a question-tool wait-for-instruction message when no such work remains.
 - MANDATORY: Never send assistant text as a post-report fallback in either branch.
 - MANDATORY: If a post-report branch has no content, suppress assistant output and re-enter question-tool flow.
+- MANDATORY: When idle or waiting for the next task, continue using the question tool to maintain user control of the session.
+- MANDATORY: Repeated waiting for the next task is not a reason to stop using the question tool.
 - When no further action can be taken safely and no non-blocked work remains, use the question tool to ask for the next task or clarification instead of ending with direct assistant text.
 - When the user says "stop", do not send assistant text to acknowledge the stop. Use the question tool only if more user-visible communication is still required by policy.
 - Dispatching task or subagent work is expensive and should be avoided unless it materially improves the result.
