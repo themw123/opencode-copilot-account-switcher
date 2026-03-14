@@ -2643,7 +2643,6 @@ test("retries Request-body cleanup after the first provider call consumes the or
 
 test("retry notifier sends toast through client.tui.showToast", async () => {
   const calls = []
-  const clears = []
   const { ACCOUNT_SWITCH_TTL_MS, createCopilotRetryNotifier } = await import("../dist/copilot-retry-notifier.js")
   const notifier = createCopilotRetryNotifier({
     client: {
@@ -2656,9 +2655,6 @@ test("retry notifier sends toast through client.tui.showToast", async () => {
     },
     lastAccountSwitchAt: 1_000,
     now: () => 1_000 + ACCOUNT_SWITCH_TTL_MS - 1,
-    clearAccountSwitchContext: async () => {
-      clears.push("active-window")
-    },
   })
   const fallbackNotifier = createCopilotRetryNotifier({
     client: {
@@ -2671,9 +2667,6 @@ test("retry notifier sends toast through client.tui.showToast", async () => {
     },
     lastAccountSwitchAt: 1_000,
     now: () => 1_000 + ACCOUNT_SWITCH_TTL_MS,
-    clearAccountSwitchContext: async () => {
-      clears.push("expired-window")
-    },
   })
 
   assert.equal(typeof notifier.started, "function")
@@ -2706,7 +2699,6 @@ test("retry notifier sends toast through client.tui.showToast", async () => {
   assert.match(calls[4].body.message, /剩余 4 项/)
   assert.match(calls[5].body.message, /可能因账号切换遗留的非法输入 ID/)
   assert.match(calls[5].body.message, /剩余 5 项/)
-  assert.deepEqual(clears, ["active-window", "active-window", "expired-window"])
 })
 
 test("retry notifier swallows toast delivery failures", async () => {

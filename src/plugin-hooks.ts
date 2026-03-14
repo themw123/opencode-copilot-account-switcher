@@ -8,6 +8,7 @@ import {
   type CopilotRetryContext,
   type FetchLike,
 } from "./copilot-network-retry.js"
+import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
 import { readStoreSafe, type StoreFile } from "./store.js"
 import {
   loadOfficialCopilotConfig,
@@ -40,6 +41,21 @@ type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
   "chat.headers"?: ChatHeadersHook
 }
 
+type RetryStoreContext = {
+  networkRetryEnabled?: boolean
+  lastAccountSwitchAt?: number
+}
+
+function readRetryStoreContext(store: StoreFile | undefined): RetryStoreContext | undefined {
+  if (!store) return undefined
+
+  const maybeLastAccountSwitchAt = (store as StoreFile & { lastAccountSwitchAt?: unknown }).lastAccountSwitchAt
+  return {
+    networkRetryEnabled: store.networkRetryEnabled,
+    lastAccountSwitchAt: typeof maybeLastAccountSwitchAt === "number" ? maybeLastAccountSwitchAt : undefined,
+  }
+}
+
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
@@ -51,10 +67,17 @@ export function buildPluginHooks(input: {
   client?: CopilotRetryContext["client"]
   directory?: CopilotRetryContext["directory"]
   serverUrl?: CopilotRetryContext["serverUrl"]
+  clearAccountSwitchContext?: (lastAccountSwitchAt?: number) => Promise<void>
+  now?: () => number
 }): CopilotPluginHooksWithChatHeaders {
   const loadStore = input.loadStore ?? readStoreSafe
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
+
+  const getLatestLastAccountSwitchAt = async () => {
+    const store = readRetryStoreContext(await loadStore().catch(() => undefined))
+    return store?.lastAccountSwitchAt
+  }
 
   const loader: AuthLoader = async (getAuth, provider) => {
     const config = await loadOfficialConfig({
@@ -63,7 +86,7 @@ export function buildPluginHooks(input: {
     })
     if (!config) return {}
 
-    const store = await loadStore().catch(() => undefined)
+    const store = readRetryStoreContext(await loadStore().catch(() => undefined))
     if (store?.networkRetryEnabled !== true) {
       return config
     }
@@ -74,6 +97,17 @@ export function buildPluginHooks(input: {
         client: input.client,
         directory: input.directory,
         serverUrl: input.serverUrl,
+        lastAccountSwitchAt: store.lastAccountSwitchAt,
+        notifier: createCopilotRetryNotifier({
+          client: input.client,
+          lastAccountSwitchAt: store.lastAccountSwitchAt,
+          getLastAccountSwitchAt: getLatestLastAccountSwitchAt,
+          clearAccountSwitchContext: input.clearAccountSwitchContext,
+          now: input.now,
+        }),
+        clearAccountSwitchContext: input.clearAccountSwitchContext
+          ? async () => input.clearAccountSwitchContext?.(store.lastAccountSwitchAt)
+          : undefined,
       }),
     }
   }

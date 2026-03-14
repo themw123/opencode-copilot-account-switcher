@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { promises as fs } from "node:fs"
 
+import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
 import { buildPluginHooks } from "../dist/plugin-hooks.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
@@ -196,6 +197,282 @@ test("plugin auth loader passes plugin context into retry wrapper factory", asyn
   assert.equal(calls[0].ctx?.directory, "C:/repo")
   assert.equal(calls[0].ctx?.serverUrl?.href, "http://localhost:4096/")
 })
+
+test("plugin auth loader only wires explicitly provided account switch clear callback", async () => {
+  const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const calls = []
+  const clearCalls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      lastAccountSwitchAt: 1_717_171_717_171,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: officialFetch,
+    }),
+    createRetryFetch: (fetch, ctx) => {
+      calls.push({ fetch, ctx })
+      return fetch
+    },
+    clearAccountSwitchContext: async (lastAccountSwitchAt) => {
+      clearCalls.push(lastAccountSwitchAt)
+    },
+    directory: "C:/repo",
+    serverUrl: new URL("http://localhost:4096"),
+  })
+
+  await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].ctx?.lastAccountSwitchAt, 1_717_171_717_171)
+  assert.equal(typeof calls[0].ctx?.clearAccountSwitchContext, "function")
+  await calls[0].ctx?.clearAccountSwitchContext?.()
+  assert.deepEqual(clearCalls, [1_717_171_717_171])
+})
+
+test("plugin auth loader leaves account switch clear callback undefined by default", async () => {
+  const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      lastAccountSwitchAt: 1_717_171_717_171,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: officialFetch,
+    }),
+    createRetryFetch: (fetch, ctx) => {
+      calls.push({ fetch, ctx })
+      return fetch
+    },
+  })
+
+  await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].ctx?.clearAccountSwitchContext, undefined)
+})
+
+test("plugin auth loader instantiates notifier and injects its interface into retry wrapper", async () => {
+  const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const retryCalls = []
+  const toastCalls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      lastAccountSwitchAt: 1_717_171_717_171,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: officialFetch,
+    }),
+    createRetryFetch: (fetch, ctx) => {
+      retryCalls.push({ fetch, ctx })
+      return fetch
+    },
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toastCalls.push(options)
+          return { data: true }
+        },
+      },
+    },
+  })
+
+  await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  assert.equal(retryCalls.length, 1)
+  assert.equal(typeof retryCalls[0].ctx?.notifier?.started, "function")
+  assert.equal(typeof retryCalls[0].ctx?.notifier?.progress, "function")
+  assert.equal(typeof retryCalls[0].ctx?.notifier?.repairWarning, "function")
+  assert.equal(typeof retryCalls[0].ctx?.notifier?.completed, "function")
+  assert.equal(typeof retryCalls[0].ctx?.notifier?.stopped, "function")
+  assert.equal("tui" in retryCalls[0].ctx.notifier, false)
+
+  await retryCalls[0].ctx.notifier.started({ remaining: 2 })
+  assert.equal(toastCalls.length, 1)
+  assert.match(toastCalls[0].body.message, /剩余 2 项/)
+})
+
+test("plugin auth loader notifier is a no-op when plugin client toast sdk is unavailable", async () => {
+  const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const retryCalls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      lastAccountSwitchAt: 1_717_171_717_171,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: officialFetch,
+    }),
+    createRetryFetch: (fetch, ctx) => {
+      retryCalls.push({ fetch, ctx })
+      return fetch
+    },
+  })
+
+  await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  assert.equal(retryCalls.length, 1)
+  await assert.doesNotReject(async () => {
+    await retryCalls[0].ctx.notifier.started({ remaining: 3 })
+    await retryCalls[0].ctx.notifier.progress({ remaining: 2 })
+    await retryCalls[0].ctx.notifier.repairWarning({ remaining: 2 })
+    await retryCalls[0].ctx.notifier.completed({ remaining: 0 })
+    await retryCalls[0].ctx.notifier.stopped({ remaining: 1 })
+  })
+})
+
+test("plugin auth loader notifier reads latest account switch context from store after loader setup", async () => {
+  const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const toastCalls = []
+  const now = 1_717_171_900_000
+  const recentSwitchAt = now - 5_000
+  const expiredSwitchAt = now - ACCOUNT_SWITCH_TTL_MS - 1
+  const store = {
+    active: "account",
+    accounts: {
+      account: { name: "account", refresh: "r", access: "a", expires: 0 },
+    },
+    loopSafetyEnabled: false,
+    networkRetryEnabled: true,
+  }
+  let retryContext
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => store,
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: officialFetch,
+    }),
+    createRetryFetch: (fetch, ctx) => {
+      retryContext = ctx
+      return fetch
+    },
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toastCalls.push(options)
+          return { data: true }
+        },
+      },
+    },
+    now: () => now,
+  })
+
+  await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  assert.equal(typeof retryContext?.notifier?.started, "function")
+
+  store.lastAccountSwitchAt = recentSwitchAt
+  await retryContext.notifier.started({ remaining: 2 })
+
+  assert.match(toastCalls[0].body.message, /正在清理可能因账号切换遗留的非法输入 ID/)
+
+  store.lastAccountSwitchAt = expiredSwitchAt
+  await retryContext.notifier.progress({ remaining: 1 })
+
+  assert.match(toastCalls[1].body.message, /正在清理可能因账号切换遗留的非法输入 ID/)
+  assert.equal(store.lastAccountSwitchAt, expiredSwitchAt)
+})
+
+test("plugin auth loader notifier keeps captured account-switch copy after external context clears", async () => {
+  const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const toastCalls = []
+  const now = 1_717_171_900_000
+  const initialSwitchAt = now - 5_000
+  const store = {
+    active: "account",
+    lastAccountSwitchAt: initialSwitchAt,
+    accounts: {
+      account: { name: "account", refresh: "r", access: "a", expires: 0 },
+    },
+    loopSafetyEnabled: false,
+    networkRetryEnabled: true,
+  }
+  let retryContext
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => store,
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: officialFetch,
+    }),
+    createRetryFetch: (fetch, ctx) => {
+      retryContext = ctx
+      return fetch
+    },
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toastCalls.push(options)
+          return { data: true }
+        },
+      },
+    },
+    now: () => now,
+  })
+
+  await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  store.lastAccountSwitchAt = undefined
+  await retryContext.notifier.progress({ remaining: 1 })
+
+  assert.match(toastCalls[0].body.message, /正在清理可能因账号切换遗留的非法输入 ID/)
+})
+
 
 test("plugin auth loader returns empty config when official loader has no oauth config", async () => {
   const plugin = buildPluginHooks({
