@@ -54,6 +54,8 @@ async function clearContext(ctx: RetryNotifierContext) {
 }
 
 export function createCopilotRetryNotifier(ctx: RetryNotifierContext) {
+  let lastExpiredContextClearedAt: number | undefined
+
   async function send(variant: ToastVariant, detail: string, state: RetryToastState, clear = false) {
     const now = ctx.now ?? Date.now
     const lastAccountSwitchAt = await resolveToastAccountSwitchAt(ctx)
@@ -69,12 +71,25 @@ export function createCopilotRetryNotifier(ctx: RetryNotifierContext) {
       console.warn("[copilot-retry-notifier] failed to show toast", error)
     }
 
+    if (
+      !clear
+      && isAccountSwitchContextExpired(lastAccountSwitchAt, now)
+      && lastAccountSwitchAt !== lastExpiredContextClearedAt
+    ) {
+      lastExpiredContextClearedAt = lastAccountSwitchAt
+      await clearContext({
+        ...ctx,
+        clearAccountSwitchContext: async () => {
+          await ctx.clearAccountSwitchContext?.(lastAccountSwitchAt)
+        },
+      })
+    }
+
     if (!clear) return
 
     await clearContext({
       ...ctx,
       clearAccountSwitchContext: async () => {
-        if (!isAccountSwitchContextExpired(lastAccountSwitchAt, now)) return
         await ctx.clearAccountSwitchContext?.(lastAccountSwitchAt)
       },
     })

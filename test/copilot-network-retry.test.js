@@ -2701,6 +2701,36 @@ test("retry notifier sends toast through client.tui.showToast", async () => {
   assert.match(calls[5].body.message, /剩余 5 项/)
 })
 
+test("retry notifier completed clears the dynamically resolved account switch context", async () => {
+  const clearCalls = []
+  const { createCopilotRetryNotifier } = await import(`../dist/copilot-retry-notifier.js?completed-clear-${Date.now()}`)
+  const notifier = createCopilotRetryNotifier({
+    getLastAccountSwitchAt: () => 1_717_171_717_171,
+    clearAccountSwitchContext: async (lastAccountSwitchAt) => {
+      clearCalls.push(lastAccountSwitchAt)
+    },
+  })
+
+  await notifier.completed({ remaining: 0 })
+
+  assert.deepEqual(clearCalls, [1_717_171_717_171])
+})
+
+test("retry notifier stopped clears the dynamically resolved account switch context", async () => {
+  const clearCalls = []
+  const { createCopilotRetryNotifier } = await import(`../dist/copilot-retry-notifier.js?stopped-clear-${Date.now()}`)
+  const notifier = createCopilotRetryNotifier({
+    getLastAccountSwitchAt: () => 1_717_171_727_272,
+    clearAccountSwitchContext: async (lastAccountSwitchAt) => {
+      clearCalls.push(lastAccountSwitchAt)
+    },
+  })
+
+  await notifier.stopped({ remaining: 1 })
+
+  assert.deepEqual(clearCalls, [1_717_171_727_272])
+})
+
 test("retry notifier swallows toast delivery failures", async () => {
   const { createCopilotRetryNotifier } = await import(`../dist/copilot-retry-notifier.js?swallow-${Date.now()}`)
   const notifier = createCopilotRetryNotifier({

@@ -25,6 +25,33 @@ test("parseStore preserves networkRetryEnabled when explicitly true", () => {
   assert.equal(store.networkRetryEnabled, true)
 })
 
+test("parseStore keeps lastAccountSwitchAt when present", () => {
+  const store = parseStore(
+    '{"accounts":{"primary":{"refresh":"r","access":"a","expires":1}},"lastAccountSwitchAt":1735689600000}'
+  )
+
+  assert.equal(store.lastAccountSwitchAt, 1735689600000)
+  assert.equal(store.accounts.primary.name, "primary")
+})
+
+test("parseStore clears lastAccountSwitchAt when it is not numeric", () => {
+  const store = parseStore(
+    '{"accounts":{"primary":{"refresh":"r","access":"a","expires":1}},"lastAccountSwitchAt":"1735689600000"}'
+  )
+
+  assert.equal(store.lastAccountSwitchAt, undefined)
+  assert.equal(store.accounts.primary.name, "primary")
+})
+
+test("parseStore leaves lastAccountSwitchAt undefined by default", () => {
+  const store = parseStore('{"accounts":{"secondary":{"refresh":"r","access":"a","expires":1}}}')
+
+  assert.equal(store.lastAccountSwitchAt, undefined)
+  assert.equal(store.loopSafetyEnabled, true)
+  assert.equal(store.networkRetryEnabled, false)
+  assert.equal(store.accounts.secondary.name, "secondary")
+})
+
 test("parseStore throws on malformed JSON for strict readers", () => {
   assert.throws(() => parseStore("{"))
 })

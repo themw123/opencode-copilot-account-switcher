@@ -59,6 +59,7 @@ export type StoreFile = {
   accounts: Record<string, AccountEntry>
   autoRefresh?: boolean
   refreshMinutes?: number
+  lastAccountSwitchAt?: number
   lastQuotaRefresh?: number
   loopSafetyEnabled?: boolean
   networkRetryEnabled?: boolean
@@ -80,6 +81,9 @@ export function authPath(): string {
 export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
   if (!data.accounts) data.accounts = {}
+  if (typeof data.lastAccountSwitchAt !== "number" || Number.isNaN(data.lastAccountSwitchAt)) {
+    delete data.lastAccountSwitchAt
+  }
   if (data.loopSafetyEnabled !== false) data.loopSafetyEnabled = true
   if (data.networkRetryEnabled !== true) data.networkRetryEnabled = false
   for (const [name, entry] of Object.entries(data.accounts)) {
