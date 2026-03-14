@@ -32,6 +32,9 @@ const EXPECTED_POLICY = `Guided Loop Safety Policy
 - Present the highest-priority information first and defer secondary details to later question batches when needed.
 - Even when no explicit decision is required, use brief question-tool status updates instead of direct assistant text whenever the tool is available.
 - Avoid unnecessary question frequency; combine small related updates when a single question call can cover them clearly.
+- MANDATORY: After any successful question-tool report, immediately choose between (a) continue unfinished non-blocked work, or (b) issue a question-tool wait-for-instruction message when no such work remains.
+- MANDATORY: Never send assistant text as a post-report fallback in either branch.
+- MANDATORY: If a post-report branch has no content, suppress assistant output and re-enter question-tool flow.
 - When no further action can be taken safely and no non-blocked work remains, use the question tool to ask for the next task or clarification instead of ending with direct assistant text.
 - When the user says "stop", do not send assistant text to acknowledge the stop. Use the question tool only if more user-visible communication is still required by policy.
 - Dispatching task or subagent work is expensive and should be avoided unless it materially improves the result.
