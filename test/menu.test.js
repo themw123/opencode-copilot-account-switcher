@@ -1,7 +1,21 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { buildMenuItems } from "../dist/ui/menu.js"
+import { buildMenuItems, getMenuCopy } from "../dist/ui/menu.js"
+
+test("getMenuCopy returns Chinese copy by default", () => {
+  const copy = getMenuCopy()
+
+  assert.equal(copy.menuTitle, "GitHub Copilot 账号")
+  assert.equal(copy.switchLanguageLabel, "Switch to English")
+})
+
+test("getMenuCopy returns English copy when requested", () => {
+  const copy = getMenuCopy("en")
+
+  assert.equal(copy.menuTitle, "GitHub Copilot accounts")
+  assert.equal(copy.switchLanguageLabel, "切换到中文")
+})
 
 test("buildMenuItems shows Enable guided loop safety when disabled", () => {
   const items = buildMenuItems({
@@ -9,6 +23,7 @@ test("buildMenuItems shows Enable guided loop safety when disabled", () => {
     refresh: { enabled: false, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
+    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Enable guided loop safety")
@@ -22,6 +37,7 @@ test("buildMenuItems shows Disable guided loop safety when enabled", () => {
     refresh: { enabled: true, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: true,
+    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Disable guided loop safety")
@@ -34,6 +50,7 @@ test("guided loop safety toggle is placed after Set refresh interval", () => {
     refresh: { enabled: false, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
+    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -49,6 +66,7 @@ test("guided loop safety toggle stays inside the Actions section before the sepa
     refresh: { enabled: false, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
+    language: "en",
   })
 
   const toggleIndex = items.findIndex((item) => item.label === "Enable guided loop safety")
@@ -66,6 +84,7 @@ test("buildMenuItems shows Enable Copilot network retry when disabled", () => {
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: false,
+    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Enable Copilot network retry")
@@ -80,6 +99,7 @@ test("buildMenuItems shows Disable Copilot network retry when enabled", () => {
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: true,
+    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Disable Copilot network retry")
@@ -94,6 +114,7 @@ test("Copilot network retry toggle is placed after guided loop safety and before
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: false,
+    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -106,4 +127,17 @@ test("Copilot network retry toggle is placed after guided loop safety and before
   assert.notEqual(separatorIndex, -1)
   assert.equal(retryIndex, loopSafetyIndex + 1)
   assert.equal(retryIndex < separatorIndex, true)
+})
+
+test("buildMenuItems includes a language switch action", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+  })
+
+  const toggle = items.find((item) => item.label === "Switch to English")
+  assert.ok(toggle)
 })

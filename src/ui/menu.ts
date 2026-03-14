@@ -34,12 +34,69 @@ export type MenuAction =
   | { type: "check-models" }
   | { type: "toggle-refresh" }
   | { type: "set-interval" }
+  | { type: "toggle-language" }
   | { type: "toggle-loop-safety" }
   | { type: "toggle-network-retry" }
   | { type: "switch"; account: AccountInfo }
   | { type: "remove"; account: AccountInfo }
   | { type: "remove-all" }
   | { type: "cancel" }
+
+export type MenuLanguage = "zh" | "en"
+
+export function getMenuCopy(language: MenuLanguage = "zh") {
+  if (language === "en") {
+    return {
+      menuTitle: "GitHub Copilot accounts",
+      menuSubtitle: "Select an action or account",
+      switchLanguageLabel: "切换到中文",
+      actionsHeading: "Actions",
+      addAccount: "Add account",
+      addAccountHint: "device login or manual",
+      importAuth: "Import from auth.json",
+      checkQuotas: "Check quotas",
+      refreshIdentity: "Refresh identity",
+      checkModels: "Check models",
+      enableRefresh: "Enable auto refresh",
+      disableRefresh: "Disable auto refresh",
+      setRefresh: "Set refresh interval",
+      enableLoopSafety: "Enable guided loop safety",
+      disableLoopSafety: "Disable guided loop safety",
+      loopSafetyHint: "Prompt-guided: fewer report interruptions, fewer unnecessary subagents",
+      enableRetry: "Enable Copilot network retry",
+      disableRetry: "Disable Copilot network retry",
+      retryHint: "Overrides official fetch path; may drift from upstream",
+      accountsHeading: "Accounts",
+      dangerHeading: "Danger zone",
+      removeAll: "Remove all accounts",
+    }
+  }
+
+  return {
+    menuTitle: "GitHub Copilot 账号",
+    menuSubtitle: "请选择操作或账号",
+    switchLanguageLabel: "Switch to English",
+    actionsHeading: "操作",
+    addAccount: "添加账号",
+    addAccountHint: "设备登录或手动录入",
+    importAuth: "从 auth.json 导入",
+    checkQuotas: "检查配额",
+    refreshIdentity: "刷新身份信息",
+    checkModels: "检查模型",
+    enableRefresh: "开启自动刷新",
+    disableRefresh: "关闭自动刷新",
+    setRefresh: "设置刷新间隔",
+    enableLoopSafety: "开启 Guided Loop Safety",
+    disableLoopSafety: "关闭 Guided Loop Safety",
+    loopSafetyHint: "提示词引导：减少汇报打断与不必要子代理",
+    enableRetry: "开启 Copilot Network Retry",
+    disableRetry: "关闭 Copilot Network Retry",
+    retryHint: "包装官方 fetch；可能随 upstream 产生漂移",
+    accountsHeading: "账号",
+    dangerHeading: "危险操作",
+    removeAll: "删除全部账号",
+  }
+}
 
 function formatRelativeTime(timestamp: number | undefined): string {
   if (!timestamp) return "never"
@@ -67,37 +124,40 @@ export function buildMenuItems(input: {
   lastQuotaRefresh?: number
   loopSafetyEnabled: boolean
   networkRetryEnabled: boolean
+  language?: MenuLanguage
 }): MenuItem<MenuAction>[] {
+  const copy = getMenuCopy(input.language)
   const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
 
   return [
-    { label: "Actions", value: { type: "cancel" }, kind: "heading" },
-    { label: "Add account", value: { type: "add" }, color: "cyan", hint: "device login or manual" },
-    { label: "Import from auth.json", value: { type: "import" }, color: "cyan" },
-    { label: "Check quotas", value: { type: "quota" }, color: "cyan", hint: quotaHint },
-    { label: "Refresh identity", value: { type: "refresh-identity" }, color: "cyan" },
-    { label: "Check models", value: { type: "check-models" }, color: "cyan" },
+    { label: copy.actionsHeading, value: { type: "cancel" }, kind: "heading" },
+    { label: copy.switchLanguageLabel, value: { type: "toggle-language" }, color: "cyan" },
+    { label: copy.addAccount, value: { type: "add" }, color: "cyan", hint: copy.addAccountHint },
+    { label: copy.importAuth, value: { type: "import" }, color: "cyan" },
+    { label: copy.checkQuotas, value: { type: "quota" }, color: "cyan", hint: quotaHint },
+    { label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" },
+    { label: copy.checkModels, value: { type: "check-models" }, color: "cyan" },
     {
-      label: input.refresh?.enabled ? "Disable auto refresh" : "Enable auto refresh",
+      label: input.refresh?.enabled ? copy.disableRefresh : copy.enableRefresh,
       value: { type: "toggle-refresh" },
       color: "cyan",
       hint: input.refresh ? `${input.refresh.minutes}m` : undefined,
     },
-    { label: "Set refresh interval", value: { type: "set-interval" }, color: "cyan" },
+    { label: copy.setRefresh, value: { type: "set-interval" }, color: "cyan" },
     {
-      label: input.loopSafetyEnabled ? "Disable guided loop safety" : "Enable guided loop safety",
+      label: input.loopSafetyEnabled ? copy.disableLoopSafety : copy.enableLoopSafety,
       value: { type: "toggle-loop-safety" },
       color: "cyan",
-      hint: "Prompt-guided: fewer report interruptions, fewer unnecessary subagents",
+      hint: copy.loopSafetyHint,
     },
     {
-      label: input.networkRetryEnabled ? "Disable Copilot network retry" : "Enable Copilot network retry",
+      label: input.networkRetryEnabled ? copy.disableRetry : copy.enableRetry,
       value: { type: "toggle-network-retry" },
       color: "cyan",
-      hint: "Overrides official fetch path; may drift from upstream",
+      hint: copy.retryHint,
     },
     { label: "", value: { type: "cancel" }, separator: true },
-    { label: "Accounts", value: { type: "cancel" }, kind: "heading" },
+    { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
     ...input.accounts.map((account) => {
       const statusBadge = getStatusBadge(account.status)
       const currentBadge = account.isCurrent ? ` ${ANSI.cyan}*${ANSI.reset}` : ""
@@ -122,8 +182,8 @@ export function buildMenuItems(input: {
       }
     }),
     { label: "", value: { type: "cancel" }, separator: true },
-    { label: "Danger zone", value: { type: "cancel" }, kind: "heading" },
-    { label: "Remove all accounts", value: { type: "remove-all" }, color: "red" },
+    { label: copy.dangerHeading, value: { type: "cancel" }, kind: "heading" },
+    { label: copy.removeAll, value: { type: "remove-all" }, color: "red" },
   ]
 }
 
@@ -133,23 +193,31 @@ export async function showMenu(
   lastQuotaRefresh?: number,
   loopSafetyEnabled = false,
   networkRetryEnabled = false,
+  language: MenuLanguage = "zh",
 ): Promise<MenuAction> {
-  const items = buildMenuItems({
-    accounts,
-    refresh,
-    lastQuotaRefresh,
-    loopSafetyEnabled,
-    networkRetryEnabled,
-  })
+  let currentLanguage = language
 
   while (true) {
+    const copy = getMenuCopy(currentLanguage)
+    const items = buildMenuItems({
+      accounts,
+      refresh,
+      lastQuotaRefresh,
+      loopSafetyEnabled,
+      networkRetryEnabled,
+      language: currentLanguage,
+    })
     const result = await select(items, {
-      message: "GitHub Copilot accounts",
-      subtitle: "Select an action or account",
+      message: copy.menuTitle,
+      subtitle: copy.menuSubtitle,
       clearScreen: true,
     })
 
     if (!result) return { type: "cancel" }
+    if (result.type === "toggle-language") {
+      currentLanguage = currentLanguage === "zh" ? "en" : "zh"
+      continue
+    }
     if (result.type === "remove-all") {
       const ok = await confirm("Remove ALL accounts? This cannot be undone.")
       if (!ok) continue

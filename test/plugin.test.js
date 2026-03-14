@@ -268,6 +268,13 @@ test("plugin menu wiring passes networkRetryEnabled into showMenu", async () => 
   assert.match(pluginSource, /store\.networkRetryEnabled === true/)
 })
 
+test("plugin switch flow prints retry hint after account switch", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.match(pluginSource, /input\[\*\]\.id too long/)
+  assert.match(pluginSource, /enable Copilot Network Retry from the menu/i)
+})
+
 test("plugin transform wiring appends for Copilot and skips non-Copilot", async () => {
   const plugin = buildPluginHooks({
     auth: {

@@ -784,6 +784,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         store.active = name
         store.accounts[name].lastUsed = now()
         await writeStore(store)
+        console.log("Switched account. If a later Copilot session hits input[*].id too long after switching, enable Copilot Network Retry from the menu.")
         continue
       }
     }

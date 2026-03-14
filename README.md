@@ -4,157 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dw/opencode-copilot-account-switcher.svg)](https://www.npmjs.com/package/opencode-copilot-account-switcher)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-brightgreen.svg)](LICENSE)
 
-[English](#english) | [中文](#中文)
-
----
-
-<a name="english"></a>
-
-## English
-
-Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, a default-on **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input, and an optional **Copilot Network Retry** switch for retryable network and certificate failures. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
-
-## What You Get
-
-- **Multi-account support** — add multiple Copilot accounts and switch anytime
-- **Quota check** — view remaining quota per account
-- **Auth import** — import Copilot tokens from OpenCode auth storage
-- **Guided Loop Safety** — enabled by default; a stricter Copilot-only question-first policy designed to keep non-blocked work moving, keep one premium request productive for hours, and cut avoidable quota burn by replacing repeated interruption turns with `question`-based waiting
-- **Copilot Network Retry** — optional and off by default; normalizes retryable Copilot network or TLS failures so OpenCode's native retry path can handle them
-- **Zero model config** — no model changes required (official provider only)
-
----
-
-## Installation
-
-<details open>
-<summary><b>For Humans</b></summary>
-
-**Option A: Let an LLM do it**
-
-Paste this into any LLM agent (OpenCode, Claude Code, Cursor, etc.):
-
-```
-Install the opencode-copilot-account-switcher plugin by following: https://raw.githubusercontent.com/jiwangyihao/opencode-copilot-account-switcher/master/README.md
-```
-
-**Option B: Manual setup**
-
-1. **Add the plugin** to `~/.config/opencode/opencode.json`:
-
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-copilot-account-switcher"]
-   }
-   ```
-
-2. **Restart OpenCode** (it will auto-download the plugin from npm).
-
-3. **Login** to GitHub Copilot:
-
-   ```bash
-   opencode auth login --provider github-copilot
-   ```
-
-</details>
-
-<details>
-<summary><b>For LLM Agents</b></summary>
-
-### Step-by-Step Instructions
-
-1. Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`
-
-   > **Note**: This path works on all platforms. On Windows, `~` resolves to your user home directory (e.g., `C:\Users\YourName`).
-
-2. Add the plugin to the `plugin` array:
-
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-copilot-account-switcher"]
-   }
-   ```
-
-3. Restart OpenCode so it fetches the plugin automatically from npm.
-
-### Verification
-
-```bash
-opencode auth login --provider github-copilot
-```
-
-</details>
-
----
-
-## Usage
-
-Run inside the GitHub Copilot auth flow:
-
-```bash
-opencode auth login --provider github-copilot
-```
-
-You will see an interactive menu (arrow keys + enter) with actions:
-
-- **Add account**
-- **Import from auth.json**
-- **Check quotas**
-- **Guided Loop Safety** — prompt-guided question-first reporting that requires `question` for user-facing reports when available, keeps non-blocked work moving, reduces repeated interruptions, and avoids unnecessary subagent calls
-- **Copilot Network Retry** — off by default; only affects the Copilot request `fetch` path and only for retryable network/certificate-style failures
-- **Switch account**
-- **Remove account**
-- **Remove all**
-
-Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, user-facing reports must go through it, so waiting for your reply does not keep burning extra quota the way repeated direct-status interruptions do. Fewer interruptions also means less avoidable quota burn. If safe non-blocked work remains, Copilot should keep going instead of pausing early; only when no safe action remains should it use `question` to ask for the next task or clarification, while also reducing unnecessary subagent calls.
-
-If you switch Copilot accounts and then hit transient TLS/network failures or `input[*].id too long` errors caused by stale session item IDs, enable Copilot Network Retry from the same menu. It is off by default. When enabled, the plugin keeps the official Copilot header/baseURL behavior from the upstream loader, only wraps the final Copilot `fetch` path, and converts retryable network-like failures into a shape that OpenCode already treats as retryable. It also repairs the matched session part after an `input[*].id too long` 400 so later retries can recover instead of repeatedly failing on stale item IDs.
-
-## Copilot Network Retry
-
-- Default: **disabled**
-- Scope: only the official Copilot request `fetch` path returned by `auth.loader`
-- Purpose: limited handling for retryable network and certificate-style failures such as `failed to fetch`, `ECONNRESET`, `unknown certificate`, or `self signed certificate`
-- Strategy: preserve official loader behavior, then normalize retryable failures so OpenCode's native retry pipeline can decide whether and when to retry
-- Risk: because the plugin still wraps the official fetch path, upstream internal behavior may change over time and drift is possible
-
-## Upstream Sync
-
-The repository includes a committed upstream snapshot at `src/upstream/copilot-plugin.snapshot.ts` plus a sync/check script at `scripts/sync-copilot-upstream.mjs`.
-
-Useful commands:
-
-```bash
-npm run sync:copilot-snapshot -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
-npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
-```
-
-The script generates or checks the committed snapshot, requires upstream metadata for repository snapshot updates, and helps catch drift from the official `opencode` `copilot.ts` implementation.
-
----
-
-## Storage
-
-Accounts are stored in:
-
-```
-~/.config/opencode/copilot-accounts.json
-```
-
----
-
-## FAQ
-
-**Do I need to change model configurations?**
-No. This plugin only manages accounts and works with the official `github-copilot` provider.
-
-**Does it replace the official provider?**
-No. It uses the official provider and only adds account switching + quota checks.
-
-**Does Copilot Network Retry replace OpenCode's retry logic?**
-No. The plugin keeps retry policy inside OpenCode by normalizing retryable Copilot network/TLS failures into a shape that OpenCode already recognizes as retryable.
+[中文](#中文) | [English](#english)
 
 ---
 
@@ -305,6 +155,147 @@ npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --s
 
 **Copilot Network Retry 会替代 OpenCode 自己的重试逻辑吗？**
 不会。插件的目标是把可重试的 Copilot 网络/TLS 失败归一化成 OpenCode 已识别的可重试错误形态，真正的是否重试与如何退避仍由 OpenCode 原生链路决定。
+
+---
+
+<a name="english"></a>
+
+## English
+
+Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, a default-on **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input, and an optional **Copilot Network Retry** switch for retryable network and certificate failures. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
+
+## What You Get
+
+- **Multi-account support** — add multiple Copilot accounts and switch anytime
+- **Quota check** — view remaining quota per account
+- **Auth import** — import Copilot tokens from OpenCode auth storage
+- **Guided Loop Safety** — enabled by default; a stricter Copilot-only question-first policy designed to keep non-blocked work moving, keep one premium request productive for hours, and cut avoidable quota burn by replacing repeated interruption turns with `question`-based waiting
+- **Copilot Network Retry** — optional and off by default; normalizes retryable Copilot network or TLS failures so OpenCode's native retry path can handle them
+- **Zero model config** — no model changes required (official provider only)
+
+---
+
+## Installation
+
+<details open>
+<summary><b>For Humans</b></summary>
+
+**Option A: Let an LLM do it**
+
+Paste this into any LLM agent (OpenCode, Claude Code, Cursor, etc.):
+
+```
+Install the opencode-copilot-account-switcher plugin by following: https://raw.githubusercontent.com/jiwangyihao/opencode-copilot-account-switcher/master/README.md
+```
+
+**Option B: Manual setup**
+
+1. **Add the plugin** to `~/.config/opencode/opencode.json`:
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": ["opencode-copilot-account-switcher"]
+   }
+   ```
+
+2. **Restart OpenCode** (it will auto-download the plugin from npm).
+
+3. **Login** to GitHub Copilot:
+
+   ```bash
+   opencode auth login --provider github-copilot
+   ```
+
+</details>
+
+<details>
+<summary><b>For LLM Agents</b></summary>
+
+### Step-by-Step Instructions
+
+1. Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`
+
+   > **Note**: This path works on all platforms. On Windows, `~` resolves to your user home directory (e.g., `C:\Users\YourName`).
+
+2. Add the plugin to the `plugin` array:
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": ["opencode-copilot-account-switcher"]
+   }
+   ```
+
+3. Restart OpenCode so it fetches the plugin automatically from npm.
+
+### Verification
+
+```bash
+opencode auth login --provider github-copilot
+```
+
+</details>
+
+---
+
+## Usage
+
+Run inside the GitHub Copilot auth flow:
+
+```bash
+opencode auth login --provider github-copilot
+```
+
+You will see an interactive menu. Use the built-in language switch action if you want to swap between Chinese and English labels.
+
+Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, user-facing reports must go through it, so waiting for your reply does not keep burning extra quota the way repeated direct-status interruptions do. Fewer interruptions also means less avoidable quota burn. If safe non-blocked work remains, Copilot should keep going instead of pausing early; only when no safe action remains should it use `question` to ask for the next task or clarification, while also reducing unnecessary subagent calls.
+
+If you switch Copilot accounts and then hit transient TLS/network failures or `input[*].id too long` errors caused by stale session item IDs, enable Copilot Network Retry from the same menu. It is off by default. When enabled, the plugin keeps the official Copilot header/baseURL behavior from the upstream loader, only wraps the final Copilot `fetch` path, and converts retryable network-like failures into a shape that OpenCode already treats as retryable. It also repairs the matched session part after an `input[*].id too long` 400 so later retries can recover instead of repeatedly failing on stale item IDs.
+
+## Copilot Network Retry
+
+- Default: **disabled**
+- Scope: only the official Copilot request `fetch` path returned by `auth.loader`
+- Purpose: limited handling for retryable network and certificate-style failures such as `failed to fetch`, `ECONNRESET`, `unknown certificate`, or `self signed certificate`
+- Strategy: preserve official loader behavior, then normalize retryable failures so OpenCode's native retry pipeline can decide whether and when to retry
+- Risk: because the plugin still wraps the official fetch path, upstream internal behavior may change over time and drift is possible
+
+## Upstream Sync
+
+The repository includes a committed upstream snapshot at `src/upstream/copilot-plugin.snapshot.ts` plus a sync/check script at `scripts/sync-copilot-upstream.mjs`.
+
+Useful commands:
+
+```bash
+npm run sync:copilot-snapshot -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
+npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --sync-date <YYYY-MM-DD>
+```
+
+The script generates or checks the committed snapshot, requires upstream metadata for repository snapshot updates, and helps catch drift from the official `opencode` `copilot.ts` implementation.
+
+---
+
+## Storage
+
+Accounts are stored in:
+
+```
+~/.config/opencode/copilot-accounts.json
+```
+
+---
+
+## FAQ
+
+**Do I need to change model configurations?**
+No. This plugin only manages accounts and works with the official `github-copilot` provider.
+
+**Does it replace the official provider?**
+No. It uses the official provider and only adds account switching + quota checks.
+
+**Does Copilot Network Retry replace OpenCode's retry logic?**
+No. The plugin keeps retry policy inside OpenCode by normalizing retryable Copilot network/TLS failures into a shape that OpenCode already recognizes as retryable.
 
 ---
 
