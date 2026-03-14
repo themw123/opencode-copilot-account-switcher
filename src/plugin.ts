@@ -512,7 +512,10 @@ async function switchAccount(client: AuthClient, entry: AccountEntry) {
   })
 }
 
-export const CopilotAccountSwitcher: Plugin = async ({ client }) => {
+export const CopilotAccountSwitcher: Plugin = async (input) => {
+  const client = input.client
+  const directory = input.directory
+  const serverUrl = (input as { serverUrl?: URL }).serverUrl
   const methods = [
     {
       type: "oauth" as const,
@@ -791,5 +794,8 @@ export const CopilotAccountSwitcher: Plugin = async ({ client }) => {
       provider: "github-copilot",
       methods,
     },
+    client,
+    directory,
+    serverUrl,
   })
 }
