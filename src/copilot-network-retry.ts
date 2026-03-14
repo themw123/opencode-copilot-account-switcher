@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs"
+
 const RETRYABLE_MESSAGES = [
   "load failed",
   "failed to fetch",
@@ -22,6 +24,33 @@ type RetryableSystemError = Error & {
 }
 
 type JsonRecord = Record<string, unknown>
+
+const defaultDebugLogFile = (() => {
+  const tmp = process.env.TEMP || process.env.TMP || "/tmp"
+  return `${tmp}/opencode-copilot-retry-debug.log`
+})()
+
+function isDebugEnabled() {
+  return process.env.OPENCODE_COPILOT_RETRY_DEBUG === "1"
+}
+
+function debugLog(message: string, details?: Record<string, unknown>) {
+  if (!isDebugEnabled()) return
+  const suffix = details ? ` ${JSON.stringify(details)}` : ""
+  const line = `[copilot-network-retry debug] ${new Date().toISOString()} ${message}${suffix}`
+  console.warn(line)
+
+  const filePath = process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE || defaultDebugLogFile
+  if (!filePath) return
+
+  try {
+    appendFileSync(filePath, `${line}\n`)
+  } catch (error) {
+    console.warn(
+      `[copilot-network-retry debug] failed to write log file ${JSON.stringify({ filePath, error: String(error) })}`,
+    )
+  }
+}
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError"
@@ -145,6 +174,48 @@ function isCopilotUrl(request: Request | URL | string) {
   }
 }
 
+function withStreamDebugLogs(response: Response, request: Request | URL | string) {
+  if (!isDebugEnabled()) return response
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? ""
+  if (!contentType.includes("text/event-stream") || !response.body) return response
+
+  const rawUrl = request instanceof Request ? request.url : request instanceof URL ? request.href : String(request)
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const reader = response.body!.getReader()
+      const pump = async () => {
+        try {
+          while (true) {
+            const next = await reader.read()
+            if (next.done) {
+              debugLog("sse stream finished", { url: rawUrl })
+              controller.close()
+              break
+            }
+            controller.enqueue(next.value)
+          }
+        } catch (error) {
+          const message = getErrorMessage(error)
+          debugLog("sse stream read error", {
+            url: rawUrl,
+            message,
+            retryableByMessage: RETRYABLE_MESSAGES.some((part) => message.includes(part)),
+          })
+          controller.error(error)
+        }
+      }
+
+      void pump()
+    },
+  })
+
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
 export function isRetryableCopilotFetchError(error: unknown) {
   if (!error || isAbortError(error)) return false
   const message = getErrorMessage(error)
@@ -160,13 +231,29 @@ export function createCopilotRetryingFetch(
   void options
 
   return async function retryingFetch(request: Request | URL | string, init?: RequestInit) {
+    debugLog("fetch start", {
+      url: request instanceof Request ? request.url : request instanceof URL ? request.href : String(request),
+      isCopilot: isCopilotUrl(request),
+    })
+
     try {
       const response = await baseFetch(request, init)
+      debugLog("fetch resolved", {
+        status: response.status,
+        contentType: response.headers.get("content-type") ?? undefined,
+      })
+
       if (isCopilotUrl(request)) {
-        return maybeRetryInputIdTooLong(request, init, response, baseFetch)
+        const retried = await maybeRetryInputIdTooLong(request, init, response, baseFetch)
+        return withStreamDebugLogs(retried, request)
       }
       return response
     } catch (error) {
+      debugLog("fetch threw", {
+        message: getErrorMessage(error),
+        retryableByMessage: isRetryableCopilotFetchError(error),
+      })
+
       if (!isCopilotUrl(request) || !isRetryableCopilotFetchError(error)) {
         throw error
       }

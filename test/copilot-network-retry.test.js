@@ -970,3 +970,33 @@ test("retries once by removing long input ids after copilot 400 validation error
   assert.equal(calls[1].input[2].id, undefined)
   assert.equal(calls[1].previous_response_id, "resp_123")
 })
+
+test("writes debug logs into temp file when enabled", async () => {
+  const logFile = join(tmpdir(), `copilot-retry-debug-${Date.now()}-${Math.random().toString(36).slice(2)}.log`)
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE = logFile
+
+  try {
+    const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?debug-log-${Date.now()}`)
+    const wrapped = createCopilotRetryingFetch(async () => {
+      throw new Error("failed to fetch")
+    })
+
+    await assert.rejects(
+      wrapped("https://api.githubcopilot.com/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      }),
+      () => true,
+    )
+
+    const log = await readFile(logFile, "utf8")
+    assert.match(log, /copilot-network-retry debug/)
+    assert.match(log, /fetch start/)
+    assert.match(log, /fetch threw/)
+  } finally {
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
+    await rm(logFile, { force: true })
+  }
+})
