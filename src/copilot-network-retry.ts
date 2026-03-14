@@ -2,6 +2,8 @@ const RETRYABLE_MESSAGES = [
   "load failed",
   "failed to fetch",
   "network request failed",
+  "sse read timed out",
+  "unable to connect",
   "econnreset",
   "etimedout",
   "socket hang up",

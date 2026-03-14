@@ -705,6 +705,56 @@ test("normalizes retryable copilot network errors into ECONNRESET-shaped failure
   )
 })
 
+test("normalizes sse read timeout errors for copilot urls", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    throw new Error("SSE read timed out")
+  })
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(attempts, 1)
+      assert.equal(error.code, "ECONNRESET")
+      assert.equal(error.syscall, "fetch")
+      assert.match(error.message, /copilot-network-retry normalized/i)
+      assert.match(error.message, /sse read timed out/i)
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
+test("normalizes unable to connect errors for copilot urls", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    throw new Error("Unable to connect. Is the computer able to access the url?")
+  })
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(attempts, 1)
+      assert.equal(error.code, "ECONNRESET")
+      assert.equal(error.syscall, "fetch")
+      assert.match(error.message, /copilot-network-retry normalized/i)
+      assert.match(error.message, /unable to connect/i)
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
 test("does not normalize transient errors for non copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
