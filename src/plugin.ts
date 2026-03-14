@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
-import { applyMenuAction } from "./plugin-actions.js"
+import { applyMenuAction, persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
 import { isTTY } from "./ui/ansi.js"
 import { showAccountActions, showMenu, type AccountInfo } from "./ui/menu.js"
@@ -512,6 +512,23 @@ async function switchAccount(client: AuthClient, entry: AccountEntry) {
   })
 }
 
+export async function activateAddedAccount(input: {
+  store: StoreFile
+  name: string
+  switchAccount: () => Promise<void>
+  writeStore: (store: StoreFile) => Promise<void>
+  now?: () => number
+}) {
+  await input.writeStore(input.store)
+  await input.switchAccount()
+  await persistAccountSwitch({
+    store: input.store,
+    name: input.name,
+    at: (input.now ?? now)(),
+    writeStore: input.writeStore,
+  })
+}
+
 export const CopilotAccountSwitcher: Plugin = async (input) => {
   const client = input.client
   const directory = input.directory
@@ -558,8 +575,12 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
       const { name, entry } = await promptAccountEntry([])
       store.accounts[name] = entry
       store.active = name
-      await writeStore(store)
-      await switchAccount(client, entry)
+      await activateAddedAccount({
+        store,
+        name,
+        switchAccount: () => switchAccount(client, entry),
+        writeStore,
+      })
       // fallthrough to menu
     }
 
@@ -670,8 +691,16 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         entry.name = buildName(entry, user?.login)
         store.accounts[entry.name] = entry
           store.active = store.active ?? entry.name
-          await writeStore(store)
-          if (store.active === entry.name) await switchAccount(client, entry)
+          if (store.active === entry.name) {
+            await activateAddedAccount({
+              store,
+              name: entry.name,
+              switchAccount: () => switchAccount(client, entry),
+              writeStore,
+            })
+          } else {
+            await writeStore(store)
+          }
           continue
         }
 
@@ -683,8 +712,16 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         manual.entry.name = buildName(manual.entry, user?.login)
         store.accounts[manual.entry.name] = manual.entry
         store.active = store.active ?? manual.entry.name
-        await writeStore(store)
-        if (store.active === manual.entry.name) await switchAccount(client, manual.entry)
+        if (store.active === manual.entry.name) {
+          await activateAddedAccount({
+            store,
+            name: manual.entry.name,
+            switchAccount: () => switchAccount(client, manual.entry),
+            writeStore,
+          })
+        } else {
+          await writeStore(store)
+        }
         continue
       }
 
@@ -781,9 +818,12 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
           continue
         }
         await switchAccount(client, entry)
-        store.active = name
-        store.accounts[name].lastUsed = now()
-        await writeStore(store)
+        await persistAccountSwitch({
+          store,
+          name,
+          at: now(),
+          writeStore,
+        })
         console.log("Switched account. If a later Copilot session hits input[*].id too long after switching, enable Copilot Network Retry from the menu.")
         continue
       }
