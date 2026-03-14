@@ -80,7 +80,7 @@ export function authPath(): string {
 export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
   if (!data.accounts) data.accounts = {}
-  if (data.loopSafetyEnabled !== true) data.loopSafetyEnabled = false
+  if (data.loopSafetyEnabled !== false) data.loopSafetyEnabled = true
   if (data.networkRetryEnabled !== true) data.networkRetryEnabled = false
   for (const [name, entry] of Object.entries(data.accounts)) {
     const info = entry as AccountEntry

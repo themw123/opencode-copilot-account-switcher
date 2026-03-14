@@ -6,10 +6,10 @@ import path from "node:path"
 
 import { parseStore, readStore, readStoreSafe } from "../dist/store.js"
 
-test("parseStore defaults loopSafetyEnabled to false when missing", () => {
+test("parseStore defaults loopSafetyEnabled to true when missing", () => {
   const store = parseStore('{"accounts":{}}')
 
-  assert.equal(store.loopSafetyEnabled, false)
+  assert.equal(store.loopSafetyEnabled, true)
   assert.deepEqual(store.accounts, {})
 })
 
@@ -37,24 +37,24 @@ test("readStore rejects malformed JSON from an existing store file", async () =>
   await assert.rejects(() => readStore(file))
 })
 
-test("readStore defaults a missing store file to an empty store with loop safety off", async () => {
+test("readStore defaults a missing store file to an empty store with loop safety on", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "loop-safety-missing-"))
   const file = path.join(dir, "missing-store.json")
 
   const store = await readStore(file)
 
   assert.deepEqual(store.accounts, {})
-  assert.equal(store.loopSafetyEnabled, false)
+  assert.equal(store.loopSafetyEnabled, true)
 })
 
-test("readStoreSafe also defaults a missing store file to loop safety off", async () => {
+test("readStoreSafe also defaults a missing store file to loop safety on", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "loop-safety-safe-missing-"))
   const file = path.join(dir, "missing-store.json")
 
   const store = await readStoreSafe(file)
 
   assert.deepEqual(store?.accounts, {})
-  assert.equal(store?.loopSafetyEnabled, false)
+  assert.equal(store?.loopSafetyEnabled, true)
 })
 
 test("readStore throws when the path is unreadable as a file", async () => {
