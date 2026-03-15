@@ -284,7 +284,8 @@ function readSnapshotMetadata(snapshot) {
 }
 
 function rebuildUpstreamSourceFromSnapshot(snapshot) {
-  const bodyMatch = snapshot.match(/\/\* LOCAL_SHIMS_END \*\/\n\n([\s\S]*?)\n\n\/\* GENERATED_EXPORT_BRIDGE_START \*\//)
+  const normalizedSnapshot = normalize(snapshot)
+  const bodyMatch = normalizedSnapshot.match(/\/\* LOCAL_SHIMS_END \*\/\n\n([\s\S]*?)\n\n\/\* GENERATED_EXPORT_BRIDGE_START \*\//)
   if (!bodyMatch) {
     throw new Error("Unable to rebuild upstream source from repository snapshot")
   }
