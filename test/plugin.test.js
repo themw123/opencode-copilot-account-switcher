@@ -25,7 +25,13 @@ test("plugin exposes auth and experimental chat system transform hooks", () => {
   assert.equal(typeof plugin["experimental.chat.system.transform"], "function")
 })
 
-test("plugin chat headers mutates output headers only for Copilot providers", async () => {
+test("plugin source does not preload upstream hook bundle for untouched hooks", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.doesNotMatch(pluginSource, /loadOfficialCopilotHooks/)
+})
+
+test("plugin chat headers only append internal session id locally", async () => {
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -35,6 +41,10 @@ test("plugin chat headers mutates output headers only for Copilot providers", as
       accounts: {},
       loopSafetyEnabled: false,
     }),
+    loadOfficialChatHeaders: async () => async (input, output) => {
+      output.headers["x-initiator"] = "agent"
+      output.headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+    },
   })
 
   const chatHeaders = plugin["chat.headers"]
@@ -58,6 +68,9 @@ test("plugin chat headers mutates output headers only for Copilot providers", as
       agent: "build",
       model: {
         providerID: "github-copilot",
+        api: {
+          npm: "@ai-sdk/anthropic",
+        },
       },
       provider: { source: "custom", info: {}, options: {} },
       message: { id: "m1" },
@@ -70,6 +83,9 @@ test("plugin chat headers mutates output headers only for Copilot providers", as
       agent: "build",
       model: {
         providerID: "github-copilot-enterprise",
+        api: {
+          npm: "@ai-sdk/github-copilot",
+        },
       },
       provider: { source: "custom", info: {}, options: {} },
       message: { id: "m2" },
@@ -82,6 +98,9 @@ test("plugin chat headers mutates output headers only for Copilot providers", as
       agent: "build",
       model: {
         providerID: "google",
+        api: {
+          npm: "@ai-sdk/google",
+        },
       },
       provider: { source: "custom", info: {}, options: {} },
       message: { id: "m3" },

@@ -12,9 +12,11 @@ import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
 import { readStoreSafe, writeStore, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 import {
   loadOfficialCopilotConfig,
+  loadOfficialCopilotChatHeaders,
   type CopilotAuthState,
   type CopilotProviderConfig,
   type OfficialCopilotConfig,
+  type OfficialChatHeadersHook,
 } from "./upstream/copilot-loader-adapter.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
@@ -64,6 +66,7 @@ export function buildPluginHooks(input: {
     getAuth: () => Promise<CopilotAuthState | undefined>
     provider?: CopilotProviderConfig
   }) => Promise<OfficialCopilotConfig | undefined>
+  loadOfficialChatHeaders?: (input: { client?: object; directory?: string }) => Promise<OfficialChatHeadersHook>
   createRetryFetch?: (fetch: FetchLike, ctx?: CopilotRetryContext) => FetchLike
   client?: CopilotRetryContext["client"]
   directory?: CopilotRetryContext["directory"]
@@ -74,6 +77,7 @@ export function buildPluginHooks(input: {
   const loadStore = input.loadStore ?? readStoreSafe
   const persistStore = input.writeStore ?? writeStore
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
+  const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
 
   const getLatestLastAccountSwitchAt = async () => {
@@ -129,8 +133,14 @@ export function buildPluginHooks(input: {
     }
   }
 
+  const officialChatHeaders = loadOfficialChatHeaders({
+    client: input.client,
+    directory: input.directory,
+  })
+
   const chatHeaders: ChatHeadersHook = async (hookInput, output) => {
     if (!isCopilotProvider(hookInput.model.providerID)) return
+    await (await officialChatHeaders)(hookInput, output)
     output.headers["x-opencode-session-id"] = hookInput.sessionID
   }
 
@@ -138,6 +148,7 @@ export function buildPluginHooks(input: {
     auth: {
       ...input.auth,
       provider: input.auth.provider ?? "github-copilot",
+      methods: input.auth.methods,
       loader,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
     "chat.headers": chatHeaders,
