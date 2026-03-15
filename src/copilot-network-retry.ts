@@ -39,6 +39,15 @@ export type CopilotRetryContext = {
       messages?: (input: { path: { id: string } }) => Promise<{ data?: Array<{ info?: { id?: string; role?: string }; parts?: Array<JsonRecord> }> }>
       message?: (input: { path: { id: string; messageID: string } }) => Promise<{ data?: { parts?: Array<JsonRecord> } }>
     }
+    part?: {
+      update?: (input: {
+        sessionID: string
+        messageID: string
+        partID: string
+        directory?: string
+        part?: JsonRecord
+      }) => Promise<unknown>
+    }
     tui?: {
       showToast?: (options: {
         body: {
@@ -405,6 +414,32 @@ async function repairSessionPart(sessionID: string, failingId: string, ctx?: Cop
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+  }
+
+  if (ctx?.client?.part?.update) {
+    try {
+      await ctx.client.part.update({
+        sessionID,
+        messageID: match.messageID,
+        partID: match.partID,
+        directory: ctx.directory,
+        part: body,
+      })
+      debugLog("input-id retry session repair", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+      })
+      return true
+    } catch (error) {
+      debugLog("input-id retry session repair failed", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+        error: String(error instanceof Error ? error.message : error),
+      })
+      return false
+    }
   }
 
   if (ctx?.patchPart) {

@@ -1413,6 +1413,110 @@ test("repairs the uniquely matched session part after a too-long input id 400", 
   assert.equal(calls[1].input[1].id, undefined)
 })
 
+test("repairs the uniquely matched session part through client part.update when no patchPart is provided", async () => {
+  const calls = []
+  const sessionReads = []
+  const partUpdates = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?client-part-update-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response(
+          "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+          },
+        )
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async ({ path }) => {
+            sessionReads.push(path)
+            return {
+              data: [
+                {
+                  info: { id: "msg_1", role: "assistant" },
+                  parts: [
+                    {
+                      id: "part_1",
+                      messageID: "msg_1",
+                      sessionID: "sess-123",
+                      type: "text",
+                      text: "hi",
+                      metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                    },
+                  ],
+                },
+              ],
+            }
+          },
+          message: async ({ path }) => ({
+            data: {
+              info: { id: path.messageID, role: "assistant" },
+              parts: [
+                {
+                  id: "part_1",
+                  messageID: path.messageID,
+                  sessionID: path.id,
+                  type: "text",
+                  text: "hi",
+                  metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                },
+              ],
+            },
+          }),
+        },
+        part: {
+          update: async (request) => {
+            partUpdates.push(request)
+            return { data: request.part }
+          },
+        },
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(sessionReads, [{ id: "sess-123" }])
+  assert.equal(partUpdates.length, 1)
+  assert.equal(partUpdates[0].sessionID, "sess-123")
+  assert.equal(partUpdates[0].messageID, "msg_1")
+  assert.equal(partUpdates[0].partID, "part_1")
+  assert.equal(partUpdates[0].directory, "C:/repo")
+  assert.equal(partUpdates[0].part.id, "part_1")
+  assert.equal(partUpdates[0].part.messageID, "msg_1")
+  assert.equal(partUpdates[0].part.sessionID, "sess-123")
+  assert.equal(partUpdates[0].part.metadata.openai.itemId, undefined)
+  assert.equal(partUpdates[0].part.metadata.openai.keep, true)
+  assert.equal(partUpdates[0].part.metadata.custom.keep, "value")
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+})
+
 test("does not patch session when matching part is ambiguous", async () => {
   const patchCalls = []
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
