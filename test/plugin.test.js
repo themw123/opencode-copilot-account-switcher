@@ -178,6 +178,150 @@ test("plugin auth loader wraps official fetch when network retry is enabled", as
   assert.equal(options?.fetch, wrappedFetch)
 })
 
+test("plugin auth loader preserves subagent initiator header when network retry is enabled", async () => {
+  const outgoing = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: async (_request, init) => {
+        outgoing.push({
+          "x-initiator": "user",
+          ...(init?.headers),
+          Authorization: "Bearer test-token",
+        })
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+      },
+    }),
+    loadOfficialChatHeaders: async () => async (_input, output) => {
+      output.headers["x-initiator"] = "agent"
+      output.headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+    },
+  })
+
+  const headers = {}
+  await plugin["chat.headers"]?.(
+    {
+      sessionID: "child-session",
+      agent: "task",
+      model: {
+        providerID: "github-copilot",
+        api: {
+          npm: "@ai-sdk/anthropic",
+        },
+      },
+      provider: { source: "custom", info: {}, options: {} },
+      message: { id: "msg-1" },
+    },
+    { headers },
+  )
+
+  const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+  await options?.fetch?.("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      input: [{ role: "user", content: [] }],
+    }),
+  })
+
+  assert.equal(outgoing.length, 1)
+  assert.equal(outgoing[0]["x-initiator"], "agent")
+  assert.equal(outgoing[0]["anthropic-beta"], "interleaved-thinking-2025-05-14")
+})
+
+test("plugin auth loader preserves subagent initiator header across retry requests", async () => {
+  const outgoing = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: async (_request, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}"))
+        outgoing.push({
+          headers: {
+            "x-initiator": "user",
+            ...(init?.headers),
+            Authorization: "Bearer test-token",
+          },
+          body,
+        })
+
+        if (body.input?.[1]?.id) {
+          return new Response(
+            "Invalid 'input[2].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+            { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } },
+          )
+        }
+
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+      },
+    }),
+    loadOfficialChatHeaders: async () => async (_input, output) => {
+      output.headers["x-initiator"] = "agent"
+      output.headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+    },
+  })
+
+  const headers = {}
+  await plugin["chat.headers"]?.(
+    {
+      sessionID: "child-session",
+      agent: "task",
+      model: {
+        providerID: "github-copilot",
+        api: {
+          npm: "@ai-sdk/anthropic",
+        },
+      },
+      provider: { source: "custom", info: {}, options: {} },
+      message: { id: "msg-1" },
+    },
+    { headers },
+  )
+
+  const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+  await options?.fetch?.("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+      ],
+    }),
+  })
+
+  assert.equal(outgoing.length, 2)
+  assert.equal(outgoing[0].headers["x-initiator"], "agent")
+  assert.equal(outgoing[0].headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
+  assert.equal(outgoing[1].headers["x-initiator"], "agent")
+  assert.equal(outgoing[1].headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
+  assert.equal(outgoing[1].body.input[1].id, undefined)
+})
+
 test("plugin auth loader passes plugin context into retry wrapper factory", async () => {
   const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const fakeClient = { session: { messages: async () => ({ data: [] }) } }

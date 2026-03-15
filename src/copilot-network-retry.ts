@@ -290,11 +290,22 @@ function isRetryableRepairError(error: unknown) {
   return isRetryableCopilotFetchError(error)
 }
 
+function toHeaderRecord(headers: RequestInit["headers"] | undefined) {
+  if (!headers) return undefined
+  return Object.fromEntries(new Headers(headers).entries())
+}
+
+function stripInternalSessionHeader(headers: RequestInit["headers"] | undefined) {
+  const nextHeaders = toHeaderRecord(headers)
+  if (!nextHeaders) return undefined
+  delete nextHeaders[INTERNAL_SESSION_HEADER]
+  return nextHeaders
+}
+
 function buildRetryInit(init: RequestInit | undefined, payload: JsonRecord): RequestInit {
-  const headers = new Headers(init?.headers)
-  headers.delete(INTERNAL_SESSION_HEADER)
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "application/json")
+  const headers = stripInternalSessionHeader(init?.headers) ?? {}
+  if (!Object.keys(headers).some((name) => name.toLowerCase() === "content-type")) {
+    headers["content-type"] = "application/json"
   }
 
   return {
@@ -863,8 +874,7 @@ export function createCopilotRetryingFetch(
   return async function retryingFetch(request: Request | URL | string, init?: RequestInit) {
     const sessionID = getHeader(request, init, INTERNAL_SESSION_HEADER)
     const safeRequest = stripInternalSessionHeaderFromRequest(request)
-    const initHeaders = new Headers(init?.headers)
-    initHeaders.delete(INTERNAL_SESSION_HEADER)
+    const initHeaders = stripInternalSessionHeader(init?.headers)
     const effectiveInit: RequestInit | undefined = init
       ? {
           ...init,
