@@ -139,6 +139,29 @@ function extractLoaderBody(source) {
   return dedent(matches[0][1])
 }
 
+function extractChatHeadersBody(source) {
+  const anchor = '"chat.headers": async (incoming, output) => {'
+  const start = source.indexOf(anchor)
+  if (start === -1) {
+    throw new Error("Unable to locate chat.headers in upstream source")
+  }
+
+  const bodyStart = start + anchor.length
+  let depth = 1
+  let index = bodyStart
+  while (index < source.length) {
+    const char = source[index]
+    if (char === "{") depth += 1
+    if (char === "}") depth -= 1
+    if (depth === 0) {
+      return dedent(source.slice(bodyStart, index))
+    }
+    index += 1
+  }
+
+  throw new Error("Unable to extract complete chat.headers body from upstream source")
+}
+
 function buildHeader(meta) {
   return `// @ts-nocheck
 /*
@@ -172,6 +195,7 @@ type OfficialLoader = (
   getAuth: () => Promise<any>,
   provider?: OfficialProviderInput,
 ) => Promise<OfficialLoaderResult | {}>
+type OfficialChatHeadersHook = (incoming: any, output: { headers: Record<string, string> }) => Promise<void>
 
 const Installation = {
   VERSION: "snapshot",
@@ -189,7 +213,7 @@ const Bun = {
 /* LOCAL_SHIMS_END */`
 }
 
-function buildFactoryBlock(loaderBody) {
+function buildFactoryBlock(loaderBody, chatHeadersBody) {
   let body = loaderBody
   body = replaceOnce(body, "return fetch(request, init)", "return fetchImpl(request, init)", "factory fetch fallback")
   body = replaceOnce(body, "return fetch(request, {", "return fetchImpl(request, {", "factory fetch call")
@@ -207,6 +231,20 @@ export function createOfficialCopilotLoader(
     provider?: OfficialProviderInput,
   ): Promise<OfficialLoaderResult | Record<string, never>> {
 ${indent(body, 4)}
+  }
+}
+
+${buildChatHeadersFactoryBlock(chatHeadersBody)}`
+}
+
+function buildChatHeadersFactoryBlock(chatHeadersBody) {
+  return `export function createOfficialCopilotChatHeaders(
+  input: { client?: any; directory?: string } = {},
+): OfficialChatHeadersHook {
+  const sdk = input.client
+
+  return async function chatHeaders(incoming: any, output: { headers: Record<string, string> }) {
+${indent(chatHeadersBody, 4)}
   }
 }
 /* GENERATED_EXPORTS_END */`
@@ -243,11 +281,13 @@ function buildSnapshot(source, meta) {
   const normalized = normalize(source).trim() + "\n"
   ensureSingleMatch(normalized, /^export async function CopilotAuthPlugin\(input: PluginInput\): Promise<Hooks> \{/gm, "CopilotAuthPlugin")
   ensureSingleMatch(normalized, /async loader\(getAuth, provider\) \{/g, "auth.loader")
+  ensureSingleMatch(normalized, /"chat\.headers": async \(incoming, output\) => \{/g, "chat.headers")
   ensureSingleMatch(normalized, /\n\s*methods: \[/g, "methods")
   const stripped = stripImports(normalized)
   const loaderBody = extractLoaderBody(normalized)
+  const chatHeadersBody = extractChatHeadersBody(normalized)
 
-  return `${buildHeader(meta)}\n\n${buildShimBlock()}\n\n${stripped.trimEnd()}\n\n${buildFactoryBlock(loaderBody)}\n`
+  return `${buildHeader(meta)}\n\n${buildShimBlock()}\n\n${stripped.trimEnd()}\n\n${buildFactoryBlock(loaderBody, chatHeadersBody)}\n`
 }
 
 function summarizeMismatch(expected, actual) {

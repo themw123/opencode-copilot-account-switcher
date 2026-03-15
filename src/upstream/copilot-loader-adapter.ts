@@ -1,4 +1,4 @@
-import { createOfficialCopilotLoader } from "./copilot-plugin.snapshot.js"
+import { createOfficialCopilotLoader, createOfficialCopilotChatHeaders } from "./copilot-plugin.snapshot.js"
 
 export type CopilotAuthState = {
   type: string
@@ -30,6 +30,28 @@ export type OfficialCopilotConfig = {
   apiKey: string
   fetch: (request: Request | URL | string, init?: RequestInit) => Promise<Response>
 }
+
+export type OfficialChatHeadersHook = (input: {
+  sessionID: string
+  agent: string
+  model: {
+    providerID: string
+    api?: {
+      npm?: string
+    }
+  }
+  provider: {
+    source: string
+    info: object
+    options: object
+  }
+  message: {
+    id: string
+    sessionID?: string
+  }
+}, output: {
+  headers: Record<string, string>
+}) => Promise<void>
 
 export async function loadOfficialCopilotConfig(input: {
   getAuth: () => Promise<CopilotAuthState | undefined>
@@ -69,4 +91,11 @@ export function createOfficialFetchAdapter(input: {
 
     return config.fetch(request, init)
   }
+}
+
+export async function loadOfficialCopilotChatHeaders(input: {
+  client?: object
+  directory?: string
+}): Promise<OfficialChatHeadersHook> {
+  return createOfficialCopilotChatHeaders(input)
 }
