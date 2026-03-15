@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs"
 import {
   createLoopSafetySystemTransform,
   isCopilotProvider,
@@ -92,7 +93,9 @@ function toCurrentMessageTextParts(parts: Array<DebugPart> | undefined) {
 
 function debugLog(message: string, details: Record<string, unknown>) {
   if (!isDebugEnabled()) return
-  console.warn(`[copilot-plugin-hooks debug] ${message} ${JSON.stringify(details)}`)
+  const filePath = process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
+  if (!filePath) return
+  appendFileSync(filePath, `[copilot-plugin-hooks debug] ${message} ${JSON.stringify(details)}\n`)
 }
 
 function readRetryStoreContext(store: StoreFile | undefined): RetryStoreContext | undefined {

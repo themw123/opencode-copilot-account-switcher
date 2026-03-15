@@ -28,7 +28,7 @@ test("buildMenuItems shows Enable guided loop safety when disabled", () => {
 
   const toggle = items.find((item) => item.label === "Enable guided loop safety")
   assert.ok(toggle)
-  assert.equal(toggle?.hint, "Prompt-guided: fewer report interruptions, fewer unnecessary subagents")
+  assert.equal(toggle?.hint, "Prompt-guided: fewer report interruptions, less unnecessary waiting")
 })
 
 test("buildMenuItems shows Disable guided loop safety when enabled", () => {
