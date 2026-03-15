@@ -286,6 +286,10 @@ function parseJsonBody(init?: RequestInit) {
   }
 }
 
+function isRetryableRepairError(error: unknown) {
+  return isRetryableCopilotFetchError(error)
+}
+
 function buildRetryInit(init: RequestInit | undefined, payload: JsonRecord): RequestInit {
   const headers = new Headers(init?.headers)
   headers.delete(INTERNAL_SESSION_HEADER)
@@ -375,6 +379,21 @@ function stripOpenAIItemId(part: JsonRecord) {
   }
 }
 
+function getInternalPatchClient(client: CopilotRetryContext["client"]) {
+  const patch = (client as {
+    _client?: {
+      patch?: (input: {
+        url: string
+        path?: Record<string, unknown>
+        query?: Record<string, unknown>
+        body?: JsonRecord
+        headers?: Record<string, string>
+      }) => Promise<unknown>
+    }
+  } | undefined)?._client?.patch
+  return typeof patch === "function" ? patch : undefined
+}
+
 async function repairSessionPart(sessionID: string, failingId: string, ctx?: CopilotRetryContext) {
   const messages = await ctx?.client?.session?.messages?.({
     path: { id: sessionID },
@@ -438,7 +457,47 @@ async function repairSessionPart(sessionID: string, failingId: string, ctx?: Cop
         sessionID,
         error: String(error instanceof Error ? error.message : error),
       })
-      return false
+      if (isRetryableRepairError(error)) return false
+      throw error
+    }
+  }
+
+  const internalPatch = getInternalPatchClient(ctx?.client)
+  if (internalPatch) {
+    const query = ctx?.directory
+      ? {
+          directory: ctx.directory,
+        }
+      : undefined
+    try {
+      await internalPatch({
+        url: "/session/{sessionID}/message/{messageID}/part/{partID}",
+        path: {
+          sessionID,
+          messageID: match.messageID,
+          partID: match.partID,
+        },
+        query,
+        body,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })
+      debugLog("input-id retry session repair", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+      })
+      return true
+    } catch (error) {
+      debugLog("input-id retry session repair failed", {
+        partID: match.partID,
+        messageID: match.messageID,
+        sessionID,
+        error: String(error instanceof Error ? error.message : error),
+      })
+      if (isRetryableRepairError(error)) return false
+      throw error
     }
   }
 
@@ -458,7 +517,8 @@ async function repairSessionPart(sessionID: string, failingId: string, ctx?: Cop
         sessionID,
         error: String(error instanceof Error ? error.message : error),
       })
-      return false
+      if (isRetryableRepairError(error)) return false
+      throw error
     }
   }
 
@@ -486,7 +546,8 @@ async function repairSessionPart(sessionID: string, failingId: string, ctx?: Cop
       sessionID,
       error: String(error instanceof Error ? error.message : error),
     })
-    return false
+    if (isRetryableRepairError(error)) return false
+    throw error
   }
 }
 

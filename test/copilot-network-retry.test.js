@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
+import { createOpencodeClient } from "@opencode-ai/sdk"
 
 const execFile = promisify(execFileCallback)
 const fakeCommit = "0123456789abcdef0123456789abcdef01234567"
@@ -1513,6 +1514,357 @@ test("repairs the uniquely matched session part through client part.update when 
   assert.equal(partUpdates[0].part.metadata.openai.itemId, undefined)
   assert.equal(partUpdates[0].part.metadata.openai.keep, true)
   assert.equal(partUpdates[0].part.metadata.custom.keep, "value")
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+})
+
+test("repairs the uniquely matched session part through client _client.patch when part.update is unavailable", async () => {
+  const calls = []
+  const sessionReads = []
+  const patchCalls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?client-internal-patch-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response(
+          "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+          },
+        )
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async ({ path }) => {
+            sessionReads.push(path)
+            return {
+              data: [
+                {
+                  info: { id: "msg_1", role: "assistant" },
+                  parts: [
+                    {
+                      id: "part_1",
+                      messageID: "msg_1",
+                      sessionID: "sess-123",
+                      type: "text",
+                      text: "hi",
+                      metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                    },
+                  ],
+                },
+              ],
+            }
+          },
+          message: async ({ path }) => ({
+            data: {
+              info: { id: path.messageID, role: "assistant" },
+              parts: [
+                {
+                  id: "part_1",
+                  messageID: path.messageID,
+                  sessionID: path.id,
+                  type: "text",
+                  text: "hi",
+                  metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                },
+              ],
+            },
+          }),
+        },
+        _client: {
+          patch: async (request) => {
+            patchCalls.push(request)
+            return { data: JSON.parse(String(request.body ?? "{}")) }
+          },
+        },
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(sessionReads, [{ id: "sess-123" }])
+  assert.equal(patchCalls.length, 1)
+  assert.equal(patchCalls[0].url, "/session/{sessionID}/message/{messageID}/part/{partID}")
+  assert.deepEqual(patchCalls[0].path, {
+    sessionID: "sess-123",
+    messageID: "msg_1",
+    partID: "part_1",
+  })
+  assert.equal(patchCalls[0].query.directory, "C:/repo")
+  assert.equal(patchCalls[0].headers["Content-Type"], "application/json")
+  assert.equal(patchCalls[0].body.id, "part_1")
+  assert.equal(patchCalls[0].body.messageID, "msg_1")
+  assert.equal(patchCalls[0].body.sessionID, "sess-123")
+  assert.equal(patchCalls[0].body.metadata.openai.itemId, undefined)
+  assert.equal(patchCalls[0].body.metadata.openai.keep, true)
+  assert.equal(patchCalls[0].body.metadata.custom.keep, "value")
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+})
+
+test("real sdk client exposes internal patch transport compatible with persistent repair", async () => {
+  const calls = []
+  const client = createOpencodeClient({
+    baseUrl: "http://localhost:4096",
+    fetch: async (request) => {
+      calls.push({
+        method: request.method,
+        url: request.url,
+        headers: Object.fromEntries(request.headers.entries()),
+        body: request.method === "PATCH" ? await request.clone().json() : undefined,
+      })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+  })
+
+  await client.session.messages({
+    path: { id: "sess-123" },
+  })
+  const patch = client._client.patch.bind(client._client)
+  await patch({
+    url: "/session/{sessionID}/message/{messageID}/part/{partID}",
+    path: {
+      sessionID: "sess-123",
+      messageID: "msg_1",
+      partID: "part_1",
+    },
+    query: {
+      directory: "C:/repo",
+    },
+    body: {
+      id: "part_1",
+      messageID: "msg_1",
+      sessionID: "sess-123",
+      type: "text",
+      text: "hi",
+      metadata: { openai: { keep: true } },
+    },
+    headers: {
+      "Content-Type": "application/json",
+    },
+  })
+
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].method, "GET")
+  assert.equal(calls[0].url, "http://localhost:4096/session/sess-123/message")
+  assert.equal(calls[1].method, "PATCH")
+  assert.equal(calls[1].url, "http://localhost:4096/session/sess-123/message/msg_1/part/part_1?directory=C%3A%2Frepo")
+  assert.equal(calls[1].headers["content-type"], "application/json")
+  assert.equal(calls[1].body.id, "part_1")
+  assert.equal(calls[1].body.metadata.openai.keep, true)
+})
+
+test("falls back to targeted payload retry when client part.update fails with a network-style error", async () => {
+  const calls = []
+  const sessionReads = []
+  const partUpdates = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?client-part-update-network-fail-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response(
+          "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+          },
+        )
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async ({ path }) => {
+            sessionReads.push(path)
+            return {
+              data: [
+                {
+                  info: { id: "msg_1", role: "assistant" },
+                  parts: [
+                    {
+                      id: "part_1",
+                      messageID: "msg_1",
+                      sessionID: "sess-123",
+                      type: "text",
+                      text: "hi",
+                      metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                    },
+                  ],
+                },
+              ],
+            }
+          },
+          message: async ({ path }) => ({
+            data: {
+              info: { id: path.messageID, role: "assistant" },
+              parts: [
+                {
+                  id: "part_1",
+                  messageID: path.messageID,
+                  sessionID: path.id,
+                  type: "text",
+                  text: "hi",
+                  metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                },
+              ],
+            },
+          }),
+        },
+        part: {
+          update: async (request) => {
+            partUpdates.push(request)
+            throw new Error("Unable to connect. Is the computer able to access the url?")
+          },
+        },
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(sessionReads, [{ id: "sess-123" }])
+  assert.equal(partUpdates.length, 1)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+})
+
+test("falls back to targeted payload retry when client _client.patch fails with a network-style error", async () => {
+  const calls = []
+  const sessionReads = []
+  const patchCalls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?client-internal-patch-network-fail-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response(
+          "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+          },
+        )
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async ({ path }) => {
+            sessionReads.push(path)
+            return {
+              data: [
+                {
+                  info: { id: "msg_1", role: "assistant" },
+                  parts: [
+                    {
+                      id: "part_1",
+                      messageID: "msg_1",
+                      sessionID: "sess-123",
+                      type: "text",
+                      text: "hi",
+                      metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                    },
+                  ],
+                },
+              ],
+            }
+          },
+          message: async ({ path }) => ({
+            data: {
+              info: { id: path.messageID, role: "assistant" },
+              parts: [
+                {
+                  id: "part_1",
+                  messageID: path.messageID,
+                  sessionID: path.id,
+                  type: "text",
+                  text: "hi",
+                  metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                },
+              ],
+            },
+          }),
+        },
+        _client: {
+          patch: async (request) => {
+            patchCalls.push(request)
+            throw new Error("Unable to connect. Is the computer able to access the url?")
+          },
+        },
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(sessionReads, [{ id: "sess-123" }])
+  assert.equal(patchCalls.length, 1)
   assert.equal(calls.length, 2)
   assert.equal(calls[1].input[1].id, undefined)
 })
