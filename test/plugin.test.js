@@ -851,10 +851,13 @@ test("plugin transform wiring appends for Copilot and skips non-Copilot", async 
   assert.equal(nonCopilotOutput.system.includes(LOOP_SAFETY_POLICY), false)
 })
 
-test("public exports remain intentionally minimal for input-id session repair", async () => {
-  const mod = await import("../dist/index.js")
+test("package root only exposes plugin entry and internal subpath exposes helpers", async () => {
+  const root = await import("../dist/index.js")
+  const internal = await import("../dist/internal.js")
 
-  assert.equal(typeof mod.buildPluginHooks, "function")
-  assert.equal(typeof mod.loadOfficialCopilotConfig, "function")
-  assert.equal("createCopilotRetryingFetch" in mod, false)
+  assert.equal(typeof root.CopilotAccountSwitcher, "function")
+  assert.equal("buildPluginHooks" in root, false)
+  assert.equal("loadOfficialCopilotConfig" in root, false)
+  assert.equal(typeof internal.buildPluginHooks, "function")
+  assert.equal(typeof internal.loadOfficialCopilotConfig, "function")
 })
