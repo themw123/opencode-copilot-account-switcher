@@ -1,13 +1,37 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { exec as execCallback, execFile as execFileCallback } from "node:child_process"
 import path from "node:path"
 import process from "node:process"
+import { promisify } from "node:util"
 
+const exec = promisify(execCallback)
+const execFile = promisify(execFileCallback)
 const defaultOutput = path.resolve("src/upstream/copilot-plugin.snapshot.ts")
-const defaultSourceCandidates = [
-  path.resolve("../../../../opencode/packages/opencode/src/plugin/copilot.ts"),
-  path.resolve("../opencode/packages/opencode/src/plugin/copilot.ts"),
-]
-const defaultSourceUrl = "https://raw.githubusercontent.com/sst/opencode/dev/packages/opencode/src/plugin/copilot.ts"
+const upstreamRepo = process.env.OPENCODE_SYNC_UPSTREAM_REPO ?? "anomalyco/opencode"
+const upstreamBranch = process.env.OPENCODE_SYNC_UPSTREAM_BRANCH ?? "dev"
+const upstreamPath = "packages/opencode/src/plugin/copilot.ts"
+const rawBaseUrl = (process.env.OPENCODE_SYNC_RAW_BASE_URL ?? "https://raw.githubusercontent.com").replace(/\/$/, "")
+const githubApiBaseUrl = (process.env.OPENCODE_SYNC_GITHUB_API_BASE_URL ?? "https://api.github.com").replace(/\/$/, "")
+const ghCommand = process.env.OPENCODE_SYNC_GH_COMMAND ?? "gh"
+const defaultSourceUrl = `${rawBaseUrl}/${upstreamRepo}/${upstreamBranch}/${upstreamPath}`
+const canonicalRepositoryUrl = `https://github.com/${upstreamRepo}`
+
+function formatError(error) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function createUpstreamFetchError(message, cause) {
+  const error = new Error(`upstream fetch failed\n${message}`)
+  error.cause = cause
+  error.code = "UPSTREAM_FETCH_FAILED"
+  return error
+}
+
+function createSnapshotDriftError(message) {
+  const error = new Error(`snapshot drift detected\n${message}`)
+  error.code = "SNAPSHOT_DRIFT_DETECTED"
+  return error
+}
 
 function parseArgs(argv) {
   const result = {
@@ -52,22 +76,72 @@ function parseArgs(argv) {
   return result
 }
 
-async function resolveDefaultSource() {
-  for (const candidate of defaultSourceCandidates) {
-    try {
-      await access(candidate)
-      return candidate
-    } catch {}
-  }
-
+function resolveDefaultSource() {
   return defaultSourceUrl
+}
+
+async function fetchJson(url) {
+  let response
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "opencode-copilot-account-switcher-sync",
+      },
+    })
+  } catch (error) {
+    throw createUpstreamFetchError(`Failed to fetch metadata: ${formatError(error)}`, error)
+  }
+  if (!response.ok) {
+    throw createUpstreamFetchError(`Failed to fetch metadata: ${response.status}`)
+  }
+  return response.json()
+}
+
+async function fetchJsonWithGhFallback(pathname) {
+  try {
+    return await fetchJson(`${githubApiBaseUrl}${pathname}`)
+  } catch (error) {
+    if (error?.code !== "UPSTREAM_FETCH_FAILED") {
+      throw error
+    }
+
+    try {
+      const { stdout } = process.platform === "win32"
+        ? await exec(`"${ghCommand}" api ${pathname.replace(/^\//, "")}`, {
+            cwd: process.cwd(),
+            env: process.env,
+          })
+        : await execFile(ghCommand, ["api", pathname.replace(/^\//, "")], {
+            cwd: process.cwd(),
+            env: process.env,
+          })
+      return JSON.parse(stdout)
+    } catch (ghError) {
+      throw createUpstreamFetchError(`${formatError(error)}\ngh api failed: ${formatError(ghError)}`, ghError)
+    }
+  }
+}
+
+async function resolveCanonicalUpstreamCommit() {
+  const payload = await fetchJsonWithGhFallback(`/repos/${upstreamRepo}/branches/${upstreamBranch}`)
+  const sha = payload?.commit?.sha
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) {
+    throw new Error("Unable to resolve canonical upstream commit SHA")
+  }
+  return sha.toLowerCase()
 }
 
 async function readText(source) {
   if (/^https?:\/\//.test(source)) {
-    const response = await fetch(source)
+    let response
+    try {
+      response = await fetch(source)
+    } catch (error) {
+      throw createUpstreamFetchError(`Failed to fetch source: ${formatError(error)}`, error)
+    }
     if (!response.ok) {
-      throw new Error(`Failed to fetch source: ${response.status}`)
+      throw createUpstreamFetchError(`Failed to fetch source: ${response.status}`)
     }
     return response.text()
   }
@@ -90,84 +164,20 @@ function ensureSingleMatch(text, pattern, label) {
   }
 }
 
-function replaceOnce(text, search, replacement, label) {
-  const count = text.split(search).length - 1
-  if (count !== 1) {
-    throw new Error(`Expected exactly one ${label} anchor, found ${count}`)
-  }
-  return text.replace(search, replacement)
-}
-
-function replacePatternOnce(text, pattern, replacement, label) {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`
-  const globalPattern = new RegExp(pattern.source, flags)
-  const count = countMatches(text, globalPattern)
-  if (count !== 1) {
-    throw new Error(`Expected exactly one ${label} anchor, found ${count}`)
-  }
-  return text.replace(globalPattern, replacement)
-}
-
 function stripImports(source) {
   const match = source.match(/^(?:import[^\n]*\n)+\n?/)
   if (!match) throw new Error("Unable to locate import block in upstream source")
   return source.slice(match[0].length).trimStart()
 }
 
-function dedent(block) {
-  const lines = block.replace(/^\n/, "").replace(/\s+$/, "").split("\n")
-  const indents = lines
-    .filter((line) => line.trim().length > 0)
-    .map((line) => line.match(/^\s*/)?.[0].length ?? 0)
-  const indent = indents.length ? Math.min(...indents) : 0
-  return lines.map((line) => line.slice(indent)).join("\n")
-}
-
-function indent(block, spaces) {
-  const prefix = " ".repeat(spaces)
-  return block
-    .split("\n")
-    .map((line) => (line ? `${prefix}${line}` : line))
-    .join("\n")
-}
-
-function extractLoaderBody(source) {
-  const matches = [...source.matchAll(/async loader\(getAuth, provider\) \{([\s\S]*?)\n\s*},\n\s*methods:/g)]
-  if (matches.length !== 1) {
-    throw new Error(`Unable to extract auth.loader body from upstream source: found ${matches.length} matches`)
-  }
-  return dedent(matches[0][1])
-}
-
-function extractChatHeadersBody(source) {
-  const anchor = '"chat.headers": async (incoming, output) => {'
-  const start = source.indexOf(anchor)
-  if (start === -1) {
-    throw new Error("Unable to locate chat.headers in upstream source")
-  }
-
-  const bodyStart = start + anchor.length
-  let depth = 1
-  let index = bodyStart
-  while (index < source.length) {
-    const char = source[index]
-    if (char === "{") depth += 1
-    if (char === "}") depth -= 1
-    if (depth === 0) {
-      return dedent(source.slice(bodyStart, index))
-    }
-    index += 1
-  }
-
-  throw new Error("Unable to extract complete chat.headers body from upstream source")
-}
-
 function buildHeader(meta) {
   return `// @ts-nocheck
+import { AsyncLocalStorage } from "node:async_hooks"
+
 /*
  * Upstream snapshot source:
- * - Repository: https://github.com/sst/opencode
- * - Original path: packages/opencode/src/plugin/copilot.ts
+ * - Repository: ${meta.repositoryUrl}
+ * - Original path: ${upstreamPath}
  * - Sync date: ${meta.syncDate}
  * - Upstream commit: ${meta.upstreamCommit}
  *
@@ -182,27 +192,46 @@ type RequestInfo = Request | URL | string
 
 type Hooks = any
 type PluginInput = any
-type OfficialAuthInfo = any
-type OfficialProviderInput = {
-  models?: Record<string, { id?: string; api: { url?: string; npm?: string }; cost?: unknown }>
+const officialCopilotExportBridgeStorage = new AsyncLocalStorage<{
+  fetchImpl: typeof globalThis.fetch
+  version: string
+}>()
+
+const officialCopilotExportBridge = {
+  version: "snapshot",
+  fetchImpl(request: RequestInfo | URL, init?: RequestInit) {
+    return globalThis.fetch(request, init)
+  },
+  async run(options: { fetchImpl?: typeof globalThis.fetch; version?: string } = {}, fn: () => Promise<any>) {
+    return officialCopilotExportBridgeStorage.run(
+      {
+        fetchImpl: options.fetchImpl ?? this.fetchImpl,
+        version: options.version ?? this.version,
+      },
+      fn,
+    )
+  },
 }
-type OfficialLoaderResult = {
-  baseURL?: string
-  apiKey: string
-  fetch: (request: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-}
-type OfficialLoader = (
-  getAuth: () => Promise<any>,
-  provider?: OfficialProviderInput,
-) => Promise<OfficialLoaderResult | {}>
-type OfficialChatHeadersHook = (incoming: any, output: { headers: Record<string, string> }) => Promise<void>
 
 const Installation = {
-  VERSION: "snapshot",
+  get VERSION() {
+    return officialCopilotExportBridgeStorage.getStore()?.version ?? officialCopilotExportBridge.version
+  },
+  set VERSION(value) {
+    officialCopilotExportBridge.version = value
+  },
+}
+
+function fetch(request: RequestInfo | URL, init?: RequestInit) {
+  return (officialCopilotExportBridgeStorage.getStore()?.fetchImpl ?? officialCopilotExportBridge.fetchImpl)(request, init)
 }
 
 function iife(fn) {
   return fn()
+}
+
+function sleep(ms) {
+  return Bun.sleep(ms)
 }
 
 const Bun = {
@@ -213,63 +242,54 @@ const Bun = {
 /* LOCAL_SHIMS_END */`
 }
 
-function buildFactoryBlock(loaderBody, chatHeadersBody) {
-  let body = loaderBody
-  body = replaceOnce(body, "return fetch(request, init)", "return fetchImpl(request, init)", "factory fetch fallback")
-  body = replaceOnce(body, "return fetch(request, {", "return fetchImpl(request, {", "factory fetch call")
-  body = body.replace(/`opencode\/\$\{Installation\.VERSION\}`/g, "`opencode/${version}`")
-
-  return `/* GENERATED_EXPORTS_START */
-export function createOfficialCopilotLoader(
-  options: { fetchImpl?: typeof fetch; version?: string } = {},
-): OfficialLoader {
-  const fetchImpl = options.fetchImpl ?? fetch
-  const version = options.version ?? Installation.VERSION
-
-  return async function loader(
-    getAuth: () => Promise<OfficialAuthInfo>,
-    provider?: OfficialProviderInput,
-  ): Promise<OfficialLoaderResult | Record<string, never>> {
-${indent(body, 4)}
-  }
-}
-
-${buildChatHeadersFactoryBlock(chatHeadersBody)}`
-}
-
-function buildChatHeadersFactoryBlock(chatHeadersBody) {
-  return `export function createOfficialCopilotChatHeaders(
-  input: { client?: any; directory?: string } = {},
-): OfficialChatHeadersHook {
-  const sdk = input.client
-
-  return async function chatHeaders(incoming: any, output: { headers: Record<string, string> }) {
-${indent(chatHeadersBody, 4)}
-  }
-}
-/* GENERATED_EXPORTS_END */`
+function buildExportBridgeBlock() {
+  return `/* GENERATED_EXPORT_BRIDGE_START */
+export { officialCopilotExportBridge }
+/* GENERATED_EXPORT_BRIDGE_END */`
 }
 
 function validateSnapshotMarkers(source) {
-  const pairs = [
-    {
-      label: "LOCAL_SHIMS",
-      start: /\/\* LOCAL_SHIMS_START \*\//g,
-      end: /\/\* LOCAL_SHIMS_END \*\//g,
-    },
-    {
-      label: "GENERATED_EXPORTS",
-      start: /\/\* GENERATED_EXPORTS_START \*\//g,
-      end: /\/\* GENERATED_EXPORTS_END \*\//g,
-    },
-  ]
+  const shims = {
+    label: "LOCAL_SHIMS",
+    start: /\/\* LOCAL_SHIMS_START \*\//g,
+    end: /\/\* LOCAL_SHIMS_END \*\//g,
+  }
+  const shimsStart = countMatches(source, shims.start)
+  const shimsEnd = countMatches(source, shims.end)
+  if (shimsStart !== 1 || shimsEnd !== 1) {
+    throw new Error(`Invalid ${shims.label} markers in snapshot`)
+  }
 
-  for (const pair of pairs) {
-    const startCount = countMatches(source, pair.start)
-    const endCount = countMatches(source, pair.end)
-    if (startCount !== 1 || endCount !== 1) {
-      throw new Error(`Invalid ${pair.label} markers in snapshot`)
+  const legacy = {
+    label: "GENERATED_EXPORTS",
+    start: /\/\* GENERATED_EXPORTS_START \*\//g,
+    end: /\/\* GENERATED_EXPORTS_END \*\//g,
+  }
+  const bridge = {
+    label: "GENERATED_EXPORT_BRIDGE",
+    start: /\/\* GENERATED_EXPORT_BRIDGE_START \*\//g,
+    end: /\/\* GENERATED_EXPORT_BRIDGE_END \*\//g,
+  }
+  const legacyStart = countMatches(source, legacy.start)
+  const legacyEnd = countMatches(source, legacy.end)
+  const bridgeStart = countMatches(source, bridge.start)
+  const bridgeEnd = countMatches(source, bridge.end)
+  const hasLegacy = legacyStart > 0 || legacyEnd > 0
+  const hasBridge = bridgeStart > 0 || bridgeEnd > 0
+
+  if (hasLegacy && hasBridge) {
+    throw new Error("Invalid generated export markers in snapshot")
+  }
+
+  if (hasLegacy) {
+    if (legacyStart !== 1 || legacyEnd !== 1) {
+      throw new Error(`Invalid ${legacy.label} markers in snapshot`)
     }
+    return
+  }
+
+  if (bridgeStart !== 1 || bridgeEnd !== 1) {
+    throw new Error(`Invalid ${bridge.label} markers in snapshot`)
   }
 }
 
@@ -284,10 +304,8 @@ function buildSnapshot(source, meta) {
   ensureSingleMatch(normalized, /"chat\.headers": async \(incoming, output\) => \{/g, "chat.headers")
   ensureSingleMatch(normalized, /\n\s*methods: \[/g, "methods")
   const stripped = stripImports(normalized)
-  const loaderBody = extractLoaderBody(normalized)
-  const chatHeadersBody = extractChatHeadersBody(normalized)
 
-  return `${buildHeader(meta)}\n\n${buildShimBlock()}\n\n${stripped.trimEnd()}\n\n${buildFactoryBlock(loaderBody, chatHeadersBody)}\n`
+  return `${buildHeader(meta)}\n\n${buildShimBlock()}\n\n${stripped.trimEnd()}\n\n${buildExportBridgeBlock()}\n`
 }
 
 function summarizeMismatch(expected, actual) {
@@ -309,34 +327,38 @@ function summarizeMismatch(expected, actual) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
-  if (isRepositoryOutput(args.output) && (!args.upstreamCommit || !args.syncDate)) {
-    throw new Error("Repository snapshot generation requires --upstream-commit and --sync-date")
+  const source = args.source ?? resolveDefaultSource()
+  const upstreamCommit = args.upstreamCommit ?? (!args.source ? await resolveCanonicalUpstreamCommit() : undefined)
+  if (isRepositoryOutput(args.output) && !upstreamCommit) {
+    throw new Error("Repository snapshot generation requires --upstream-commit when --source is provided")
   }
-  const current = normalize(await readFile(args.output, "utf8").catch(() => ""))
-  if (current && (isRepositoryOutput(args.output) || current.includes("LOCAL_SHIMS_START") || current.includes("GENERATED_EXPORTS_START"))) {
-    validateSnapshotMarkers(current)
+  const currentBuffer = await readFile(args.output).catch(() => Buffer.alloc(0))
+  const current = currentBuffer.toString("utf8")
+  const normalizedCurrent = normalize(current)
+  if (current && (isRepositoryOutput(args.output) || current.includes("LOCAL_SHIMS_START") || current.includes("GENERATED_EXPORTS_START") || current.includes("GENERATED_EXPORT_BRIDGE_START"))) {
+    validateSnapshotMarkers(normalizedCurrent)
   }
-  const source = args.source ?? (await resolveDefaultSource())
   const meta = {
-    upstreamCommit: args.upstreamCommit ?? "unknown",
+    repositoryUrl: canonicalRepositoryUrl,
+    upstreamCommit: upstreamCommit ?? "unknown",
     syncDate: args.syncDate ?? new Date().toISOString().slice(0, 10),
   }
   const generated = buildSnapshot(await readText(source), meta)
 
   if (args.check) {
     try {
-      if (current) validateSnapshotMarkers(current)
+      if (current) validateSnapshotMarkers(normalizedCurrent)
     } catch (error) {
-      process.stdout.write(`mismatch\n${error instanceof Error ? error.message : String(error)}\n`)
+      process.stdout.write(`snapshot drift detected\n${formatError(error)}\n`)
       process.exitCode = 1
       return
     }
-    if (current === generated) {
+    if (currentBuffer.equals(Buffer.from(generated, "utf8"))) {
       process.stdout.write("in-sync\n")
       return
     }
 
-    process.stdout.write(`mismatch\n${summarizeMismatch(generated, current)}\n`)
+    process.stdout.write(`snapshot drift detected\n${summarizeMismatch(generated, current)}\n`)
     process.exitCode = 1
     return
   }
@@ -349,6 +371,6 @@ async function main() {
 try {
   await main()
 } catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.stderr.write(`${formatError(error)}\n`)
   process.exitCode = 1
 }

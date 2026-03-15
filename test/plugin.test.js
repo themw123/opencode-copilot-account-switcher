@@ -115,6 +115,197 @@ test("plugin chat headers only append internal session id locally", async () => 
   assert.equal(Object.hasOwn(googleOutput.headers, "x-opencode-session-id"), false)
 })
 
+test("plugin chat headers marks compaction messages as agent initiated", async () => {
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+    }),
+    client: {
+      session: {
+        message: async (input) => {
+          calls.push({ type: "message", input })
+          return {
+            data: {
+              parts: [{ type: "compaction" }],
+            },
+          }
+        },
+        get: async (input) => {
+          calls.push({ type: "get", input })
+          return {
+            data: {
+              parentID: "parent-session",
+            },
+          }
+        },
+      },
+    },
+    directory: "/tmp/project",
+  })
+
+  const output = {
+    headers: {},
+  }
+
+  await plugin["chat.headers"]?.(
+    {
+      sessionID: "session-123",
+      agent: "task",
+      model: {
+        providerID: "github-copilot",
+        api: {
+          npm: "@ai-sdk/anthropic",
+        },
+      },
+      provider: { source: "custom", info: {}, options: {} },
+      message: {
+        id: "message-456",
+        sessionID: "session-123",
+      },
+    },
+    output,
+  )
+
+  assert.deepEqual(output.headers, {
+    "anthropic-beta": "interleaved-thinking-2025-05-14",
+    "x-initiator": "agent",
+    "x-opencode-session-id": "session-123",
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].type, "message")
+  assert.deepEqual(calls[0].input, {
+    path: {
+      id: "session-123",
+      messageID: "message-456",
+    },
+    query: {
+      directory: "/tmp/project",
+    },
+    throwOnError: true,
+  })
+})
+
+test("plugin chat headers debug logs include evidence and candidates without leaking session parent id", async () => {
+  const warns = []
+  const originalWarn = console.warn
+  process.env.OPENCODE_COPILOT_RETRY_DEBUG = "1"
+  console.warn = (...args) => {
+    warns.push(args)
+  }
+
+  try {
+    const plugin = buildPluginHooks({
+      auth: {
+        provider: "github-copilot",
+        methods: [],
+      },
+      loadStore: async () => ({
+        accounts: {},
+        loopSafetyEnabled: false,
+      }),
+      client: {
+        session: {
+          message: async () => ({
+            data: {
+              parts: [
+                { type: "compaction" },
+                { type: "text", text: "Continue with   the next task now", synthetic: true },
+              ],
+            },
+          }),
+          get: async () => ({
+            data: {
+              parentID: "parent-secret-value",
+            },
+          }),
+          messages: async () => ({
+            data: [
+              {
+                info: { id: "message-456", role: "user" },
+                parentID: "parent-secret-value",
+                parts: [
+                  { type: "compaction" },
+                  { type: "text", text: "Continue with   the next task now", synthetic: true },
+                ],
+              },
+              {
+                info: { id: "assistant-1", role: "assistant" },
+                parentID: "root-parent",
+                summary: true,
+                finish: "stop",
+                parts: [{ type: "text" }],
+              },
+              {
+                info: { id: "assistant-0", role: "assistant" },
+                parentID: "older-parent",
+                summary: false,
+                finish: "length",
+                parts: [{ type: "tool" }],
+              },
+            ],
+          }),
+        },
+      },
+      directory: "/tmp/project",
+      loadOfficialChatHeaders: async () => async (_input, output) => {
+        output.headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+        output.headers["x-initiator"] = "agent"
+      },
+    })
+
+    await plugin["chat.headers"]?.(
+      {
+        sessionID: "session-123",
+        agent: "task",
+        model: {
+          providerID: "github-copilot",
+          api: {
+            npm: "@ai-sdk/anthropic",
+          },
+        },
+        provider: { source: "custom", info: {}, options: {} },
+        message: {
+          id: "message-456",
+          sessionID: "message-session-789",
+        },
+      },
+      { headers: { existing: "value" } },
+    )
+  } finally {
+    delete process.env.OPENCODE_COPILOT_RETRY_DEBUG
+    console.warn = originalWarn
+  }
+
+  const payload = warns
+    .map((args) => args.find((item) => typeof item === "string" && item.includes("[copilot-plugin-hooks debug]")))
+    .find(Boolean)
+
+  assert.equal(typeof payload, "string")
+  assert.match(payload, /"evidence":/)
+  assert.match(payload, /"candidates":/)
+  assert.match(payload, /"session_id":"session-123"/)
+  assert.match(payload, /"message_id":"message-456"/)
+  assert.match(payload, /"message_session_id":"message-session-789"/)
+  assert.match(payload, /"model_provider_id":"github-copilot"/)
+  assert.match(payload, /"model_api_npm":"@ai-sdk\/anthropic"/)
+  assert.match(payload, /"current_message_part_types":\["compaction","text"\]/)
+  assert.match(payload, /"current_message_text_parts":\[{"synthetic":true,"preview":"Continue with the next task now"}\]/)
+  assert.match(payload, /"session_parent_id_present":true/)
+  assert.doesNotMatch(payload, /parent-secret-value/)
+  assert.match(payload, /"headers_before_official":\{"existing":"value"\}/)
+  assert.match(payload, /"headers_after_official":\{"existing":"value","anthropic-beta":"interleaved-thinking-2025-05-14","x-initiator":"agent"\}/)
+  assert.match(payload, /"synthetic_text_count":1/)
+  assert.match(payload, /"matches_continue_template":true/)
+  assert.match(payload, /"parent_assistant_is_summary":true/)
+  assert.match(payload, /"latest_assistant_is_summary":true/)
+})
+
 test("plugin auth loader keeps official fetch when network retry is disabled", async () => {
   const fetchImpl = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const plugin = buildPluginHooks({

@@ -36,6 +36,7 @@ type JsonRecord = Record<string, unknown>
 export type CopilotRetryContext = {
   client?: {
     session?: {
+      get?: (input: { path: { id: string }; query?: { directory?: string }; throwOnError?: boolean }) => Promise<{ data?: { parentID?: string } }>
       messages?: (input: { path: { id: string } }) => Promise<{ data?: Array<{ info?: { id?: string; role?: string }; parts?: Array<JsonRecord> }> }>
       message?: (input: { path: { id: string; messageID: string } }) => Promise<{ data?: { parts?: Array<JsonRecord> } }>
     }
@@ -70,6 +71,7 @@ export type CopilotRetryContext = {
 }
 
 const INTERNAL_SESSION_HEADER = "x-opencode-session-id"
+const INTERNAL_DEBUG_LINK_HEADER = "x-opencode-debug-link-id"
 
 const defaultDebugLogFile = (() => {
   const tmp = process.env.TEMP || process.env.TMP || "/tmp"
@@ -295,15 +297,29 @@ function toHeaderRecord(headers: RequestInit["headers"] | undefined) {
   return Object.fromEntries(new Headers(headers).entries())
 }
 
-function stripInternalSessionHeader(headers: RequestInit["headers"] | undefined) {
+function stripInternalHeaders(headers: RequestInit["headers"] | undefined) {
   const nextHeaders = toHeaderRecord(headers)
-  if (!nextHeaders) return undefined
-  delete nextHeaders[INTERNAL_SESSION_HEADER]
-  return nextHeaders
+  if (!nextHeaders) {
+    return {
+      headers: undefined,
+      removed: [] as string[],
+    }
+  }
+  const removed = []
+  for (const name of [INTERNAL_SESSION_HEADER, INTERNAL_DEBUG_LINK_HEADER]) {
+    if (Object.hasOwn(nextHeaders, name)) {
+      delete nextHeaders[name]
+      removed.push(name)
+    }
+  }
+  return {
+    headers: nextHeaders,
+    removed,
+  }
 }
 
 function buildRetryInit(init: RequestInit | undefined, payload: JsonRecord): RequestInit {
-  const headers = stripInternalSessionHeader(init?.headers) ?? {}
+  const headers = stripInternalHeaders(init?.headers).headers ?? {}
   if (!Object.keys(headers).some((name) => name.toLowerCase() === "content-type")) {
     headers["content-type"] = "application/json"
   }
@@ -344,9 +360,10 @@ async function notify(notifier: CopilotRetryNotifier, event: keyof CopilotRetryN
 
 function stripInternalSessionHeaderFromRequest(request: Request | URL | string) {
   if (!(request instanceof Request)) return request
-  if (!request.headers.has(INTERNAL_SESSION_HEADER)) return request
+  if (!request.headers.has(INTERNAL_SESSION_HEADER) && !request.headers.has(INTERNAL_DEBUG_LINK_HEADER)) return request
   const headers = new Headers(request.headers)
   headers.delete(INTERNAL_SESSION_HEADER)
+  headers.delete(INTERNAL_DEBUG_LINK_HEADER)
   return new Request(request, { headers })
 }
 
@@ -873,17 +890,32 @@ export function createCopilotRetryingFetch(
 
   return async function retryingFetch(request: Request | URL | string, init?: RequestInit) {
     const sessionID = getHeader(request, init, INTERNAL_SESSION_HEADER)
+    const headersBeforeWrapper = toHeaderRecord(init?.headers) ?? (request instanceof Request ? toHeaderRecord(request.headers) : undefined)
+    debugLog("fetch headers before wrapper", {
+      headers: headersBeforeWrapper,
+      isRetry: false,
+    })
     const safeRequest = stripInternalSessionHeaderFromRequest(request)
-    const initHeaders = stripInternalSessionHeader(init?.headers)
+    const strippedHeaders = stripInternalHeaders(init?.headers)
+    const initHeaders = strippedHeaders.headers
     const effectiveInit: RequestInit | undefined = init
       ? {
           ...init,
           headers: initHeaders,
         }
       : undefined
+    debugLog("fetch headers after wrapper", {
+      headers: initHeaders ?? (safeRequest instanceof Request ? toHeaderRecord(safeRequest.headers) : undefined),
+      removedInternalHeaders: strippedHeaders.removed,
+      isRetry: false,
+    })
     debugLog("fetch start", {
       url: safeRequest instanceof Request ? safeRequest.url : safeRequest instanceof URL ? safeRequest.href : String(safeRequest),
       isCopilot: isCopilotUrl(safeRequest),
+    })
+    debugLog("fetch headers before network", {
+      headers: toHeaderRecord(effectiveInit?.headers) ?? (safeRequest instanceof Request ? toHeaderRecord(safeRequest.headers) : undefined),
+      isRetry: false,
     })
     let currentPayload = await parseJsonRequestPayload(safeRequest, effectiveInit)
 
