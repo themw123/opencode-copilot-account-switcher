@@ -9,7 +9,7 @@ import {
   type FetchLike,
 } from "./copilot-network-retry.js"
 import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
-import { readStoreSafe, writeStore, type StoreFile } from "./store.js"
+import { readStoreSafe, writeStore, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 import {
   loadOfficialCopilotConfig,
   type CopilotAuthState,
@@ -59,7 +59,7 @@ function readRetryStoreContext(store: StoreFile | undefined): RetryStoreContext 
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
-  writeStore?: (store: StoreFile) => Promise<void>
+  writeStore?: (store: StoreFile, meta?: StoreWriteDebugMeta) => Promise<void>
   loadOfficialConfig?: (input: {
     getAuth: () => Promise<CopilotAuthState | undefined>
     provider?: CopilotProviderConfig
@@ -89,7 +89,10 @@ export function buildPluginHooks(input: {
       if (!latestStore) return
       if (latestStore.lastAccountSwitchAt !== capturedLastAccountSwitchAt) return
       delete latestStore.lastAccountSwitchAt
-      await persistStore(latestStore)
+      await persistStore(latestStore, {
+        reason: "clear-account-switch-context",
+        source: "plugin-hooks",
+      })
     } catch (error) {
       console.warn("[plugin-hooks] failed to clear account-switch context", error)
     }

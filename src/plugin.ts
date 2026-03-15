@@ -5,7 +5,7 @@ import { applyMenuAction, persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
 import { isTTY } from "./ui/ansi.js"
 import { showAccountActions, showMenu, type AccountInfo } from "./ui/menu.js"
-import { authPath, readAuth, readStore, writeStore, type AccountEntry, type StoreFile } from "./store.js"
+import { authPath, readAuth, readStore, writeStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 
 function now() {
   return Date.now()
@@ -516,10 +516,14 @@ export async function activateAddedAccount(input: {
   store: StoreFile
   name: string
   switchAccount: () => Promise<void>
-  writeStore: (store: StoreFile) => Promise<void>
+  writeStore: (store: StoreFile, meta?: StoreWriteDebugMeta) => Promise<void>
   now?: () => number
 }) {
-  await input.writeStore(input.store)
+  await input.writeStore(input.store, {
+    reason: "activate-added-account",
+    source: "activateAddedAccount",
+    actionType: "add",
+  })
   await input.switchAccount()
   await persistAccountSwitch({
     store: input.store,
@@ -575,19 +579,22 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
       const { name, entry } = await promptAccountEntry([])
       store.accounts[name] = entry
       store.active = name
-      await activateAddedAccount({
-        store,
-        name,
-        switchAccount: () => switchAccount(client, entry),
-        writeStore,
-      })
+        await activateAddedAccount({
+          store,
+          name,
+          switchAccount: () => switchAccount(client, entry),
+          writeStore: persistStore,
+        })
       // fallthrough to menu
     }
 
     if (!Object.values(store.accounts).some((entry) => entry.user || entry.email || (entry.orgs && entry.orgs.length > 0))) {
       await refreshIdentity(store)
       dedupe(store)
-      await writeStore(store)
+      await persistStore(store, {
+        reason: "refresh-identity-bootstrap",
+        source: "plugin.runMenu",
+      })
     }
 
     if (!isTTY()) {
@@ -611,7 +618,11 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
           store.accounts[item.name] = item.entry
         }
         store.lastQuotaRefresh = now()
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "auto-refresh",
+          source: "plugin.runMenu",
+          actionType: "toggle-refresh",
+        })
         nextRefresh = now() + (store.refreshMinutes ?? 15) * 60_000
       }
     const entries = Object.entries(store.accounts)
@@ -673,7 +684,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         const active = store.active ? store.accounts[store.active] : undefined
         return active
       }
-      if (await applyMenuAction({ action, store, writeStore })) {
+      if (await applyMenuAction({ action, store, writeStore: persistStore })) {
         continue
       }
       if (action.type === "add") {
@@ -696,10 +707,14 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
               store,
               name: entry.name,
               switchAccount: () => switchAccount(client, entry),
-              writeStore,
+              writeStore: persistStore,
             })
           } else {
-            await writeStore(store)
+            await persistStore(store, {
+              reason: "add-account-device-login",
+              source: "plugin.runMenu",
+              actionType: "add",
+            })
           }
           continue
         }
@@ -717,10 +732,14 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
             store,
             name: manual.entry.name,
             switchAccount: () => switchAccount(client, manual.entry),
-            writeStore,
+            writeStore: persistStore,
           })
         } else {
-          await writeStore(store)
+          await persistStore(store, {
+            reason: "add-account-manual",
+            source: "plugin.runMenu",
+            actionType: "add",
+          })
         }
         continue
       }
@@ -737,21 +756,33 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
           entry.name = buildName(entry, user?.login)
         }
         mergeAuth(store, imported)
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "import-auth",
+          source: "plugin.runMenu",
+          actionType: "import",
+        })
         continue
       }
 
       if (action.type === "refresh-identity") {
         await refreshIdentity(store)
         dedupe(store)
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "refresh-identity",
+          source: "plugin.runMenu",
+          actionType: "refresh-identity",
+        })
         continue
       }
 
       if (action.type === "toggle-refresh") {
         store.autoRefresh = !store.autoRefresh
         store.refreshMinutes = store.refreshMinutes ?? 15
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "toggle-refresh",
+          source: "plugin.runMenu",
+          actionType: "toggle-refresh",
+        })
         continue
       }
 
@@ -759,7 +790,11 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         const value = await promptText("Refresh interval (minutes): ")
         const minutes = Math.max(1, Math.min(180, Number(value)))
         if (Number.isFinite(minutes)) store.refreshMinutes = minutes
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "set-interval",
+          source: "plugin.runMenu",
+          actionType: "set-interval",
+        })
         continue
       }
 
@@ -777,7 +812,11 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
           store.accounts[item.name] = item.entry
         }
         store.lastQuotaRefresh = now()
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "quota-refresh",
+          source: "plugin.runMenu",
+          actionType: "quota",
+        })
         continue
       }
 
@@ -794,14 +833,22 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         for (const item of updated) {
           store.accounts[item.name] = item.entry
         }
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "check-models",
+          source: "plugin.runMenu",
+          actionType: "check-models",
+        })
         continue
       }
 
       if (action.type === "remove-all") {
         store.accounts = {}
         store.active = undefined
-        await writeStore(store)
+        await persistStore(store, {
+          reason: "remove-all",
+          source: "plugin.runMenu",
+          actionType: "remove-all",
+        })
         continue
       }
 
@@ -814,7 +861,11 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         if (decision === "remove") {
           delete store.accounts[name]
           if (store.active === name) store.active = undefined
-          await writeStore(store)
+          await persistStore(store, {
+            reason: "remove-account",
+            source: "plugin.runMenu",
+            actionType: "remove",
+          })
           continue
         }
         await switchAccount(client, entry)
@@ -822,7 +873,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
           store,
           name,
           at: now(),
-          writeStore,
+          writeStore: persistStore,
         })
         console.log("Switched account. If a later Copilot session hits input[*].id too long after switching, enable Copilot Network Retry from the menu.")
         continue
@@ -840,3 +891,4 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
     serverUrl,
   })
 }
+  const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => writeStore(store, { debug: meta })

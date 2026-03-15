@@ -277,6 +277,7 @@ test("plugin auth loader instantiates notifier and injects its interface into re
   const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const retryCalls = []
   const toastCalls = []
+  const writes = []
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -305,6 +306,14 @@ test("plugin auth loader instantiates notifier and injects its interface into re
         },
       },
     },
+    writeStore: async (next, meta) => {
+      writes.push({
+        lastAccountSwitchAt: next.lastAccountSwitchAt,
+        loopSafetyEnabled: next.loopSafetyEnabled,
+        networkRetryEnabled: next.networkRetryEnabled,
+        meta,
+      })
+    },
   })
 
   await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
@@ -322,11 +331,23 @@ test("plugin auth loader instantiates notifier and injects its interface into re
   await retryCalls[0].ctx.notifier.started({ remaining: 2 })
   assert.equal(toastCalls.length, 1)
   assert.match(toastCalls[0].body.message, /剩余 2 项/)
+  assert.deepEqual(writes, [
+    {
+      lastAccountSwitchAt: undefined,
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      meta: {
+        reason: "clear-account-switch-context",
+        source: "plugin-hooks",
+      },
+    },
+  ])
 })
 
 test("plugin auth loader notifier is a no-op when plugin client toast sdk is unavailable", async () => {
   const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const retryCalls = []
+  const writes = []
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -347,6 +368,14 @@ test("plugin auth loader notifier is a no-op when plugin client toast sdk is una
       retryCalls.push({ fetch, ctx })
       return fetch
     },
+    writeStore: async (next, meta) => {
+      writes.push({
+        lastAccountSwitchAt: next.lastAccountSwitchAt,
+        loopSafetyEnabled: next.loopSafetyEnabled,
+        networkRetryEnabled: next.networkRetryEnabled,
+        meta,
+      })
+    },
   })
 
   await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
@@ -361,6 +390,35 @@ test("plugin auth loader notifier is a no-op when plugin client toast sdk is una
     await retryCalls[0].ctx.notifier.completed({ remaining: 0 })
     await retryCalls[0].ctx.notifier.stopped({ remaining: 1 })
   })
+  assert.deepEqual(writes, [
+    {
+      lastAccountSwitchAt: undefined,
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      meta: {
+        reason: "clear-account-switch-context",
+        source: "plugin-hooks",
+      },
+    },
+    {
+      lastAccountSwitchAt: undefined,
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      meta: {
+        reason: "clear-account-switch-context",
+        source: "plugin-hooks",
+      },
+    },
+    {
+      lastAccountSwitchAt: undefined,
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      meta: {
+        reason: "clear-account-switch-context",
+        source: "plugin-hooks",
+      },
+    },
+  ])
 })
 
 test("plugin auth loader notifier reads latest account switch context from store after loader setup", async () => {
@@ -542,6 +600,32 @@ test("plugin menu toggle path persists networkRetryEnabled", async () => {
   assert.deepEqual(writes, [true])
 })
 
+test("plugin menu toggle path forwards debug reason for loop safety writes", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: true,
+    networkRetryEnabled: true,
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-loop-safety" },
+    store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.deepEqual(writes, [
+    {
+      reason: "toggle-loop-safety",
+      source: "applyMenuAction",
+      actionType: "toggle-loop-safety",
+    },
+  ])
+})
+
 test("persistAccountSwitch updates active account timestamps and persists store", async () => {
   const { persistAccountSwitch } = await import("../dist/plugin-actions.js")
 
@@ -589,6 +673,7 @@ test("activateAddedAccount records switch metadata only after switch succeeds", 
   assert.equal(typeof activateAddedAccount, "function")
 
   const writes = []
+  const metas = []
   const store = {
     active: "new-account",
     accounts: {
@@ -600,12 +685,13 @@ test("activateAddedAccount records switch metadata only after switch succeeds", 
     store,
     name: "new-account",
     switchAccount: async () => {},
-    writeStore: async (next) => {
+    writeStore: async (next, meta) => {
       writes.push({
         active: next.active,
         lastUsed: next.accounts["new-account"].lastUsed,
         lastAccountSwitchAt: next.lastAccountSwitchAt,
       })
+      metas.push(meta)
     },
     now: () => 1_717_171_717_171,
   })
@@ -623,6 +709,18 @@ test("activateAddedAccount records switch metadata only after switch succeeds", 
       active: "new-account",
       lastUsed: 1_717_171_717_171,
       lastAccountSwitchAt: 1_717_171_717_171,
+    },
+  ])
+  assert.deepEqual(metas, [
+    {
+      reason: "activate-added-account",
+      source: "activateAddedAccount",
+      actionType: "add",
+    },
+    {
+      reason: "persist-account-switch",
+      source: "persistAccountSwitch",
+      actionType: "switch",
     },
   ])
 })

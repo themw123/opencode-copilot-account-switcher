@@ -1,5 +1,63 @@
 import { ANSI, isTTY, parseKey } from "./ansi.js"
 
+const defaultSelectDebugLogFile = (() => {
+  const tmp = process.env.TEMP || process.env.TMP || "/tmp"
+  return `${tmp}/opencode-copilot-store-debug.log`
+})()
+
+function shouldLogSuspiciousAction(actionType: unknown) {
+  return actionType === "toggle-loop-safety" || actionType === "toggle-network-retry"
+}
+
+function getActionType(value: unknown) {
+  if (!value || typeof value !== "object") return undefined
+  const actionType = (value as { type?: unknown }).type
+  return typeof actionType === "string" ? actionType : undefined
+}
+
+export function buildSelectDebugEvent(input: {
+  stage: "key" | "result"
+  parsedKey: string | null
+  currentValue?: unknown
+  nextValue?: unknown
+}) {
+  const currentActionType = getActionType(input.currentValue)
+  const nextActionType = getActionType(input.nextValue)
+  const actionType = nextActionType ?? currentActionType
+  if (!shouldLogSuspiciousAction(actionType)) return undefined
+  return {
+    stage: input.stage,
+    parsedKey: input.parsedKey,
+    currentActionType: currentActionType ?? null,
+    nextActionType: nextActionType ?? null,
+    actionType,
+  }
+}
+
+async function logSelectDebug(input: {
+  stage: "key" | "result"
+  parsedKey: string | null
+  currentValue?: unknown
+  nextValue?: unknown
+}) {
+  const event = buildSelectDebugEvent(input)
+  if (!event) return
+
+  const filePath = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE || defaultSelectDebugLogFile
+  try {
+    const { promises: fs } = await import("node:fs")
+    const { dirname } = await import("node:path")
+    await fs.mkdir(dirname(filePath), { recursive: true })
+    await fs.appendFile(
+      filePath,
+      `${JSON.stringify({ kind: "select-action", at: new Date().toISOString(), ...event })}\n`,
+      "utf8",
+    )
+  } catch (error) {
+    console.warn("[copilot-store-debug] failed to write select debug log", error)
+  }
+}
+
 export interface MenuItem<T = string> {
   label: string
   value: T
@@ -215,16 +273,29 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions): P
       }
       const action = parseKey(data)
       if (action === "up") {
+        void logSelectDebug({ stage: "key", parsedKey: action, currentValue: items[cursor]?.value })
         cursor = findNextSelectable(cursor, -1)
         render()
         return
       }
       if (action === "down") {
+        void logSelectDebug({ stage: "key", parsedKey: action, currentValue: items[cursor]?.value })
         cursor = findNextSelectable(cursor, 1)
         render()
         return
       }
       if (action === "enter") {
+        void logSelectDebug({
+          stage: "key",
+          parsedKey: action,
+          currentValue: items[cursor]?.value,
+        })
+        void logSelectDebug({
+          stage: "result",
+          parsedKey: action,
+          currentValue: items[cursor]?.value,
+          nextValue: items[cursor]?.value,
+        })
         finish(items[cursor]?.value ?? null)
         return
       }

@@ -3,6 +3,14 @@ import os from "node:os"
 import { promises as fs } from "node:fs"
 import { xdgConfig, xdgData } from "xdg-basedir"
 
+export type StoreWriteDebugMeta = {
+  reason?: string
+  source?: string
+  actionType?: string
+  inputStage?: string
+  parsedKey?: string
+}
+
 export type AccountEntry = {
   name: string
   refresh: string
@@ -67,6 +75,62 @@ export type StoreFile = {
 
 const filename = "copilot-accounts.json"
 const authFile = "auth.json"
+const defaultStoreDebugLogFile = (() => {
+  const tmp = process.env.TEMP || process.env.TMP || "/tmp"
+  return `${tmp}/opencode-copilot-store-debug.log`
+})()
+
+function isStoreDebugEnabled() {
+  return process.env.OPENCODE_COPILOT_STORE_DEBUG === "1"
+}
+
+function buildStoreSnapshot(store: StoreFile | undefined) {
+  return {
+    active: store?.active ?? null,
+    accountCount: Object.keys(store?.accounts ?? {}).length,
+    loopSafetyEnabled: store?.loopSafetyEnabled ?? null,
+    networkRetryEnabled: store?.networkRetryEnabled ?? null,
+    lastAccountSwitchAt: store?.lastAccountSwitchAt ?? null,
+  }
+}
+
+function buildCallStack() {
+  const stack = new Error().stack?.split("\n") ?? []
+  return stack
+    .slice(2)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 12)
+}
+
+async function logStoreWrite(input: {
+  filePath: string
+  before?: StoreFile
+  after: StoreFile
+  debug?: StoreWriteDebugMeta
+}) {
+  if (!isStoreDebugEnabled()) return
+
+  const filePath = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE || defaultStoreDebugLogFile
+  const event = {
+    kind: "store-write",
+    at: new Date().toISOString(),
+    targetFile: input.filePath,
+    cwd: process.cwd(),
+    argv: process.argv.slice(0, 8),
+    stack: buildCallStack(),
+    ...input.debug,
+    before: buildStoreSnapshot(input.before),
+    after: buildStoreSnapshot(input.after),
+  }
+
+  try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.appendFile(filePath, `${JSON.stringify(event)}\n`, "utf8")
+  } catch (error) {
+    console.warn("[copilot-store-debug] failed to write debug log", error)
+  }
+}
 
 export function storePath(): string {
   const base = xdgConfig ?? path.join(os.homedir(), ".config")
@@ -146,8 +210,21 @@ export async function readAuth(filePath?: string): Promise<Record<string, Accoun
   }, {} as Record<string, AccountEntry>)
 }
 
-export async function writeStore(store: StoreFile) {
-  const file = storePath()
+export async function writeStore(
+  store: StoreFile,
+  options?: {
+    filePath?: string
+    debug?: StoreWriteDebugMeta
+  },
+) {
+  const file = options?.filePath ?? storePath()
+  const before = await readStoreSafe(file)
+  await logStoreWrite({
+    filePath: file,
+    before,
+    after: store,
+    debug: options?.debug,
+  })
   await fs.mkdir(path.dirname(file), { recursive: true })
   await fs.writeFile(file, JSON.stringify(store, null, 2), { mode: 0o600 })
 }

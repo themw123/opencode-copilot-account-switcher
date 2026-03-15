@@ -1,10 +1,10 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-import { parseStore, readStore, readStoreSafe } from "../dist/store.js"
+import { parseStore, readStore, readStoreSafe, writeStore } from "../dist/store.js"
 
 test("parseStore defaults loopSafetyEnabled to true when missing", () => {
   const store = parseStore('{"accounts":{}}')
@@ -106,4 +106,122 @@ test("readStoreSafe returns undefined for unreadable files", async () => {
   const store = await readStoreSafe(dir)
 
   assert.equal(store, undefined)
+})
+
+test("writeStore does not emit debug log by default", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "loop-safety-store-debug-default-off-"))
+  const file = path.join(dir, "copilot-accounts.json")
+  const logFile = path.join(dir, "opencode-copilot-store-debug.log")
+
+  await writeFile(
+    file,
+    JSON.stringify(
+      {
+        accounts: {
+          primary: { name: "primary", refresh: "r", access: "a", expires: 0 },
+        },
+        loopSafetyEnabled: true,
+        networkRetryEnabled: true,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  )
+
+  const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
+  const previousEnabled = process.env.OPENCODE_COPILOT_STORE_DEBUG
+  process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = logFile
+  delete process.env.OPENCODE_COPILOT_STORE_DEBUG
+
+  try {
+    await writeStore(
+      {
+        accounts: {},
+        loopSafetyEnabled: false,
+        networkRetryEnabled: true,
+      },
+      {
+        filePath: file,
+        debug: {
+          reason: "toggle-loop-safety",
+          source: "applyMenuAction",
+          actionType: "toggle-loop-safety",
+        },
+      },
+    )
+  } finally {
+    if (previousFile === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
+    else process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = previousFile
+
+    if (previousEnabled === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG
+    else process.env.OPENCODE_COPILOT_STORE_DEBUG = previousEnabled
+  }
+
+  await assert.rejects(readFile(logFile, "utf8"), /ENOENT/)
+})
+
+test("writeStore emits enabled debug log with reason and before-after snapshots", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "loop-safety-store-debug-"))
+  const file = path.join(dir, "copilot-accounts.json")
+  const logFile = path.join(dir, "opencode-copilot-store-debug.log")
+
+  await writeFile(
+    file,
+    JSON.stringify(
+      {
+        accounts: {
+          primary: { name: "primary", refresh: "r", access: "a", expires: 0 },
+        },
+        loopSafetyEnabled: true,
+        networkRetryEnabled: true,
+        lastAccountSwitchAt: 123,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  )
+
+  const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
+  const previousEnabled = process.env.OPENCODE_COPILOT_STORE_DEBUG
+  process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = logFile
+  process.env.OPENCODE_COPILOT_STORE_DEBUG = "1"
+
+  try {
+    await writeStore(
+      {
+        accounts: {},
+        loopSafetyEnabled: false,
+        networkRetryEnabled: true,
+      },
+      {
+        filePath: file,
+        debug: {
+          reason: "toggle-loop-safety",
+          source: "applyMenuAction",
+          actionType: "toggle-loop-safety",
+        },
+      },
+    )
+  } finally {
+    if (previousFile === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
+    else process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = previousFile
+
+    if (previousEnabled === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG
+    else process.env.OPENCODE_COPILOT_STORE_DEBUG = previousEnabled
+  }
+
+  const log = await readFile(logFile, "utf8")
+
+  assert.match(log, /"kind":"store-write"/)
+  assert.match(log, /"reason":"toggle-loop-safety"/)
+  assert.match(log, /"source":"applyMenuAction"/)
+  assert.match(log, /"actionType":"toggle-loop-safety"/)
+  assert.match(log, /"before":\{"active":null,"accountCount":1,"loopSafetyEnabled":true,"networkRetryEnabled":true,"lastAccountSwitchAt":123/) 
+  assert.match(log, /"after":\{"active":null,"accountCount":0,"loopSafetyEnabled":false,"networkRetryEnabled":true,"lastAccountSwitchAt":null/) 
+  assert.match(log, /"cwd":/)
+  assert.match(log, /"argv":\[/)
+  assert.match(log, /"stack":\[/)
+  assert.match(log, /store\.test\.js/)
 })
