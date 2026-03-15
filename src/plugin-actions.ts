@@ -54,5 +54,15 @@ export async function applyMenuAction(input: {
     return true
   }
 
+  if (input.action.type === "toggle-synthetic-agent-initiator") {
+    input.store.syntheticAgentInitiatorEnabled = input.store.syntheticAgentInitiatorEnabled !== true
+    await input.writeStore(input.store, {
+      reason: "toggle-synthetic-agent-initiator",
+      source: "applyMenuAction",
+      actionType: "toggle-synthetic-agent-initiator",
+    })
+    return true
+  }
+
   return false
 }

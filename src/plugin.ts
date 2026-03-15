@@ -537,6 +537,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
   const client = input.client
   const directory = input.directory
   const serverUrl = (input as { serverUrl?: URL }).serverUrl
+  const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => writeStore(store, { debug: meta })
   const methods = [
     {
       type: "oauth" as const,
@@ -672,14 +673,13 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
             }
           : undefined,
       }))
-      const refresh = { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 }
-      const action = await showMenu(
-        accounts,
-        refresh,
-        store.lastQuotaRefresh,
-        store.loopSafetyEnabled === true,
-        store.networkRetryEnabled === true,
-      )
+      const action = await showMenu(accounts, {
+        refresh: { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 },
+        lastQuotaRefresh: store.lastQuotaRefresh,
+        loopSafetyEnabled: store.loopSafetyEnabled === true,
+        networkRetryEnabled: store.networkRetryEnabled === true,
+        syntheticAgentInitiatorEnabled: store.syntheticAgentInitiatorEnabled === true,
+      })
       if (action.type === "cancel") {
         const active = store.active ? store.accounts[store.active] : undefined
         return active
@@ -891,4 +891,3 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
     serverUrl,
   })
 }
-  const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => writeStore(store, { debug: meta })

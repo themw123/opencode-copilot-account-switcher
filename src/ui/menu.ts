@@ -37,6 +37,7 @@ export type MenuAction =
   | { type: "toggle-language" }
   | { type: "toggle-loop-safety" }
   | { type: "toggle-network-retry" }
+  | { type: "toggle-synthetic-agent-initiator" }
   | { type: "switch"; account: AccountInfo }
   | { type: "remove"; account: AccountInfo }
   | { type: "remove-all" }
@@ -66,6 +67,9 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
       enableRetry: "Enable Copilot network retry",
       disableRetry: "Disable Copilot network retry",
       retryHint: "Overrides official fetch path; may drift from upstream",
+      enableSyntheticInitiator: "Enable agent initiator for synthetic messages",
+      disableSyntheticInitiator: "Disable agent initiator for synthetic messages",
+      syntheticInitiatorHint: "Differs from upstream behavior; misuse can be treated as abuse and may trigger unexpected billing",
       accountsHeading: "Accounts",
       dangerHeading: "Danger zone",
       removeAll: "Remove all accounts",
@@ -92,6 +96,9 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
     enableRetry: "开启 Copilot Network Retry",
     disableRetry: "关闭 Copilot Network Retry",
     retryHint: "包装官方 fetch；可能随 upstream 产生漂移",
+    enableSyntheticInitiator: "开启 synthetic 消息的 agent initiator",
+    disableSyntheticInitiator: "关闭 synthetic 消息的 agent initiator",
+    syntheticInitiatorHint: "与 upstream 行为存在差异；滥用可能被视为 abuse，并带来 unexpected billing 风险",
     accountsHeading: "账号",
     dangerHeading: "危险操作",
     removeAll: "删除全部账号",
@@ -124,6 +131,7 @@ export function buildMenuItems(input: {
   lastQuotaRefresh?: number
   loopSafetyEnabled: boolean
   networkRetryEnabled: boolean
+  syntheticAgentInitiatorEnabled?: boolean
   language?: MenuLanguage
 }): MenuItem<MenuAction>[] {
   const copy = getMenuCopy(input.language)
@@ -155,6 +163,12 @@ export function buildMenuItems(input: {
       value: { type: "toggle-network-retry" },
       color: "cyan",
       hint: copy.retryHint,
+    },
+    {
+      label: input.syntheticAgentInitiatorEnabled ? copy.disableSyntheticInitiator : copy.enableSyntheticInitiator,
+      value: { type: "toggle-synthetic-agent-initiator" },
+      color: "cyan",
+      hint: copy.syntheticInitiatorHint,
     },
     { label: "", value: { type: "cancel" }, separator: true },
     { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
@@ -189,22 +203,26 @@ export function buildMenuItems(input: {
 
 export async function showMenu(
   accounts: AccountInfo[],
-  refresh?: { enabled: boolean; minutes: number },
-  lastQuotaRefresh?: number,
-  loopSafetyEnabled = false,
-  networkRetryEnabled = false,
-  language: MenuLanguage = "zh",
+  input: {
+    refresh?: { enabled: boolean; minutes: number }
+    lastQuotaRefresh?: number
+    loopSafetyEnabled?: boolean
+    networkRetryEnabled?: boolean
+    syntheticAgentInitiatorEnabled?: boolean
+    language?: MenuLanguage
+  } = {},
 ): Promise<MenuAction> {
-  let currentLanguage = language
+  let currentLanguage = input.language ?? "zh"
 
   while (true) {
     const copy = getMenuCopy(currentLanguage)
     const items = buildMenuItems({
       accounts,
-      refresh,
-      lastQuotaRefresh,
-      loopSafetyEnabled,
-      networkRetryEnabled,
+      refresh: input.refresh,
+      lastQuotaRefresh: input.lastQuotaRefresh,
+      loopSafetyEnabled: input.loopSafetyEnabled === true,
+      networkRetryEnabled: input.networkRetryEnabled === true,
+      syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled === true,
       language: currentLanguage,
     })
     const result = await select(items, {

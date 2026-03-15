@@ -51,6 +51,7 @@ type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
 type RetryStoreContext = {
   networkRetryEnabled?: boolean
   lastAccountSwitchAt?: number
+  syntheticAgentInitiatorEnabled?: boolean
 }
 
 type DebugPart = {
@@ -105,6 +106,7 @@ function readRetryStoreContext(store: StoreFile | undefined): RetryStoreContext 
   return {
     networkRetryEnabled: store.networkRetryEnabled,
     lastAccountSwitchAt: typeof maybeLastAccountSwitchAt === "number" ? maybeLastAccountSwitchAt : undefined,
+    syntheticAgentInitiatorEnabled: store.syntheticAgentInitiatorEnabled === true,
   }
 }
 
@@ -192,6 +194,46 @@ export function buildPluginHooks(input: {
     if (!isCopilotProvider(hookInput.model.providerID)) return
     const headersBeforeOfficial = { ...output.headers }
     await (await officialChatHeaders)(hookInput, output)
+
+    const store = readRetryStoreContext(await loadStore().catch(() => undefined))
+    const initiatorBeforeOfficial = headersBeforeOfficial["x-initiator"]
+    const initiatorAfterOfficial = output.headers["x-initiator"]
+    const officialWroteInitiator = initiatorAfterOfficial !== initiatorBeforeOfficial
+    const messageID = hookInput.message.id
+    const shouldCheckSyntheticInitiator =
+      store?.syntheticAgentInitiatorEnabled === true
+      && officialWroteInitiator !== true
+      && typeof messageID === "string"
+      && messageID.length > 0
+
+    if (shouldCheckSyntheticInitiator) {
+      const currentMessage = await (input.client?.session?.message as undefined | ((input: {
+        path: {
+          id: string
+          messageID: string
+        }
+        query?: {
+          directory?: string
+        }
+        throwOnError?: boolean
+      }) => Promise<{ data?: { parts?: Array<DebugPart> } } | undefined>))?.({
+        path: {
+          id: hookInput.message.sessionID ?? hookInput.sessionID,
+          messageID,
+        },
+        query: {
+          directory: input.directory,
+        },
+        throwOnError: true,
+      }).catch(() => undefined)
+      const currentParts = Array.isArray(currentMessage?.data?.parts) ? currentMessage.data.parts as Array<DebugPart> : undefined
+      const hasSyntheticTextPart = currentParts?.some((part) => part?.type === "text" && part?.synthetic === true) === true
+
+      if (hasSyntheticTextPart) {
+        output.headers["x-initiator"] = "agent"
+      }
+    }
+
     if (isDebugEnabled()) {
       const currentMessage = await input.client?.session?.message?.({
         path: {

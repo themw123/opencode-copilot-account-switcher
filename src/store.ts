@@ -71,6 +71,7 @@ export type StoreFile = {
   lastQuotaRefresh?: number
   loopSafetyEnabled?: boolean
   networkRetryEnabled?: boolean
+  syntheticAgentInitiatorEnabled?: boolean
 }
 
 const filename = "copilot-accounts.json"
@@ -91,6 +92,7 @@ function buildStoreSnapshot(store: StoreFile | undefined) {
     loopSafetyEnabled: store?.loopSafetyEnabled ?? null,
     networkRetryEnabled: store?.networkRetryEnabled ?? null,
     lastAccountSwitchAt: store?.lastAccountSwitchAt ?? null,
+    syntheticAgentInitiatorEnabled: store?.syntheticAgentInitiatorEnabled ?? false,
   }
 }
 
@@ -150,6 +152,7 @@ export function parseStore(raw: string): StoreFile {
   }
   if (data.loopSafetyEnabled !== false) data.loopSafetyEnabled = true
   if (data.networkRetryEnabled !== true) data.networkRetryEnabled = false
+  if (data.syntheticAgentInitiatorEnabled !== true) data.syntheticAgentInitiatorEnabled = false
   for (const [name, entry] of Object.entries(data.accounts)) {
     const info = entry as AccountEntry
     if (!info.name) info.name = name

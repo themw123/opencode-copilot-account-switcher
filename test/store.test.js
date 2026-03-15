@@ -6,6 +6,33 @@ import path from "node:path"
 
 import { parseStore, readStore, readStoreSafe, writeStore } from "../dist/store.js"
 
+async function withStoreDebugEnv(logFile, enabled, action) {
+  const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
+  const previousEnabled = process.env.OPENCODE_COPILOT_STORE_DEBUG
+
+  process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = logFile
+  if (enabled === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG
+  else process.env.OPENCODE_COPILOT_STORE_DEBUG = enabled
+
+  try {
+    return await action()
+  } finally {
+    if (previousFile === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
+    else process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = previousFile
+
+    if (previousEnabled === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG
+    else process.env.OPENCODE_COPILOT_STORE_DEBUG = previousEnabled
+  }
+}
+
+async function readDebugLogEvent(logFile) {
+  const log = await readFile(logFile, "utf8")
+  const lines = log.trim().split("\n")
+
+  assert.equal(lines.length, 1)
+  return JSON.parse(lines[0])
+}
+
 test("parseStore defaults loopSafetyEnabled to true when missing", () => {
   const store = parseStore('{"accounts":{}}')
 
@@ -17,6 +44,18 @@ test("parseStore defaults networkRetryEnabled to false when missing", () => {
   const store = parseStore('{"accounts":{}}')
 
   assert.equal(store.networkRetryEnabled, false)
+})
+
+test("parseStore defaults syntheticAgentInitiatorEnabled to false when missing", () => {
+  const store = parseStore('{"accounts":{}}')
+
+  assert.equal(store.syntheticAgentInitiatorEnabled, false)
+})
+
+test("parseStore coerces invalid syntheticAgentInitiatorEnabled values to false", () => {
+  const store = parseStore('{"accounts":{},"syntheticAgentInitiatorEnabled":"yes"}')
+
+  assert.equal(store.syntheticAgentInitiatorEnabled, false)
 })
 
 test("parseStore preserves networkRetryEnabled when explicitly true", () => {
@@ -129,12 +168,7 @@ test("writeStore does not emit debug log by default", async () => {
     "utf8",
   )
 
-  const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
-  const previousEnabled = process.env.OPENCODE_COPILOT_STORE_DEBUG
-  process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = logFile
-  delete process.env.OPENCODE_COPILOT_STORE_DEBUG
-
-  try {
+  await withStoreDebugEnv(logFile, undefined, async () => {
     await writeStore(
       {
         accounts: {},
@@ -150,13 +184,7 @@ test("writeStore does not emit debug log by default", async () => {
         },
       },
     )
-  } finally {
-    if (previousFile === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
-    else process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = previousFile
-
-    if (previousEnabled === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG
-    else process.env.OPENCODE_COPILOT_STORE_DEBUG = previousEnabled
-  }
+  })
 
   await assert.rejects(readFile(logFile, "utf8"), /ENOENT/)
 })
@@ -183,12 +211,7 @@ test("writeStore emits enabled debug log with reason and before-after snapshots"
     "utf8",
   )
 
-  const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
-  const previousEnabled = process.env.OPENCODE_COPILOT_STORE_DEBUG
-  process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = logFile
-  process.env.OPENCODE_COPILOT_STORE_DEBUG = "1"
-
-  try {
+  await withStoreDebugEnv(logFile, "1", async () => {
     await writeStore(
       {
         accounts: {},
@@ -204,24 +227,73 @@ test("writeStore emits enabled debug log with reason and before-after snapshots"
         },
       },
     )
-  } finally {
-    if (previousFile === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
-    else process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE = previousFile
+  })
 
-    if (previousEnabled === undefined) delete process.env.OPENCODE_COPILOT_STORE_DEBUG
-    else process.env.OPENCODE_COPILOT_STORE_DEBUG = previousEnabled
-  }
+  const event = await readDebugLogEvent(logFile)
 
-  const log = await readFile(logFile, "utf8")
+  assert.equal(event.kind, "store-write")
+  assert.equal(event.reason, "toggle-loop-safety")
+  assert.equal(event.source, "applyMenuAction")
+  assert.equal(event.actionType, "toggle-loop-safety")
+  assert.equal(event.cwd, process.cwd())
+  assert.ok(Array.isArray(event.argv))
+  assert.ok(Array.isArray(event.stack))
+  assert.match(event.stack.join("\n"), /store\.test\.js/)
+  assert.deepEqual(event.before, {
+    active: null,
+    accountCount: 1,
+    loopSafetyEnabled: true,
+    networkRetryEnabled: true,
+    lastAccountSwitchAt: 123,
+    syntheticAgentInitiatorEnabled: false,
+  })
+  assert.deepEqual(event.after, {
+    active: null,
+    accountCount: 0,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: true,
+    lastAccountSwitchAt: null,
+    syntheticAgentInitiatorEnabled: false,
+  })
+})
 
-  assert.match(log, /"kind":"store-write"/)
-  assert.match(log, /"reason":"toggle-loop-safety"/)
-  assert.match(log, /"source":"applyMenuAction"/)
-  assert.match(log, /"actionType":"toggle-loop-safety"/)
-  assert.match(log, /"before":\{"active":null,"accountCount":1,"loopSafetyEnabled":true,"networkRetryEnabled":true,"lastAccountSwitchAt":123/) 
-  assert.match(log, /"after":\{"active":null,"accountCount":0,"loopSafetyEnabled":false,"networkRetryEnabled":true,"lastAccountSwitchAt":null/) 
-  assert.match(log, /"cwd":/)
-  assert.match(log, /"argv":\[/)
-  assert.match(log, /"stack":\[/)
-  assert.match(log, /store\.test\.js/)
+test("writeStore enabled debug snapshot includes syntheticAgentInitiatorEnabled", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "synthetic-initiator-store-debug-"))
+  const file = path.join(dir, "copilot-accounts.json")
+  const logFile = path.join(dir, "opencode-copilot-store-debug.log")
+
+  await writeFile(
+    file,
+    JSON.stringify(
+      {
+        accounts: {
+          primary: { name: "primary", refresh: "r", access: "a", expires: 0 },
+        },
+        syntheticAgentInitiatorEnabled: true,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  )
+
+  await withStoreDebugEnv(logFile, "1", async () => {
+    await writeStore(
+      {
+        accounts: {},
+        syntheticAgentInitiatorEnabled: false,
+      },
+      {
+        filePath: file,
+        debug: {
+          reason: "toggle-synthetic-agent-initiator",
+        },
+      },
+    )
+  })
+
+  const event = await readDebugLogEvent(logFile)
+
+  assert.equal(event.before.syntheticAgentInitiatorEnabled, true)
+  assert.equal(event.after.syntheticAgentInitiatorEnabled, false)
 })

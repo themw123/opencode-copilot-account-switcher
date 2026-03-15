@@ -12,7 +12,7 @@
 
 ## 中文
 
-在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**、默认开启的 **Guided Loop Safety** 模式，以及默认关闭的 **Copilot Network Retry** 开关；前者帮助一次 premium request 更容易连续工作好几个小时、减少真正需要你输入之前的汇报打断，后者用于处理可重试的网络与证书类失败。**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
+在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**、默认开启的 **Guided Loop Safety** 模式，以及默认关闭的 **Copilot Network Retry** 和 **Synthetic Agent Initiator** 开关；前者帮助一次 premium request 更容易连续工作好几个小时、减少真正需要你输入之前的汇报打断，后两者分别用于处理可重试的网络/证书类失败，以及提前启用 upstream 仍在开发中的 synthetic initiator 语义。**Synthetic Agent Initiator 属于实验性开关**：开启后会让请求行为偏离 upstream 当前稳定代码，发送或覆盖 `x-initiator=agent` 这一预测性标识，但**不保证平台一定不计费**，且存在滥用判定与意外计费风险。**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
 
 ## 功能一览
 
@@ -21,6 +21,7 @@
 - **导入认证** — 可从 OpenCode 认证存储导入
 - **Guided Loop Safety** — 默认开启；仅对 Copilot 生效的更严格 question-first 提示词策略，推动非阻塞工作持续执行、让一次 premium request 更容易连续工作好几个小时，并通过减少反复中断来降低无谓配额消耗
 - **Copilot Network Retry** — 默认关闭；把可重试的 Copilot 网络或 TLS 失败归一化成 OpenCode 原生重试链路可识别的形态
+- **Synthetic Agent Initiator** — 默认关闭；实验性开关，会偏离 upstream 稳定行为，发送或覆盖 `x-initiator=agent`，并伴随计费/滥用风险
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -104,6 +105,7 @@ opencode auth login --provider github-copilot
 - **检查配额**
 - **Guided Loop Safety 开关** — 通过提示词引导模型在可用时必须使用 `question` 做用户可见汇报、继续完成非阻塞工作、减少反复中断，并减少不必要等待
 - **Copilot Network Retry 开关** — 默认关闭；仅影响 Copilot 请求的 `fetch` 路径，只处理可重试的网络/证书类失败
+- **Synthetic Agent Initiator 开关** — 默认关闭；实验性开关，发送或覆盖 `x-initiator=agent`，会偏离 upstream 稳定行为，且不保证平台一定不计费
 - **切换账号**
 - **删除账号**
 - **全部删除**
@@ -119,6 +121,19 @@ Guided Loop Safety 现在默认开启。实际使用中，它可以让一次 req
 - 用途：有限处理 `failed to fetch`、`ECONNRESET`、`unknown certificate`、`self signed certificate` 等可重试网络/证书类失败
 - 实现策略：尽量保留官方 loader 行为，再把可重试失败归一化给 OpenCode 原生重试链路判断是否重试
 - 风险提示：因为插件仍然包裹了官方 fetch 路径，若 upstream 后续内部实现变化，仍可能产生行为漂移
+
+## Synthetic Agent Initiator
+
+- 默认：**关闭**
+- 作用：发送或覆盖 `x-initiator=agent`，用于提前启用 upstream 开发中的 synthetic initiator 语义
+- 与 upstream 当前稳定代码的关系：开启后，请求行为会与 upstream 当前稳定代码不一致；这是基于上游开发中语义的提前启用方案，不是 upstream 稳定默认行为
+- 计费相关说明：平台可能更倾向于把压缩后继续工作、以及其他自动生成的 synthetic 提示消息排除在 premium request 计费范围之外，但这不是保证；实际是否计费、如何计费，始终由平台决定，请不要把它理解为“必然不计费”
+- 风险提示：该行为可能更容易被平台判定为滥用；也可能因为上游实现、平台策略或服务端校验变化而失效，甚至产生意外计费
+- 上游参考：
+  - Issue: https://github.com/anomalyco/opencode/issues/8700
+  - PR: https://github.com/anomalyco/opencode/pull/8721
+  - Issue: https://github.com/anomalyco/opencode/issues/8766
+  - Commit: https://github.com/anomalyco/opencode/commit/88226f30610d6038a431796a8ae5917199d49c74
 
 ## Upstream 同步机制
 
@@ -162,7 +177,7 @@ npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --s
 
 ## English
 
-Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, a default-on **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input, and an optional **Copilot Network Retry** switch for retryable network and certificate failures. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
+Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, a default-on **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input, plus optional **Copilot Network Retry** and **Synthetic Agent Initiator** switches for retryable network/certificate failures and early adoption of upstream's in-progress synthetic initiator semantics. **Synthetic Agent Initiator is experimental**: it intentionally diverges from stable upstream behavior, sends or overrides the predictive `x-initiator=agent` marker, does not guarantee the platform will treat requests as non-billable, and carries abuse/unexpected-billing risk. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
 
 ## What You Get
 
@@ -171,6 +186,7 @@ Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. 
 - **Auth import** — import Copilot tokens from OpenCode auth storage
 - **Guided Loop Safety** — enabled by default; a stricter Copilot-only question-first policy designed to keep non-blocked work moving, keep one premium request productive for hours, and cut avoidable quota burn by replacing repeated interruption turns with `question`-based waiting
 - **Copilot Network Retry** — optional and off by default; normalizes retryable Copilot network or TLS failures so OpenCode's native retry path can handle them
+- **Synthetic Agent Initiator** — optional and off by default; experimental switch that diverges from stable upstream behavior, sends or overrides `x-initiator=agent`, and carries billing/abuse risk
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -249,9 +265,21 @@ opencode auth login --provider github-copilot
 
 You will see an interactive menu. Use the built-in language switch action if you want to swap between Chinese and English labels.
 
+- **Add account**
+- **Import from auth.json**
+- **Check quota**
+- **Guided Loop Safety toggle** — keeps question-first reporting enabled for Copilot so non-blocked work continues with fewer avoidable interruptions
+- **Copilot Network Retry toggle** — off by default; only affects the Copilot `fetch` path for retryable network/certificate failures
+- **Synthetic Agent Initiator toggle** — off by default; experimental switch that sends or overrides `x-initiator=agent`, diverges from stable upstream behavior, and does not guarantee non-billable treatment
+- **Switch account**
+- **Delete account**
+- **Delete all**
+
 Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, user-facing reports must go through it, so waiting for your reply does not keep burning extra quota the way repeated direct-status interruptions do. Fewer interruptions also means less avoidable quota burn. If safe non-blocked work remains, Copilot should keep going instead of pausing early; only when no safe action remains should it use `question` to ask for the next task or clarification, reducing unnecessary waiting.
 
 If you switch Copilot accounts and then hit transient TLS/network failures or `input[*].id too long` errors caused by stale session item IDs, enable Copilot Network Retry from the same menu. It is off by default. When enabled, the plugin keeps the official Copilot header/baseURL behavior from the upstream loader, only wraps the final Copilot `fetch` path, and converts retryable network-like failures into a shape that OpenCode already treats as retryable. It also repairs the matched session part after an `input[*].id too long` 400 so later retries can recover instead of repeatedly failing on stale item IDs.
+
+You can also enable Synthetic Agent Initiator from the same menu. It is off by default. From a user perspective, it changes the request marker by sending or overriding `x-initiator=agent` so requests follow an early version of upstream's still-in-development synthetic initiator semantics instead of the current stable upstream behavior; it does not change who makes the final billing decision, and it does not guarantee the platform will treat those requests as non-billable.
 
 ## Copilot Network Retry
 
@@ -260,6 +288,19 @@ If you switch Copilot accounts and then hit transient TLS/network failures or `i
 - Purpose: limited handling for retryable network and certificate-style failures such as `failed to fetch`, `ECONNRESET`, `unknown certificate`, or `self signed certificate`
 - Strategy: preserve official loader behavior, then normalize retryable failures so OpenCode's native retry pipeline can decide whether and when to retry
 - Risk: because the plugin still wraps the official fetch path, upstream internal behavior may change over time and drift is possible
+
+## Synthetic Agent Initiator
+
+- Default: **disabled**
+- Effect: sends or overrides `x-initiator=agent` to enable upstream's in-progress synthetic initiator semantics early
+- Relation to stable upstream: when enabled, request behavior intentionally differs from the current stable upstream code path; this is an early-adoption path based on upstream work in progress, not the stable upstream default
+- Billing note: compressed continue-working flows and other automatically generated synthetic prompt messages may be more likely to fall outside premium request billing, but that is not guaranteed; the platform decides whether and how billing applies, so do not treat this as "guaranteed non-billable"
+- Risk: this behavior may be more likely to be treated as abuse, may stop working as upstream/platform behavior changes, and may also lead to unexpected billing
+- Upstream references:
+  - Issue: https://github.com/anomalyco/opencode/issues/8700
+  - PR: https://github.com/anomalyco/opencode/pull/8721
+  - Issue: https://github.com/anomalyco/opencode/issues/8766
+  - Commit: https://github.com/anomalyco/opencode/commit/88226f30610d6038a431796a8ae5917199d49c74
 
 ## Upstream Sync
 

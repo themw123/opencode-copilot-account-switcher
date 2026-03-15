@@ -129,6 +129,62 @@ test("Copilot network retry toggle is placed after guided loop safety and before
   assert.equal(retryIndex < separatorIndex, true)
 })
 
+test("buildMenuItems shows synthetic initiator enable copy and risk hint when disabled", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    syntheticAgentInitiatorEnabled: false,
+    language: "en",
+  })
+
+  const toggle = items.find((item) => item.label === "Enable agent initiator for synthetic messages")
+  assert.ok(toggle)
+  assert.match(toggle?.hint ?? "", /upstream/i)
+  assert.match(toggle?.hint ?? "", /abuse/i)
+  assert.match(toggle?.hint ?? "", /unexpected billing/i)
+})
+
+test("buildMenuItems shows synthetic initiator disable copy when enabled", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    syntheticAgentInitiatorEnabled: true,
+    language: "en",
+  })
+
+  const toggle = items.find((item) => item.label === "Disable agent initiator for synthetic messages")
+  assert.ok(toggle)
+})
+
+test("synthetic initiator toggle is placed after network retry and before the separator", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    syntheticAgentInitiatorEnabled: false,
+    language: "en",
+  })
+
+  const labels = items.map((item) => item.label)
+  const retryIndex = labels.indexOf("Enable Copilot network retry")
+  const syntheticIndex = labels.indexOf("Enable agent initiator for synthetic messages")
+  const separatorIndex = items.findIndex((item) => item.separator === true)
+
+  assert.notEqual(retryIndex, -1)
+  assert.notEqual(syntheticIndex, -1)
+  assert.notEqual(separatorIndex, -1)
+  assert.equal(syntheticIndex, retryIndex + 1)
+  assert.equal(syntheticIndex < separatorIndex, true)
+})
+
 test("buildMenuItems includes a language switch action", () => {
   const items = buildMenuItems({
     accounts: [],

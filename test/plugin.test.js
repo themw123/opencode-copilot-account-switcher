@@ -115,7 +115,7 @@ test("plugin chat headers only append internal session id locally", async () => 
   assert.equal(Object.hasOwn(googleOutput.headers, "x-opencode-session-id"), false)
 })
 
-test("plugin chat headers marks compaction messages as agent initiated", async () => {
+function createSyntheticChatHeadersHarness(input = {}) {
   const calls = []
   const plugin = buildPluginHooks({
     auth: {
@@ -125,70 +125,266 @@ test("plugin chat headers marks compaction messages as agent initiated", async (
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
+      syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled === true,
     }),
-    client: {
+    client: input.client ?? {
       session: {
-        message: async (input) => {
-          calls.push({ type: "message", input })
-          return {
-            data: {
-              parts: [{ type: "compaction" }],
-            },
+        message: async (request) => {
+          calls.push(request)
+          if (typeof input.messageResponse === "function") {
+            return input.messageResponse(request)
           }
-        },
-        get: async (input) => {
-          calls.push({ type: "get", input })
-          return {
-            data: {
-              parentID: "parent-session",
-            },
-          }
+          return input.messageResponse
         },
       },
     },
     directory: "/tmp/project",
+    loadOfficialChatHeaders: async () => async (_hookInput, output) => {
+      output.headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+      if (input.officialInitiator !== undefined) {
+        output.headers["x-initiator"] = input.officialInitiator
+      }
+    },
   })
 
-  const output = {
-    headers: {},
+  return {
+    calls,
+    chatHeaders: plugin["chat.headers"],
   }
+}
 
-  await plugin["chat.headers"]?.(
-    {
-      sessionID: "session-123",
-      agent: "task",
-      model: {
-        providerID: "github-copilot",
-        api: {
-          npm: "@ai-sdk/anthropic",
-        },
-      },
-      provider: { source: "custom", info: {}, options: {} },
-      message: {
-        id: "message-456",
-        sessionID: "session-123",
+function createChatHeadersInput(input = {}) {
+  return {
+    sessionID: input.sessionID ?? "session-123",
+    agent: "task",
+    model: {
+      providerID: input.providerID ?? "github-copilot",
+      api: {
+        npm: "@ai-sdk/anthropic",
       },
     },
-    output,
-  )
+    provider: { source: "custom", info: {}, options: {} },
+    message: input.message ?? {
+      id: "message-456",
+      sessionID: input.sessionID ?? "session-123",
+    },
+  }
+}
+
+test("plugin chat headers synthetic stays disabled by default", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    messageResponse: {
+      data: {
+        parts: [{ type: "text", text: "Continue with the next task", synthetic: true }],
+      },
+    },
+  })
+  const output = { headers: {} }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.deepEqual(output.headers, {
+    "anthropic-beta": "interleaved-thinking-2025-05-14",
+    "x-opencode-session-id": "session-123",
+  })
+})
+
+test("plugin chat headers synthetic text overrides x-initiator when enabled", async () => {
+  const { chatHeaders, calls } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    messageResponse: {
+      data: {
+        parts: [{ type: "text", text: "Continue with the next task", synthetic: true }],
+      },
+    },
+  })
+  const output = {
+    headers: {
+      "x-initiator": "user",
+    },
+  }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
 
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
     "x-initiator": "agent",
     "x-opencode-session-id": "session-123",
   })
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].type, "message")
-  assert.deepEqual(calls[0].input, {
-    path: {
-      id: "session-123",
-      messageID: "message-456",
+  assert.deepEqual(calls, [
+    {
+      path: {
+        id: "session-123",
+        messageID: "message-456",
+      },
+      query: {
+        directory: "/tmp/project",
+      },
+      throwOnError: true,
     },
-    query: {
-      directory: "/tmp/project",
+  ])
+})
+
+test("plugin chat headers synthetic leaves ordinary text unchanged", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    messageResponse: {
+      data: {
+        parts: [{ type: "text", text: "Plain user message", synthetic: false }],
+      },
     },
-    throwOnError: true,
   })
+  const output = {
+    headers: {
+      "x-initiator": "user",
+    },
+  }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+})
+
+test("plugin chat headers continue template text without synthetic never triggers", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    messageResponse: {
+      data: {
+        parts: [{ type: "text", text: "Continue with the next task now", synthetic: false }],
+      },
+    },
+  })
+  const output = {
+    headers: {
+      "x-initiator": "user",
+    },
+  }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+})
+
+test("plugin chat headers synthetic non-text part does not trigger", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    messageResponse: {
+      data: {
+        parts: [{ type: "tool", synthetic: true, text: "Continue with the next task now" }],
+      },
+    },
+  })
+  const output = {
+    headers: {
+      "x-initiator": "user",
+    },
+  }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+})
+
+test("plugin chat headers non-Copilot provider ignores synthetic initiator", async () => {
+  const { chatHeaders, calls } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    messageResponse: async () => {
+      throw new Error("lookup should not run")
+    },
+  })
+  const output = {
+    headers: {
+      "x-initiator": "user",
+    },
+  }
+
+  await chatHeaders?.(createChatHeadersInput({ providerID: "google" }), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+  assert.deepEqual(calls, [])
+})
+
+test("plugin chat headers synthetic lookup failure preserves official initiator", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    officialInitiator: "user",
+    messageResponse: async () => {
+      throw new Error("lookup failure")
+    },
+  })
+  const output = { headers: {} }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+})
+
+test("plugin chat headers synthetic preserves official initiator when official already set one", async () => {
+  const { chatHeaders, calls } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    officialInitiator: "user",
+    messageResponse: {
+      data: {
+        parts: [{ type: "text", text: "Continue with the next task", synthetic: true }],
+      },
+    },
+  })
+  const output = { headers: {} }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+  assert.deepEqual(calls, [])
+})
+
+test("plugin chat headers synthetic missing message id preserves official initiator", async () => {
+  const { chatHeaders, calls } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    officialInitiator: "user",
+    messageResponse: {
+      data: {
+        parts: [{ type: "text", text: "Continue with the next task", synthetic: true }],
+      },
+    },
+  })
+  const output = { headers: {} }
+
+  await chatHeaders?.(createChatHeadersInput({ message: { sessionID: "session-123" } }), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+  assert.deepEqual(calls, [])
+})
+
+test("plugin chat headers synthetic missing parts preserves official initiator", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    officialInitiator: "user",
+    messageResponse: {
+      data: {},
+    },
+  })
+  const output = { headers: {} }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
+})
+
+test("plugin chat headers synthetic empty parts preserves official initiator", async () => {
+  const { chatHeaders } = createSyntheticChatHeadersHarness({
+    syntheticAgentInitiatorEnabled: true,
+    officialInitiator: "user",
+    messageResponse: {
+      data: {
+        parts: [],
+      },
+    },
+  })
+  const output = { headers: {} }
+
+  await chatHeaders?.(createChatHeadersInput(), output)
+
+  assert.equal(output.headers["x-initiator"], "user")
 })
 
 test("plugin chat headers debug logs include evidence and candidates without leaking session parent id", async () => {
@@ -935,6 +1131,28 @@ test("plugin menu toggle path persists networkRetryEnabled", async () => {
   assert.deepEqual(writes, [true])
 })
 
+test("plugin menu toggle path persists synthetic initiator state", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    syntheticAgentInitiatorEnabled: false,
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-synthetic-agent-initiator" },
+    store,
+    writeStore: async (next) => {
+      writes.push(next.syntheticAgentInitiatorEnabled)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.equal(store.syntheticAgentInitiatorEnabled, true)
+  assert.deepEqual(writes, [true])
+})
+
 test("plugin menu toggle path forwards debug reason for loop safety writes", async () => {
   const writes = []
   const store = {
@@ -1238,14 +1456,6 @@ test("plugin auth loader notifier clears ttl-expired persisted switch context wi
   assert.match(toastCalls[0].body.message, /可能因账号切换遗留的非法输入 ID/)
   assert.equal(store.lastAccountSwitchAt, undefined)
   assert.deepEqual(writes, [undefined])
-})
-
-test("plugin menu wiring passes networkRetryEnabled into showMenu", async () => {
-  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
-
-  assert.match(pluginSource, /showMenu\(/)
-  assert.match(pluginSource, /store\.loopSafetyEnabled === true/)
-  assert.match(pluginSource, /store\.networkRetryEnabled === true/)
 })
 
 test("plugin switch flow prints retry hint after account switch", async () => {
