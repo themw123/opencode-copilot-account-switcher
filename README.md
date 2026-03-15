@@ -12,7 +12,13 @@
 
 ## 中文
 
-在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件提供**账号切换、配额查询**、默认开启的 **Guided Loop Safety** 模式，以及默认关闭的 **Copilot Network Retry** 和 **Synthetic Agent Initiator** 开关；前者帮助一次 premium request 更容易连续工作好几个小时、减少真正需要你输入之前的汇报打断，后两者分别用于处理可重试的网络/证书类失败，以及提前启用 upstream 仍在开发中的 synthetic initiator 语义。**Synthetic Agent Initiator 属于实验性开关**：开启后会让请求行为偏离 upstream 当前稳定代码，发送或覆盖 `x-initiator=agent` 这一预测性标识，但**不保证平台一定不计费**，且存在滥用判定与意外计费风险。**完全依赖官方 `github-copilot` provider**，无需修改模型配置。
+在 **OpenCode** 中管理并切换多个 **GitHub Copilot** 账号。本插件基于官方 `github-copilot` provider，补充账号管理、配额查看和几项 Copilot 工作流增强能力，**无需修改模型配置**。
+
+默认能力与开关：
+
+- **Guided Loop Safety** — 默认开启；帮助一次 premium request 更容易连续工作更久，并减少真正需要你输入前的汇报打断
+- **Copilot Network Retry** — 默认关闭；用于处理可重试的网络或证书类失败
+- **Synthetic Agent Initiator** — 默认关闭；实验性开关，会偏离 upstream 当前稳定行为，发送或覆盖 `x-initiator=agent`，不保证平台一定不计费，且存在滥用判定与意外计费风险
 
 ## 功能一览
 
@@ -177,7 +183,13 @@ npm run check:copilot-sync -- --source <file-or-url> --upstream-commit <sha> --s
 
 ## English
 
-Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. This plugin adds account switching, quota checks, a default-on **Guided Loop Safety** mode that can keep a single premium request productive for hours with fewer report interruptions before it truly needs user input, plus optional **Copilot Network Retry** and **Synthetic Agent Initiator** switches for retryable network/certificate failures and early adoption of upstream's in-progress synthetic initiator semantics. **Synthetic Agent Initiator is experimental**: it intentionally diverges from stable upstream behavior, sends or overrides the predictive `x-initiator=agent` marker, does not guarantee the platform will treat requests as non-billable, and carries abuse/unexpected-billing risk. It **uses the official `github-copilot` provider** and does **not** require model reconfiguration.
+Manage and switch between multiple **GitHub Copilot** accounts in **OpenCode**. The plugin builds on the official `github-copilot` provider to add account management, quota visibility, and a few Copilot workflow enhancements, with **no model reconfiguration required**.
+
+Default behavior and optional switches:
+
+- **Guided Loop Safety** — enabled by default; helps a single premium request stay productive longer with fewer report interruptions before it truly needs user input
+- **Copilot Network Retry** — optional and off by default; handles retryable network or certificate-style failures
+- **Synthetic Agent Initiator** — optional and off by default; experimental switch that diverges from stable upstream behavior, sends or overrides `x-initiator=agent`, does not guarantee non-billable treatment, and carries abuse or unexpected-billing risk
 
 ## What You Get
 
