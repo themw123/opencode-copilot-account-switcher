@@ -33,9 +33,7 @@ export const LOOP_SAFETY_POLICY = `Guided Loop Safety Policy
 - MANDATORY: Repeated waiting for the next task is not a reason to stop using the question tool.
 - When no further action can be taken safely and no non-blocked work remains, use the question tool to ask for the next task or clarification instead of ending with direct assistant text.
 - When the user says "stop", do not send assistant text to acknowledge the stop. Use the question tool only if more user-visible communication is still required by policy.
-- Dispatching task or subagent work is expensive and should be avoided unless it materially improves the result.
-- Materially improves the result means clearly beneficial cases such as parallel analysis of independent areas; it does not include routine local searches, small file reads, or straightforward edits.
-- If task or subagent delegation is used, keep the number minimal and explain the reason briefly through the question tool when available.`
+`
 
 export type ExperimentalChatSystemTransformHook = (
   input: {
