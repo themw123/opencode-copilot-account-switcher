@@ -56,7 +56,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^0.15.30",
+    "@opencode-ai/sdk": "^1.2.26",
+    "@opencode-ai/plugin": "^1.2.26",
     "xdg-basedir": "^5.1.0"
   }
 }

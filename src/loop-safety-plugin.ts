@@ -39,7 +39,7 @@ export const LOOP_SAFETY_POLICY = `Guided Loop Safety Policy
 
 export type ExperimentalChatSystemTransformHook = (
   input: {
-    sessionID: string
+    sessionID?: string
     model: {
       providerID: string
     }
