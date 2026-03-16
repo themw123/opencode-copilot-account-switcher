@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs"
 import {
+  createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
   isCopilotProvider,
   type CopilotPluginHooks,
@@ -126,6 +127,7 @@ export function buildPluginHooks(input: {
   clearAccountSwitchContext?: (lastAccountSwitchAt?: number) => Promise<void>
   now?: () => number
 }): CopilotPluginHooksWithChatHeaders {
+  const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
   const persistStore = input.writeStore ?? writeStore
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
@@ -308,6 +310,10 @@ export function buildPluginHooks(input: {
       loader,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
     "chat.headers": chatHeaders,
-    "experimental.chat.system.transform": createLoopSafetySystemTransform(loadStore),
+    "experimental.chat.system.transform": createLoopSafetySystemTransform(
+      loadStore,
+      compactionLoopSafetyBypass.consume,
+    ),
+    "experimental.session.compacting": compactionLoopSafetyBypass.hook,
   }
 }

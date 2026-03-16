@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import type { Hooks } from "@opencode-ai/plugin"
 import { readStoreSafe, type StoreFile } from "./store.js"
 
@@ -47,8 +48,24 @@ export type ExperimentalChatSystemTransformHook = (
   },
 ) => Promise<void>
 
+export type ExperimentalSessionCompactingHook = (
+  input: {
+    sessionID: string
+  },
+  output: {
+    context: string[]
+    prompt?: string
+  },
+) => Promise<void>
+
 export type CopilotPluginHooks = Hooks & {
   "experimental.chat.system.transform"?: ExperimentalChatSystemTransformHook
+  "experimental.session.compacting"?: ExperimentalSessionCompactingHook
+}
+
+export type CompactionLoopSafetyBypass = {
+  hook: ExperimentalSessionCompactingHook
+  consume(sessionID?: string): boolean
 }
 
 export function isCopilotProvider(providerID: string): boolean {
@@ -58,9 +75,11 @@ export function isCopilotProvider(providerID: string): boolean {
 export function applyLoopSafetyPolicy(input: {
   providerID: string
   enabled: boolean
+  skip?: boolean
   system: string[]
 }): string[] {
   if (!input.enabled) return input.system
+  if (input.skip) return input.system
   if (!isCopilotProvider(input.providerID)) return input.system
   if (input.system.includes(LOOP_SAFETY_POLICY)) return input.system
   return [...input.system, LOOP_SAFETY_POLICY]
@@ -68,16 +87,44 @@ export function applyLoopSafetyPolicy(input: {
 
 export function createLoopSafetySystemTransform(
   loadStore: () => Promise<StoreFile | undefined> = readStoreSafe,
+  consumeCompactionBypass: (sessionID?: string) => boolean = () => false,
 ): ExperimentalChatSystemTransformHook {
   return async (input, output) => {
     const store = await loadStore().catch(() => undefined)
+    const enabled = store?.loopSafetyEnabled === true
+    const skip = enabled && isCopilotProvider(input.model.providerID)
+      ? consumeCompactionBypass(input.sessionID)
+      : false
     const next = applyLoopSafetyPolicy({
       providerID: input.model.providerID,
-      enabled: store?.loopSafetyEnabled === true,
+      enabled,
+      skip,
       system: output.system,
     })
 
     if (next.length === output.system.length) return
     output.system.push(LOOP_SAFETY_POLICY)
+  }
+}
+
+export function createCompactionLoopSafetyBypass(): CompactionLoopSafetyBypass {
+  const storage = new AsyncLocalStorage<{
+    sessionID: string
+    pending: boolean
+  }>()
+
+  return {
+    hook: async (input, _output) => {
+      storage.enterWith({ sessionID: input.sessionID, pending: true })
+    },
+    consume(sessionID?: string) {
+      if (!sessionID) return false
+      const state = storage.getStore()
+      if (!state) return false
+      if (state.pending !== true) return false
+      if (state.sessionID !== sessionID) return false
+      state.pending = false
+      return true
+    },
   }
 }

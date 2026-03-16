@@ -1,9 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { AsyncResource } from "node:async_hooks"
 
 import {
   LOOP_SAFETY_POLICY,
   applyLoopSafetyPolicy,
+  createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
   isCopilotProvider,
 } from "../dist/loop-safety-plugin.js"
@@ -120,6 +122,126 @@ test("createLoopSafetySystemTransform appends once for enabled Copilot sessions"
   )
 
   assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("createLoopSafetySystemTransform skips when bypass callback says current session is compaction", async () => {
+  const transform = createLoopSafetySystemTransform(async () => ({
+    accounts: {},
+    loopSafetyEnabled: true,
+  }), (sessionID) => sessionID === "s1")
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform still appends when bypass callback returns false", async () => {
+  const transform = createLoopSafetySystemTransform(async () => ({
+    accounts: {},
+    loopSafetyEnabled: true,
+  }), () => false)
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("createCompactionLoopSafetyBypass only skips within the compaction async context", async () => {
+  const bypass = createCompactionLoopSafetyBypass()
+
+  await bypass.hook(
+    { sessionID: "s1" },
+    { context: [], prompt: undefined },
+  )
+
+  assert.equal(bypass.consume("s1"), true)
+  assert.equal(bypass.consume("s1"), false)
+  assert.equal(bypass.consume("s2"), false)
+  assert.equal(bypass.consume(undefined), false)
+  assert.equal(createCompactionLoopSafetyBypass().consume("s1"), false)
+})
+
+test("createCompactionLoopSafetyBypass does not leak to unrelated async contexts", async () => {
+  const bypass = createCompactionLoopSafetyBypass()
+  const foreign = new AsyncResource("foreign-context")
+
+  await bypass.hook(
+    { sessionID: "s1" },
+    { context: [], prompt: undefined },
+  )
+
+  const leaked = foreign.runInAsyncScope(() => bypass.consume("s1"))
+
+  assert.equal(leaked, false)
+  assert.equal(bypass.consume("s1"), true)
+})
+
+test("createLoopSafetySystemTransform does not consume bypass for non-Copilot transforms", async () => {
+  const bypass = createCompactionLoopSafetyBypass()
+  const transform = createLoopSafetySystemTransform(async () => ({
+    accounts: {},
+    loopSafetyEnabled: true,
+  }), bypass.consume)
+
+  await bypass.hook(
+    { sessionID: "s1" },
+    { context: [], prompt: undefined },
+  )
+
+  const nonCopilot = { system: ["base prompt"] }
+  await transform(
+    { sessionID: "s1", model: { providerID: "google" } },
+    nonCopilot,
+  )
+
+  const copilot = { system: ["base prompt"] }
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    copilot,
+  )
+
+  assert.deepEqual(nonCopilot.system, ["base prompt"])
+  assert.deepEqual(copilot.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform does not consume bypass when loop safety is disabled", async () => {
+  const bypass = createCompactionLoopSafetyBypass()
+  const disabledTransform = createLoopSafetySystemTransform(async () => ({
+    accounts: {},
+    loopSafetyEnabled: false,
+  }), bypass.consume)
+  const enabledTransform = createLoopSafetySystemTransform(async () => ({
+    accounts: {},
+    loopSafetyEnabled: true,
+  }), bypass.consume)
+
+  await bypass.hook(
+    { sessionID: "s1" },
+    { context: [], prompt: undefined },
+  )
+
+  const disabled = { system: ["base prompt"] }
+  await disabledTransform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    disabled,
+  )
+
+  const enabled = { system: ["base prompt"] }
+  await enabledTransform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    enabled,
+  )
+
+  assert.deepEqual(disabled.system, ["base prompt"])
+  assert.deepEqual(enabled.system, ["base prompt"])
 })
 
 test("createLoopSafetySystemTransform fails open when store read rejects", async () => {

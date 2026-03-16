@@ -1494,6 +1494,39 @@ test("plugin transform wiring appends for Copilot and skips non-Copilot", async 
   assert.equal(nonCopilotOutput.system.includes(LOOP_SAFETY_POLICY), false)
 })
 
+test("plugin transform skips pending compaction session once", async () => {
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+  })
+  const compacting = plugin["experimental.session.compacting"]
+  const transform = plugin["experimental.chat.system.transform"]
+  const skipped = { system: ["base prompt"] }
+  const normal = { system: ["base prompt"] }
+
+  await compacting?.(
+    { sessionID: "s1" },
+    { context: [], prompt: undefined },
+  )
+  await transform?.(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    skipped,
+  )
+  await transform?.(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    normal,
+  )
+
+  assert.deepEqual(skipped.system, ["base prompt"])
+  assert.deepEqual(normal.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
 test("package root only exposes plugin entry and internal subpath exposes helpers", async () => {
   const root = await import("../dist/index.js")
   const internal = await import("../dist/internal.js")
