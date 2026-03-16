@@ -194,8 +194,13 @@ async function runNpmScript(scriptName, options = {}) {
   })
 }
 
-async function runScriptWithGhFallback(projectDir, extraEnv = {}) {
-  return execFile(process.execPath, [syncScriptPath, "--output", "src/upstream/copilot-plugin.snapshot.ts", "--check"], {
+async function runScriptWithGhFallback(projectDir, extraEnv = {}, options = {}) {
+  const args = [syncScriptPath, "--output", "src/upstream/copilot-plugin.snapshot.ts", "--check"]
+  if (options.syncDate) {
+    args.push("--sync-date", options.syncDate)
+  }
+
+  return execFile(process.execPath, args, {
     cwd: projectDir,
     env: {
       ...process.env,
@@ -590,6 +595,40 @@ test("check mode: GitHub API 失败时回退 gh api 解析真实 SHA", async () 
         OPENCODE_SYNC_UPSTREAM_REPO: upstream.env.OPENCODE_SYNC_UPSTREAM_REPO,
         OPENCODE_SYNC_UPSTREAM_BRANCH: upstream.env.OPENCODE_SYNC_UPSTREAM_BRANCH,
         OPENCODE_SYNC_GH_COMMAND: fakeGh.commandPath,
+      }, {
+        syncDate: repositorySnapshot.syncDate,
+      }),
+    )
+  } finally {
+    await upstream.close()
+    await rm(fixture.dir, { recursive: true, force: true })
+    await rm(fakeGh.dir, { recursive: true, force: true })
+  }
+})
+
+test("check mode: Windows 平台回退 gh 自定义命令路径也能解析真实 SHA", async () => {
+  const repositorySnapshot = await readRepositorySnapshotFixture()
+  const fixture = await makeCheckModeProjectFixture(repositorySnapshot.snapshot)
+  const upstream = await startMockCanonicalUpstream({
+    sourceText: repositorySnapshot.sourceText,
+    sha: repositorySnapshot.upstreamCommit,
+  })
+  const fakeGh = await createFakeGhCommand(
+    "copilot-sync-gh-win-",
+    `@echo off\r\nif "%1"=="api" if "%2"=="repos/anomalyco/opencode/branches/dev" (\r\n  echo {"commit":{"sha":"${repositorySnapshot.upstreamCommit}"}}\r\n  exit /b 0\r\n)\r\necho unexpected gh args 1>&2\r\nexit /b 1\r\n`,
+    { platform: "win32" },
+  )
+
+  try {
+    await assert.doesNotReject(
+      runScriptWithGhFallback(fixture.dir, {
+        OPENCODE_SYNC_GITHUB_API_BASE_URL: "http://127.0.0.1:1",
+        OPENCODE_SYNC_RAW_BASE_URL: upstream.env.OPENCODE_SYNC_RAW_BASE_URL,
+        OPENCODE_SYNC_UPSTREAM_REPO: upstream.env.OPENCODE_SYNC_UPSTREAM_REPO,
+        OPENCODE_SYNC_UPSTREAM_BRANCH: upstream.env.OPENCODE_SYNC_UPSTREAM_BRANCH,
+        OPENCODE_SYNC_GH_COMMAND: fakeGh.commandPath,
+      }, {
+        syncDate: repositorySnapshot.syncDate,
       }),
     )
   } finally {
@@ -654,6 +693,8 @@ test("check mode: gh 回退失败时输出 fetch 与 gh 两段错误", async () 
         OPENCODE_SYNC_UPSTREAM_REPO: upstream.env.OPENCODE_SYNC_UPSTREAM_REPO,
         OPENCODE_SYNC_UPSTREAM_BRANCH: upstream.env.OPENCODE_SYNC_UPSTREAM_BRANCH,
         OPENCODE_SYNC_GH_COMMAND: fakeGh.commandPath,
+      }, {
+        syncDate: repositorySnapshot.syncDate,
       }),
       (error) => {
         assert.equal(error.code, 1)

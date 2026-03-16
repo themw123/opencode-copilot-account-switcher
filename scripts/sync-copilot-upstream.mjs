@@ -1,10 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { exec as execCallback, execFile as execFileCallback } from "node:child_process"
+import { execFile as execFileCallback } from "node:child_process"
 import path from "node:path"
 import process from "node:process"
 import { promisify } from "node:util"
 
-const exec = promisify(execCallback)
 const execFile = promisify(execFileCallback)
 const defaultOutput = path.resolve("src/upstream/copilot-plugin.snapshot.ts")
 const upstreamRepo = process.env.OPENCODE_SYNC_UPSTREAM_REPO ?? "anomalyco/opencode"
@@ -107,12 +106,13 @@ async function fetchJsonWithGhFallback(pathname) {
     }
 
     try {
+      const target = pathname.replace(/^\//, "")
       const { stdout } = process.platform === "win32"
-        ? await exec(`"${ghCommand}" api ${pathname.replace(/^\//, "")}`, {
+        ? await execFile(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", "call", ghCommand, "api", target], {
             cwd: process.cwd(),
             env: process.env,
           })
-        : await execFile(ghCommand, ["api", pathname.replace(/^\//, "")], {
+        : await execFile(ghCommand, ["api", target], {
             cwd: process.cwd(),
             env: process.env,
           })
