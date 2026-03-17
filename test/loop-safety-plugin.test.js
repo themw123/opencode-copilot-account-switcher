@@ -154,6 +154,218 @@ test("createLoopSafetySystemTransform still appends when bypass callback returns
   assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
 })
 
+test("createLoopSafetySystemTransform checks ancestry for enabled Copilot root sessions before appending", async () => {
+  const ancestryCalls = []
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async (sessionID) => {
+      ancestryCalls.push(sessionID)
+      return [{ sessionID }]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(ancestryCalls, ["s1"])
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("createLoopSafetySystemTransform skips derived child sessions after ancestry lookup", async () => {
+  const ancestryCalls = []
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async (sessionID) => {
+      ancestryCalls.push(sessionID)
+      return [
+        { sessionID, parentID: "root-session" },
+        { sessionID: "root-session" },
+      ]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "child-session", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(ancestryCalls, ["child-session"])
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform skips derived child sessions even when current entry is not first", async () => {
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async (sessionID) => [
+      { sessionID: "root-session" },
+      { sessionID, parentID: "root-session" },
+    ],
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "child-session", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform does not misclassify root sessions when another ancestor entry appears first", async () => {
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async (sessionID) => [
+      { sessionID: "child-session", parentID: sessionID },
+      { sessionID },
+    ],
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "root-session", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("createLoopSafetySystemTransform fails open when ancestry lookup rejects", async () => {
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async () => {
+      throw new Error("boom")
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("createLoopSafetySystemTransform does not check ancestry for non-Copilot transforms", async () => {
+  let ancestryChecks = 0
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async () => {
+      ancestryChecks += 1
+      return [{ sessionID: "s1" }]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "google" } },
+    output,
+  )
+
+  assert.equal(ancestryChecks, 0)
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform does not check ancestry when loop safety is disabled", async () => {
+  let ancestryChecks = 0
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+    }),
+    () => false,
+    async () => {
+      ancestryChecks += 1
+      return [{ sessionID: "s1" }]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.equal(ancestryChecks, 0)
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform does not check ancestry when compaction bypass matches", async () => {
+  let ancestryChecks = 0
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    (sessionID) => sessionID === "s1",
+    async () => {
+      ancestryChecks += 1
+      return [{ sessionID: "s1" }]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.equal(ancestryChecks, 0)
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform checks ancestry for enterprise Copilot sessions too", async () => {
+  const ancestryCalls = []
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    () => false,
+    async (sessionID) => {
+      ancestryCalls.push(sessionID)
+      return [{ sessionID }]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "enterprise-session", model: { providerID: "github-copilot-enterprise" } },
+    output,
+  )
+
+  assert.deepEqual(ancestryCalls, ["enterprise-session"])
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
 test("createCompactionLoopSafetyBypass only skips within the compaction async context", async () => {
   const bypass = createCompactionLoopSafetyBypass()
 

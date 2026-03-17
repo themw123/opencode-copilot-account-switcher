@@ -1494,6 +1494,259 @@ test("plugin transform wiring appends for Copilot and skips non-Copilot", async 
   assert.equal(nonCopilotOutput.system.includes(LOOP_SAFETY_POLICY), false)
 })
 
+function createTransformHarness(input = {}) {
+  const lookupCalls = []
+  const defaultClient = {
+    session: {
+      get: async (request) => {
+        lookupCalls.push(request)
+        if (typeof input.sessionGetResponse === "function") {
+          return input.sessionGetResponse(request)
+        }
+        return input.sessionGetResponse
+      },
+    },
+  }
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: input.loopSafetyEnabled ?? true,
+    }),
+    client: Object.hasOwn(input, "client") ? input.client : defaultClient,
+    directory: input.directory ?? "/tmp/project",
+  })
+
+  return {
+    lookupCalls,
+    transform: plugin["experimental.chat.system.transform"],
+    compacting: plugin["experimental.session.compacting"],
+  }
+}
+
+test("plugin transform wiring skips derived child session via session lookup", async () => {
+  const { transform, lookupCalls } = createTransformHarness({
+    sessionGetResponse: {
+      data: {
+        parentID: "root-session",
+      },
+    },
+  })
+  const output = { system: ["base prompt"] }
+
+  await transform?.(
+    { sessionID: "child-session", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt"])
+  assert.deepEqual(lookupCalls, [
+    {
+      path: {
+        id: "child-session",
+      },
+      query: {
+        directory: "/tmp/project",
+      },
+      throwOnError: true,
+    },
+  ])
+})
+
+test("plugin transform wiring keeps injecting for root session lookup results", async () => {
+  const { transform } = createTransformHarness({
+    sessionGetResponse: {
+      data: {},
+    },
+  })
+  const output = { system: ["base prompt"] }
+
+  await transform?.(
+    { sessionID: "root-session", model: { providerID: "github-copilot" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("plugin transform wiring fails open when lookup returns undefined payload shapes", async () => {
+  for (const sessionGetResponse of [undefined, {}, { data: undefined }]) {
+    const { transform } = createTransformHarness({ sessionGetResponse })
+    const output = { system: ["base prompt"] }
+
+    await transform?.(
+      { sessionID: "root-session", model: { providerID: "github-copilot" } },
+      output,
+    )
+
+    assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+  }
+})
+
+test("plugin transform wiring fails open when session lookup throws or is unavailable", async () => {
+  const cases = [
+    {
+      client: {
+        session: {
+          get: async () => {
+            throw new Error("boom")
+          },
+        },
+      },
+    },
+    {
+      client: undefined,
+    },
+    {
+      client: {},
+    },
+    {
+      client: {
+        session: {},
+      },
+    },
+  ]
+
+  for (const testCase of cases) {
+    const { transform, lookupCalls } = createTransformHarness(testCase)
+    const output = { system: ["base prompt"] }
+
+    await transform?.(
+      { sessionID: "root-session", model: { providerID: "github-copilot" } },
+      output,
+    )
+
+    assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+    if ("client" in testCase && testCase.client?.session?.get === undefined) {
+      assert.deepEqual(lookupCalls, [])
+    }
+  }
+})
+
+test("plugin transform wiring fails open when buildPluginHooks omits client entirely", async () => {
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+    }),
+    directory: "/tmp/project",
+  })
+  const output = { system: ["base prompt"] }
+
+  await assert.doesNotReject(async () => {
+    await plugin["experimental.chat.system.transform"]?.(
+      { sessionID: "root-session", model: { providerID: "github-copilot" } },
+      output,
+    )
+  })
+
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("plugin transform wiring only skips when parentID is a non-empty string", async () => {
+  const cases = [
+    { parentID: "", expected: ["base prompt", LOOP_SAFETY_POLICY] },
+    { parentID: 0, expected: ["base prompt", LOOP_SAFETY_POLICY] },
+    { parentID: false, expected: ["base prompt", LOOP_SAFETY_POLICY] },
+    { parentID: null, expected: ["base prompt", LOOP_SAFETY_POLICY] },
+    { parentID: "root-session", expected: ["base prompt"] },
+  ]
+
+  for (const testCase of cases) {
+    const { transform } = createTransformHarness({
+      sessionGetResponse: {
+        data: {
+          parentID: testCase.parentID,
+        },
+      },
+    })
+    const output = { system: ["base prompt"] }
+
+    await transform?.(
+      { sessionID: "candidate-session", model: { providerID: "github-copilot" } },
+      output,
+    )
+
+    assert.deepEqual(output.system, testCase.expected)
+  }
+})
+
+test("plugin transform wiring does not lookup when sessionID is missing and fails open", async () => {
+  const { transform, lookupCalls } = createTransformHarness({
+    sessionGetResponse: async () => {
+      throw new Error("lookup should not run")
+    },
+  })
+  const missingOutput = { system: ["base prompt"] }
+  const emptyOutput = { system: ["base prompt"] }
+
+  await transform?.(
+    { model: { providerID: "github-copilot" } },
+    missingOutput,
+  )
+  await transform?.(
+    { sessionID: "", model: { providerID: "github-copilot" } },
+    emptyOutput,
+  )
+
+  assert.deepEqual(missingOutput.system, ["base prompt", LOOP_SAFETY_POLICY])
+  assert.deepEqual(emptyOutput.system, ["base prompt", LOOP_SAFETY_POLICY])
+  assert.deepEqual(lookupCalls, [])
+})
+
+test("plugin transform wiring does not lookup for disabled non-Copilot or compaction bypass paths", async () => {
+  const disabledHarness = createTransformHarness({
+    loopSafetyEnabled: false,
+    sessionGetResponse: async () => {
+      throw new Error("lookup should not run when disabled")
+    },
+  })
+  const nonCopilotHarness = createTransformHarness({
+    sessionGetResponse: async () => {
+      throw new Error("lookup should not run for non-Copilot")
+    },
+  })
+  const bypassHarness = createTransformHarness({
+    sessionGetResponse: async () => {
+      throw new Error("lookup should not run for compaction bypass")
+    },
+  })
+  const disabledOutput = { system: ["base prompt"] }
+  const nonCopilotOutput = { system: ["base prompt"] }
+  const bypassOutput = { system: ["base prompt"] }
+
+  await disabledHarness.transform?.(
+    { sessionID: "disabled-session", model: { providerID: "github-copilot" } },
+    disabledOutput,
+  )
+  await nonCopilotHarness.transform?.(
+    { sessionID: "google-session", model: { providerID: "google" } },
+    nonCopilotOutput,
+  )
+  await bypassHarness.compacting?.(
+    { sessionID: "compacting-session" },
+    { context: [], prompt: undefined },
+  )
+  await bypassHarness.transform?.(
+    { sessionID: "compacting-session", model: { providerID: "github-copilot" } },
+    bypassOutput,
+  )
+
+  assert.deepEqual(disabledHarness.lookupCalls, [])
+  assert.deepEqual(nonCopilotHarness.lookupCalls, [])
+  assert.deepEqual(bypassHarness.lookupCalls, [])
+  assert.deepEqual(disabledOutput.system, ["base prompt"])
+  assert.deepEqual(nonCopilotOutput.system, ["base prompt"])
+  assert.deepEqual(bypassOutput.system, ["base prompt"])
+})
+
 test("plugin transform skips pending compaction session once", async () => {
   const plugin = buildPluginHooks({
     auth: {

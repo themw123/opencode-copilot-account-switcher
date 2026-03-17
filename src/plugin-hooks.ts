@@ -72,6 +72,12 @@ type DebugSessionMessage = {
   parts?: Array<DebugPart>
 }
 
+type SessionGetResponse = {
+  data?: {
+    parentID?: unknown
+  }
+}
+
 function isDebugEnabled() {
   return process.env.OPENCODE_COPILOT_RETRY_DEBUG === "1"
 }
@@ -133,6 +139,33 @@ export function buildPluginHooks(input: {
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
+
+  const lookupSessionAncestry = async (sessionID: string) => {
+    const session = await (input.client?.session?.get as undefined | ((input: {
+      path: {
+        id: string
+      }
+      query?: {
+        directory?: string
+      }
+      throwOnError?: boolean
+    }) => Promise<SessionGetResponse | undefined>))?.({
+      path: {
+        id: sessionID,
+      },
+      query: {
+        directory: input.directory,
+      },
+      throwOnError: true,
+    })
+
+    return [{
+      sessionID,
+      parentID: typeof session?.data?.parentID === "string" && session.data.parentID.length > 0
+        ? session.data.parentID
+        : undefined,
+    }]
+  }
 
   const getLatestLastAccountSwitchAt = async () => {
     const store = readRetryStoreContext(await loadStore().catch(() => undefined))
@@ -313,6 +346,7 @@ export function buildPluginHooks(input: {
     "experimental.chat.system.transform": createLoopSafetySystemTransform(
       loadStore,
       compactionLoopSafetyBypass.consume,
+      lookupSessionAncestry,
     ),
     "experimental.session.compacting": compactionLoopSafetyBypass.hook,
   }

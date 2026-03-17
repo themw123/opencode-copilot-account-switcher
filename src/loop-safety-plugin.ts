@@ -68,6 +68,20 @@ export type CompactionLoopSafetyBypass = {
   consume(sessionID?: string): boolean
 }
 
+export type SessionAncestryEntry = {
+  sessionID?: string
+  parentID?: string
+}
+
+export type LookupSessionAncestry = (
+  sessionID: string,
+) => Promise<SessionAncestryEntry[] | undefined>
+
+function hasParentSession(entries: SessionAncestryEntry[] | undefined, sessionID: string): boolean {
+  const currentSession = entries?.find((entry) => entry?.sessionID === sessionID)
+  return currentSession?.parentID != null
+}
+
 export function isCopilotProvider(providerID: string): boolean {
   return providerID === "github-copilot" || providerID === "github-copilot-enterprise"
 }
@@ -88,13 +102,27 @@ export function applyLoopSafetyPolicy(input: {
 export function createLoopSafetySystemTransform(
   loadStore: () => Promise<StoreFile | undefined> = readStoreSafe,
   consumeCompactionBypass: (sessionID?: string) => boolean = () => false,
+  lookupSessionAncestry: LookupSessionAncestry = async () => undefined,
 ): ExperimentalChatSystemTransformHook {
   return async (input, output) => {
     const store = await loadStore().catch(() => undefined)
     const enabled = store?.loopSafetyEnabled === true
-    const skip = enabled && isCopilotProvider(input.model.providerID)
-      ? consumeCompactionBypass(input.sessionID)
+    const sessionID = typeof input.sessionID === "string" && input.sessionID.length > 0
+      ? input.sessionID
+      : undefined
+    const shouldCheckProvider = isCopilotProvider(input.model.providerID)
+    const bypassed = enabled && shouldCheckProvider
+      ? consumeCompactionBypass(sessionID)
       : false
+    const derivedSession = enabled
+      && shouldCheckProvider
+      && !bypassed
+      && sessionID !== undefined
+      ? await lookupSessionAncestry(sessionID)
+        .then((entries) => hasParentSession(entries, sessionID))
+        .catch(() => false)
+      : false
+    const skip = bypassed || derivedSession
     const next = applyLoopSafetyPolicy({
       providerID: input.model.providerID,
       enabled,
