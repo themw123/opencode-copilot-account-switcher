@@ -25,6 +25,132 @@ test("plugin exposes auth and experimental chat system transform hooks", () => {
   assert.equal(typeof plugin["experimental.chat.system.transform"], "function")
 })
 
+function createToolContext() {
+  return {
+    sessionID: "s1",
+    messageID: "m1",
+    agent: "task",
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+    abort: new AbortController().signal,
+    metadata() {},
+    async ask() {},
+  }
+}
+
+test("plugin exposes notify tool for model progress updates", () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+  })
+
+  assert.equal(typeof plugin.tool?.notify?.execute, "function")
+  assert.match(plugin.tool?.notify?.description ?? "", /notify/i)
+  assert.ok(plugin.tool?.notify?.args?.message)
+  assert.ok(plugin.tool?.notify?.args?.variant)
+  assert.equal(Object.hasOwn(plugin.tool?.notify?.args ?? {}, "title"), false)
+  assert.equal(Object.hasOwn(plugin.tool?.notify?.args ?? {}, "duration"), false)
+})
+
+test("notify tool defaults variant to info", async () => {
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {
+      tui: {
+        showToast: async (options) => {
+          calls.push(options)
+        },
+      },
+    },
+  })
+
+  await plugin.tool.notify.execute(
+    { message: "still working" },
+    createToolContext(),
+  )
+
+  assert.equal(calls[0]?.body?.variant, "info")
+})
+
+test("notify tool maps message and variant to tui.showToast", async () => {
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {
+      tui: {
+        showToast: async (options) => {
+          calls.push(options)
+        },
+      },
+    },
+  })
+
+  const result = await plugin.tool.notify.execute(
+    { message: "后台继续执行测试", variant: "info" },
+    {
+      sessionID: "s1",
+      messageID: "m1",
+      agent: "task",
+      directory: "/tmp/project",
+      worktree: "/tmp/project",
+      abort: new AbortController().signal,
+      metadata() {},
+      async ask() {},
+    },
+  )
+
+  assert.equal(result, "ok")
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.body?.message, "后台继续执行测试")
+  assert.equal(calls[0]?.body?.variant, "info")
+})
+
+test("notify tool fails open when showToast is unavailable", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await assert.doesNotReject(() => plugin.tool.notify.execute(
+    { message: "still running" },
+    createToolContext(),
+  ))
+})
+
+test("notify tool swallows toast failures and warns once", async () => {
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => warnings.push(args.map(String).join(" "))
+
+  try {
+    const plugin = buildPluginHooks({
+      auth: { provider: "github-copilot", methods: [] },
+      loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+      client: {
+        tui: {
+          showToast: async () => {
+            throw new Error("toast failed")
+          },
+        },
+      },
+    })
+
+    await assert.doesNotReject(() => plugin.tool.notify.execute(
+      { message: "still running" },
+      createToolContext(),
+    ))
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0] ?? "", /notify-tool/i)
+})
+
 test("plugin source does not preload upstream hook bundle for untouched hooks", async () => {
   const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
 

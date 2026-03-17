@@ -20,6 +20,7 @@ import {
   type OfficialCopilotConfig,
   type OfficialChatHeadersHook,
 } from "./upstream/copilot-loader-adapter.js"
+import { createNotifyTool } from "./notify-tool.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
 type AuthProvider = Parameters<NonNullable<AuthLoader>>[1]
@@ -342,6 +343,11 @@ export function buildPluginHooks(input: {
       methods: input.auth.methods,
       loader,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
+    tool: {
+      notify: createNotifyTool({
+        client: input.client,
+      }),
+    },
     "chat.headers": chatHeaders,
     "experimental.chat.system.transform": createLoopSafetySystemTransform(
       loadStore,
