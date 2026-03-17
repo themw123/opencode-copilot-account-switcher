@@ -41,6 +41,8 @@ test("status slash command is injected when experiment is enabled", async () => 
   assert.equal(typeof config.command["copilot-status"], "object")
   assert.match(config.command["copilot-status"].template, /quota|Copilot|status/i)
   assert.match(config.command["copilot-status"].description, /Copilot|status/i)
+  assert.equal(typeof config.command["copilot-inject"], "object")
+  assert.match(config.command["copilot-inject"].template, /tool|question|inject|intervene/i)
 })
 
 test("status slash command is not injected when experiment is disabled", async () => {
@@ -57,6 +59,288 @@ test("status slash command is not injected when experiment is disabled", async (
   await plugin.config?.(config)
 
   assert.equal(Object.hasOwn(config.command, "copilot-status"), false)
+  assert.equal(typeof config.command["copilot-inject"], "object")
+})
+
+test("copilot-inject command ignores arguments and still arms inject mode", async () => {
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {
+      tui: {
+        showToast: async (options) => {
+          calls.push(options)
+        },
+      },
+    },
+  })
+
+  await assert.doesNotReject(() => plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "anything here" },
+    { parts: [] },
+  ))
+
+  assert.match(String(calls[0]?.body?.message ?? ""), /下次调用工具|next tool/i)
+})
+
+test("inject appends marker to non-question tool output", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+
+  const output = { title: "run", output: "original output", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "bash", sessionID: "s1", callID: "c1", args: { command: "pwd" } },
+    output,
+  )
+
+  assert.match(output.output, /original output/)
+  assert.match(output.output, /\[COPILOT_INJECT_V1_BEGIN\]/)
+  assert.match(output.output, /\[COPILOT_INJECT_V1_END\]/)
+})
+
+test("inject preserves original output and appends only", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+
+  const raw = "line1\nline2"
+  const output = { title: "x", output: raw, metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "read", sessionID: "s1", callID: "c1", args: {} },
+    output,
+  )
+
+  assert.equal(output.output.startsWith(raw), true)
+})
+
+test("inject avoids duplicate marker when already present", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+
+  const marker = [
+    "[COPILOT_INJECT_V1_BEGIN]",
+    "立即调用 question 工具并等待用户指示；在收到用户新指示前，不要继续执行后续任务。",
+    "[COPILOT_INJECT_V1_END]",
+  ].join("\n")
+  const output = { title: "x", output: `ok\n\n${marker}`, metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "glob", sessionID: "s1", callID: "c1", args: {} },
+    output,
+  )
+
+  const beginCount = (String(output.output).match(/\[COPILOT_INJECT_V1_BEGIN\]/g) ?? []).length
+  assert.equal(beginCount, 1)
+})
+
+test("inject repairs partial marker and appends full marker pair", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+
+  const output = { title: "x", output: "before\n[COPILOT_INJECT_V1_BEGIN]\n", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "grep", sessionID: "s1", callID: "c1", args: {} },
+    output,
+  )
+
+  const result = String(output.output)
+  const beginCount = (result.match(/\[COPILOT_INJECT_V1_BEGIN\]/g) ?? []).length
+  const endCount = (result.match(/\[COPILOT_INJECT_V1_END\]/g) ?? []).length
+  assert.equal(beginCount, 1)
+  assert.equal(endCount, 1)
+})
+
+test("inject normalizes empty or non-string output before append", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+
+  const emptyOutput = { title: "x", output: undefined, metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "task", sessionID: "s1", callID: "c1", args: {} },
+    emptyOutput,
+  )
+  assert.match(String(emptyOutput.output), /\[COPILOT_INJECT_V1_BEGIN\]/)
+
+  const numberOutput = { title: "x", output: 123, metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "bash", sessionID: "s1", callID: "c2", args: {} },
+    numberOutput,
+  )
+  assert.match(String(numberOutput.output), /^123/)
+})
+
+test("inject toasts on every actual append", async () => {
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {
+      tui: {
+        showToast: async (options) => {
+          calls.push(options)
+        },
+      },
+    },
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+  const output1 = { title: "x", output: "o1", metadata: {} }
+  const output2 = { title: "x", output: "o2", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "read", sessionID: "s1", callID: "c1", args: {} },
+    output1,
+  )
+  await plugin["tool.execute.after"]?.(
+    { tool: "glob", sessionID: "s1", callID: "c2", args: {} },
+    output2,
+  )
+
+  const injectToasts = calls
+    .map((item) => String(item?.body?.message ?? ""))
+    .filter((message) => /已要求模型立刻调用提问工具/.test(message))
+  assert.equal(injectToasts.length, 2)
+})
+
+test("inject stays fail-open when toast dispatch fails", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {
+      tui: {
+        showToast: async () => {
+          throw new Error("toast-failed")
+        },
+      },
+    },
+  })
+
+  await assert.doesNotReject(() => plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  ))
+
+  const output = { title: "x", output: "original", metadata: {} }
+  await assert.doesNotReject(() => plugin["tool.execute.after"]?.(
+    { tool: "read", sessionID: "s1", callID: "c1", args: {} },
+    output,
+  ))
+  assert.match(String(output.output), /\[COPILOT_INJECT_V1_BEGIN\]/)
+})
+
+test("question clears inject armed state", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+  await plugin["tool.execute.before"]?.(
+    { tool: "question", sessionID: "s1", callID: "q1" },
+    { args: {} },
+  )
+
+  const output = { title: "x", output: "after-question", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "read", sessionID: "s1", callID: "c1", args: {} },
+    output,
+  )
+
+  assert.doesNotMatch(String(output.output), /\[COPILOT_INJECT_V1_BEGIN\]/)
+})
+
+test("after question inject no longer appends markers", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await plugin["command.execute.before"]?.(
+    { command: "copilot-inject", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  )
+  await plugin["tool.execute.after"]?.(
+    { tool: "question", sessionID: "s1", callID: "q1", args: {} },
+    { title: "q", output: "question output", metadata: {} },
+  )
+
+  const output = { title: "x", output: "next", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "glob", sessionID: "s1", callID: "c1", args: {} },
+    output,
+  )
+
+  assert.equal(String(output.output), "next")
+})
+
+test("tool.definition rewrites question description with wait and uncertainty semantics", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+  })
+
+  const output = { description: "original", parameters: {} }
+  await plugin["tool.definition"]?.({ toolID: "question" }, output)
+
+  assert.match(output.description, /required user response|explicit wait|final handoff|uncertain/i)
+})
+
+test("tool.definition rewrites notify description as non-blocking progress channel", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+  })
+
+  const output = { description: "original", parameters: {} }
+  await plugin["tool.definition"]?.({ toolID: "notify" }, output)
+
+  assert.match(output.description, /non-blocking progress|phase updates|immediate user response/i)
 })
 
 test("status command hook ignores unrelated commands", async () => {
@@ -1766,6 +2050,12 @@ test("plugin switch flow prints retry hint after account switch", async () => {
 
   assert.match(pluginSource, /input\[\*\]\.id too long/)
   assert.match(pluginSource, /enable Copilot Network Retry from the menu/i)
+})
+
+test("plugin source does not force promptAccountEntry on empty store bootstrap", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.doesNotMatch(pluginSource, /if \(!Object\.entries\(store\.accounts\)\.length\)\s*\{\s*const \{ name, entry \} = await promptAccountEntry\(\[\]\)/)
 })
 
 test("plugin transform wiring appends for Copilot and skips non-Copilot", async () => {

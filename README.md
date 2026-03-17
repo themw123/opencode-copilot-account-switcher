@@ -20,6 +20,8 @@
 - **Copilot Network Retry** — 默认关闭；用于处理可重试的网络或证书类失败
 - **Synthetic Agent Initiator** — 默认关闭；实验性开关，会偏离 upstream 当前稳定行为，发送或覆盖 `x-initiator=agent`，不保证平台一定不计费，且存在滥用判定与意外计费风险
 - **Copilot Status Slash Command** — 默认开启；实验性 `/copilot-status` workaround，只把 TUI 作为主支持面，Web/App 不承诺一致体验
+- **Copilot Inject Slash Command** — 默认开启；`/copilot-inject` 为无参数强干预开关，触发后会在下一次非 `question` 工具输出中注入 marker，强制模型立即走 `question`
+- **Wait Tool** — 默认开启；提供 `wait` 工具（最短 30 秒）用于后台等待并返回 `started/waited/now`
 
 ## 功能一览
 
@@ -30,6 +32,8 @@
 - **Copilot Network Retry** — 默认关闭；把可重试的 Copilot 网络或 TLS 失败归一化成 OpenCode 原生重试链路可识别的形态
 - **Synthetic Agent Initiator** — 默认关闭；实验性开关，会偏离 upstream 稳定行为，发送或覆盖 `x-initiator=agent`，并伴随计费/滥用风险
 - **`/copilot-status`** — 默认开启；实验性 slash command，会先弹出“正在拉取”toast，再弹出 quota 结果或错误 toast
+- **`/copilot-inject`** — 默认开启；无参数实验性强干预开关，下一次非 `question` 工具输出会自动附加 marker，要求模型立刻调用 `question`
+- **`wait` 工具** — 默认开启；最短等待 30 秒，返回开始时间、等待秒数和当前时间
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -115,11 +119,33 @@ opencode auth login --provider github-copilot
 - **Copilot Network Retry 开关** — 默认关闭；仅影响 Copilot 请求的 `fetch` 路径，只处理可重试的网络/证书类失败
 - **Synthetic Agent Initiator 开关** — 默认关闭；实验性开关，发送或覆盖 `x-initiator=agent`，会偏离 upstream 稳定行为，且不保证平台一定不计费
 - **`/copilot-status`** — 默认开启；实验性 slash command，会先弹出“正在拉取”toast，再弹出 quota 结果或错误 toast
+- **`/copilot-inject`** — 默认开启；无参数实验性强干预开关，会在下一次非 `question` 工具输出注入 marker，要求模型立刻调用 `question`
 - **切换账号**
 - **删除账号**
 - **全部删除**
 
-Guided Loop Safety 现在默认开启。实际使用中，它可以让一次 request 更容易连续工作好几个小时：当 `question` 工具在当前会话中可用且被允许时，所有需要你介入的强交互内容（决策、缺失输入、等待态、最终交接）必须通过它完成；纯进度、阶段切换和“仍在工作中”状态优先通过 `notify` 发送，若 `notify` 不可用则静默继续，避免把纯进度错误升级成打断式提问。这样能减少无谓中断，降低不必要等待与额外配额消耗。
+Guided Loop Safety 现在默认开启。实际使用中，它可以让一次 request 更容易连续工作好几个小时：当 `question` 工具在当前会话中可用且被允许时，所有需要你介入的强交互内容（决策、缺失输入、等待态、最终交接、无安全工作可继续）必须通过它完成；纯进度、阶段切换和“仍在工作中”状态优先通过 `notify` 发送，若 `notify` 不可用则静默继续，避免把纯进度错误升级成打断式提问；若路由不确定则默认使用 `question`。另外，策略层要求用户可见交互仅走 `question/notify`，避免普通 assistant 直出文本打断流程。
+
+## 实验性 `/copilot-inject`
+
+- 默认：**开启**
+- 触发方式：在正常对话输入 `/copilot-inject`（**无参数**）
+- 行为：命令触发后会提示“将在模型下次调用工具的时候要求模型立刻调用提问工具”；下一次任意非 `question` 工具真实输出会被附加如下 marker，并再次 toast 提示“已要求模型立刻调用提问工具”
+
+```text
+[COPILOT_INJECT_V1_BEGIN]
+立即调用 question 工具并等待用户指示；在收到用户新指示前，不要继续执行后续任务。
+[COPILOT_INJECT_V1_END]
+```
+
+- 清除时机：模型实际调用 `question` 后，inject armed 状态自动清除
+- 作用范围：仅当前插件实例内存，不写入存储文件，不跨实例共享
+
+## `wait` 工具
+
+- 默认：**开启**
+- 用法：`wait({ seconds })`；`seconds` 可省略，最小值固定为 30 秒
+- 返回格式：`started: <ISO>; waited: <N>s; now: <ISO>`
 
 如果你在切换 Copilot 账号后遇到瞬时 TLS/网络失败，或者遇到由旧 session item ID 残留引起的 `input[*].id too long` 错误，也可以在同一菜单中开启 Copilot Network Retry。它默认关闭。开启后，插件会先保留 upstream 官方 loader 生成的 `baseURL`、认证头和 `fetch` 行为，只在最后一跳 Copilot `fetch` 路径上做最小包装，把可重试的网络类失败归一化成 OpenCode 已有重试链路能识别的形态；对于明确命中的 `input[*].id too long` 400，还会回写命中的 session part，避免旧 item ID 持续污染后续重试。
 
@@ -215,6 +241,8 @@ Default behavior and optional switches:
 - **Copilot Network Retry** — optional and off by default; handles retryable network or certificate-style failures
 - **Synthetic Agent Initiator** — optional and off by default; experimental switch that diverges from stable upstream behavior, sends or overrides `x-initiator=agent`, does not guarantee non-billable treatment, and carries abuse or unexpected-billing risk
 - **Copilot Status Slash Command** — enabled by default; experimental `/copilot-status` workaround with TUI-first support and no cross-client UX guarantee
+- **Copilot Inject Slash Command** — enabled by default; no-arg `/copilot-inject` force-intervention switch that injects a marker into the next non-`question` tool output and drives immediate `question`
+- **Wait Tool** — enabled by default; provides `wait` (minimum 30s) and returns `started/waited/now`
 
 ## What You Get
 
@@ -225,6 +253,8 @@ Default behavior and optional switches:
 - **Copilot Network Retry** — optional and off by default; normalizes retryable Copilot network or TLS failures so OpenCode's native retry path can handle them
 - **Synthetic Agent Initiator** — optional and off by default; experimental switch that diverges from stable upstream behavior, sends or overrides `x-initiator=agent`, and carries billing/abuse risk
 - **`/copilot-status`** — enabled by default; experimental slash command that shows a loading toast first and then a quota result or error toast
+- **`/copilot-inject`** — enabled by default; no-arg force-intervention command that appends a marker to the next non-`question` tool output to force immediate `question`
+- **`wait` tool** — enabled by default; minimum wait is 30 seconds and response contains start/wait/current timestamps
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -310,11 +340,33 @@ You will see an interactive menu. Use the built-in language switch action if you
 - **Copilot Network Retry toggle** — off by default; only affects the Copilot `fetch` path for retryable network/certificate failures
 - **Synthetic Agent Initiator toggle** — off by default; experimental switch that sends or overrides `x-initiator=agent`, diverges from stable upstream behavior, and does not guarantee non-billable treatment
 - **`/copilot-status`** — enabled by default; experimental slash command workaround that shows a loading toast first and then a quota result or error toast
+- **`/copilot-inject`** — enabled by default; no-arg force-intervention command that injects a marker into the next non-`question` tool output and requires immediate `question`
 - **Switch account**
 - **Delete account**
 - **Delete all**
 
-Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, all strong-interaction content (decisions, missing required input, explicit waiting states, final handoff) must use it. Pure progress updates and phase changes should use `notify`; if `notify` is unavailable, pure progress stays silent and work continues instead of being escalated into interrupting questions. This reduces avoidable interruptions, unnecessary waiting, and extra quota burn.
+Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, all strong-interaction content (decisions, missing required input, explicit waiting states, final handoff, and no-safe-work-left states) must use it. Pure progress updates and phase changes should use `notify`; if `notify` is unavailable, pure progress stays silent and work continues instead of being escalated into interrupting questions. If routing is uncertain, default to `question`. The policy also constrains user-visible interaction channels to `question/notify`, avoiding ordinary plain-text assistant interruptions.
+
+## Experimental `/copilot-inject`
+
+- Default: **enabled**
+- Trigger: type `/copilot-inject` in chat (**no arguments**)
+- Behavior: it first shows a toast saying it will require immediate question on the model's next tool call; then on the next real output from any non-`question` tool, it appends the marker below and shows another toast saying question is now required:
+
+```text
+[COPILOT_INJECT_V1_BEGIN]
+立即调用 question 工具并等待用户指示；在收到用户新指示前，不要继续执行后续任务。
+[COPILOT_INJECT_V1_END]
+```
+
+- Clear condition: armed inject state is auto-cleared as soon as `question` executes
+- Scope: instance memory only; not persisted to store and not shared across plugin instances
+
+## `wait` Tool
+
+- Default: **enabled**
+- Usage: `wait({ seconds })`; `seconds` is optional and clamped to minimum 30
+- Output shape: `started: <ISO>; waited: <N>s; now: <ISO>`
 
 If you switch Copilot accounts and then hit transient TLS/network failures or `input[*].id too long` errors caused by stale session item IDs, enable Copilot Network Retry from the same menu. It is off by default. When enabled, the plugin keeps the official Copilot header/baseURL behavior from the upstream loader, only wraps the final Copilot `fetch` path, and converts retryable network-like failures into a shape that OpenCode already treats as retryable. It also repairs the matched session part after an `input[*].id too long` 400 so later retries can recover instead of repeatedly failing on stale item IDs.
 
