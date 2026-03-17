@@ -19,15 +19,17 @@
 - **Guided Loop Safety** — 默认开启；帮助一次 premium request 更容易连续工作更久，并减少真正需要你输入前的汇报打断
 - **Copilot Network Retry** — 默认关闭；用于处理可重试的网络或证书类失败
 - **Synthetic Agent Initiator** — 默认关闭；实验性开关，会偏离 upstream 当前稳定行为，发送或覆盖 `x-initiator=agent`，不保证平台一定不计费，且存在滥用判定与意外计费风险
+- **Copilot Status Slash Command** — 默认开启；实验性 `/copilot-status` workaround，只把 TUI 作为主支持面，Web/App 不承诺一致体验
 
 ## 功能一览
 
 - **多账号管理** — 添加多个 Copilot 账号，随时切换
 - **配额查询** — 查看每个账号的剩余额度
 - **导入认证** — 可从 OpenCode 认证存储导入
-- **Guided Loop Safety** — 默认开启；仅对 Copilot 生效的更严格 question-first 提示词策略，推动非阻塞工作持续执行、让一次 premium request 更容易连续工作好几个小时，并通过减少反复中断来降低无谓配额消耗
+- **Guided Loop Safety** — 默认开启；仅对 Copilot 生效的双通道交互约束（`question` 负责强交互、`notify` 负责纯进度），推动非阻塞工作持续执行并减少无谓打断
 - **Copilot Network Retry** — 默认关闭；把可重试的 Copilot 网络或 TLS 失败归一化成 OpenCode 原生重试链路可识别的形态
 - **Synthetic Agent Initiator** — 默认关闭；实验性开关，会偏离 upstream 稳定行为，发送或覆盖 `x-initiator=agent`，并伴随计费/滥用风险
+- **`/copilot-status`** — 默认开启；实验性 slash command，会先弹出“正在拉取”toast，再弹出 quota 结果或错误 toast
 - **无需模型配置** — 使用官方 provider，无需改模型
 
 ---
@@ -109,16 +111,38 @@ opencode auth login --provider github-copilot
 - **添加账号**
 - **从 auth.json 导入**
 - **检查配额**
-- **Guided Loop Safety 开关** — 通过提示词引导模型在可用时必须使用 `question` 做用户可见汇报、继续完成非阻塞工作、减少反复中断，并减少不必要等待
+- **Guided Loop Safety 开关** — 通过提示词约束双通道交互：强交互内容必须走 `question`，纯进度优先走 `notify`，`notify` 不可用时纯进度静默继续
 - **Copilot Network Retry 开关** — 默认关闭；仅影响 Copilot 请求的 `fetch` 路径，只处理可重试的网络/证书类失败
 - **Synthetic Agent Initiator 开关** — 默认关闭；实验性开关，发送或覆盖 `x-initiator=agent`，会偏离 upstream 稳定行为，且不保证平台一定不计费
+- **`/copilot-status`** — 默认开启；实验性 slash command，会先弹出“正在拉取”toast，再弹出 quota 结果或错误 toast
 - **切换账号**
 - **删除账号**
 - **全部删除**
 
-Guided Loop Safety 现在默认开启。实际使用中，它可以让一次 request 更容易连续工作好几个小时：当 `question` 工具在当前会话中可用且被允许时，用户可见汇报必须通过它完成，因此等待你的回复本身不会像反复插入直接状态消息那样继续额外消耗配额；少一次中断，本身就少一次无谓的配额消耗。只要还有安全的非阻塞工作可做，Copilot 就应继续执行而不是提前暂停；只有在当前确实没有可安全执行的动作时，才应通过 `question` 询问下一项任务或所需澄清，从而减少不必要等待。
+Guided Loop Safety 现在默认开启。实际使用中，它可以让一次 request 更容易连续工作好几个小时：当 `question` 工具在当前会话中可用且被允许时，所有需要你介入的强交互内容（决策、缺失输入、等待态、最终交接）必须通过它完成；纯进度、阶段切换和“仍在工作中”状态优先通过 `notify` 发送，若 `notify` 不可用则静默继续，避免把纯进度错误升级成打断式提问。这样能减少无谓中断，降低不必要等待与额外配额消耗。
 
 如果你在切换 Copilot 账号后遇到瞬时 TLS/网络失败，或者遇到由旧 session item ID 残留引起的 `input[*].id too long` 错误，也可以在同一菜单中开启 Copilot Network Retry。它默认关闭。开启后，插件会先保留 upstream 官方 loader 生成的 `baseURL`、认证头和 `fetch` 行为，只在最后一跳 Copilot `fetch` 路径上做最小包装，把可重试的网络类失败归一化成 OpenCode 已有重试链路能识别的形态；对于明确命中的 `input[*].id too long` 400，还会回写命中的 session part，避免旧 item ID 持续污染后续重试。
+
+## 实验性 `/copilot-status`
+
+- 默认：**开启**
+- 性质：**实验特性 / workaround**，不是稳定公开 API
+- 主支持面：**TUI-first**；Web/App 只保留风险说明，不承诺一致体验
+- 触发方式：在正常对话里输入 `/copilot-status`
+- 预期反馈：先显示“正在拉取 Copilot quota...” toast，再显示成功或失败结果 toast
+
+如果你想关闭这个实验特性，可编辑账号存储文件 `~/.config/opencode/copilot-accounts.json`，加入或修改：
+
+```json
+{
+  "experimentalStatusSlashCommandEnabled": false
+}
+```
+
+关闭后：
+
+- OpenCode 配置里不再注入 `/copilot-status`
+- 即使手动输入 `/copilot-status`，插件也不会再进入该 workaround 执行链
 
 ## Copilot Network Retry
 
@@ -190,15 +214,17 @@ Default behavior and optional switches:
 - **Guided Loop Safety** — enabled by default; helps a single premium request stay productive longer with fewer report interruptions before it truly needs user input
 - **Copilot Network Retry** — optional and off by default; handles retryable network or certificate-style failures
 - **Synthetic Agent Initiator** — optional and off by default; experimental switch that diverges from stable upstream behavior, sends or overrides `x-initiator=agent`, does not guarantee non-billable treatment, and carries abuse or unexpected-billing risk
+- **Copilot Status Slash Command** — enabled by default; experimental `/copilot-status` workaround with TUI-first support and no cross-client UX guarantee
 
 ## What You Get
 
 - **Multi-account support** — add multiple Copilot accounts and switch anytime
 - **Quota check** — view remaining quota per account
 - **Auth import** — import Copilot tokens from OpenCode auth storage
-- **Guided Loop Safety** — enabled by default; a stricter Copilot-only question-first policy designed to keep non-blocked work moving, keep one premium request productive for hours, and cut avoidable quota burn by replacing repeated interruption turns with `question`-based waiting
+- **Guided Loop Safety** — enabled by default; a Copilot-only dual-channel policy (`question` for strong interaction, `notify` for pure progress) that keeps non-blocked work moving and reduces avoidable interruptions
 - **Copilot Network Retry** — optional and off by default; normalizes retryable Copilot network or TLS failures so OpenCode's native retry path can handle them
 - **Synthetic Agent Initiator** — optional and off by default; experimental switch that diverges from stable upstream behavior, sends or overrides `x-initiator=agent`, and carries billing/abuse risk
+- **`/copilot-status`** — enabled by default; experimental slash command that shows a loading toast first and then a quota result or error toast
 - **Zero model config** — no model changes required (official provider only)
 
 ---
@@ -280,18 +306,40 @@ You will see an interactive menu. Use the built-in language switch action if you
 - **Add account**
 - **Import from auth.json**
 - **Check quota**
-- **Guided Loop Safety toggle** — keeps question-first reporting enabled for Copilot so non-blocked work continues with fewer avoidable interruptions
+- **Guided Loop Safety toggle** — enforces dual-channel interaction: strong-interaction content must use `question`, while pure progress prefers `notify` and stays silent if `notify` is unavailable
 - **Copilot Network Retry toggle** — off by default; only affects the Copilot `fetch` path for retryable network/certificate failures
 - **Synthetic Agent Initiator toggle** — off by default; experimental switch that sends or overrides `x-initiator=agent`, diverges from stable upstream behavior, and does not guarantee non-billable treatment
+- **`/copilot-status`** — enabled by default; experimental slash command workaround that shows a loading toast first and then a quota result or error toast
 - **Switch account**
 - **Delete account**
 - **Delete all**
 
-Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, user-facing reports must go through it, so waiting for your reply does not keep burning extra quota the way repeated direct-status interruptions do. Fewer interruptions also means less avoidable quota burn. If safe non-blocked work remains, Copilot should keep going instead of pausing early; only when no safe action remains should it use `question` to ask for the next task or clarification, reducing unnecessary waiting.
+Guided Loop Safety is enabled by default. In practice, this can keep one request productive for hours: when `question` is available and permitted, all strong-interaction content (decisions, missing required input, explicit waiting states, final handoff) must use it. Pure progress updates and phase changes should use `notify`; if `notify` is unavailable, pure progress stays silent and work continues instead of being escalated into interrupting questions. This reduces avoidable interruptions, unnecessary waiting, and extra quota burn.
 
 If you switch Copilot accounts and then hit transient TLS/network failures or `input[*].id too long` errors caused by stale session item IDs, enable Copilot Network Retry from the same menu. It is off by default. When enabled, the plugin keeps the official Copilot header/baseURL behavior from the upstream loader, only wraps the final Copilot `fetch` path, and converts retryable network-like failures into a shape that OpenCode already treats as retryable. It also repairs the matched session part after an `input[*].id too long` 400 so later retries can recover instead of repeatedly failing on stale item IDs.
 
 You can also enable Synthetic Agent Initiator from the same menu. It is off by default. From a user perspective, it changes the request marker by sending or overriding `x-initiator=agent` so requests follow an early version of upstream's still-in-development synthetic initiator semantics instead of the current stable upstream behavior; it does not change who makes the final billing decision, and it does not guarantee the platform will treat those requests as non-billable.
+
+## Experimental `/copilot-status`
+
+- Default: **enabled**
+- Nature: **experimental / workaround**, not a stable public plugin command API
+- Support scope: **TUI-first**; Web/App behavior is explicitly not guaranteed to match
+- Trigger: enter `/copilot-status` in a normal chat session
+- Expected feedback: first a `Fetching Copilot quota...` toast, then a success or error toast
+
+To disable this experimental feature, edit `~/.config/opencode/copilot-accounts.json` and add or set:
+
+```json
+{
+  "experimentalStatusSlashCommandEnabled": false
+}
+```
+
+After disabling it:
+
+- OpenCode config injection no longer includes `/copilot-status`
+- Even manual `/copilot-status` input will no longer enter the plugin workaround execution chain
 
 ## Copilot Network Retry
 

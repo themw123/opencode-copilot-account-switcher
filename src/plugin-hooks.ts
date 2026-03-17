@@ -21,6 +21,8 @@ import {
   type OfficialChatHeadersHook,
 } from "./upstream/copilot-loader-adapter.js"
 import { createNotifyTool } from "./notify-tool.js"
+import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
+import { handleStatusCommand } from "./status-command.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
 type AuthProvider = Parameters<NonNullable<AuthLoader>>[1]
@@ -49,6 +51,9 @@ type ChatHeadersHook = (input: {
 type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
   "chat.headers"?: ChatHeadersHook
 }
+
+type StatusCommandHandler = typeof handleStatusCommand
+type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
 
 type RetryStoreContext = {
   networkRetryEnabled?: boolean
@@ -133,10 +138,17 @@ export function buildPluginHooks(input: {
   serverUrl?: CopilotRetryContext["serverUrl"]
   clearAccountSwitchContext?: (lastAccountSwitchAt?: number) => Promise<void>
   now?: () => number
+  refreshQuota?: RefreshQuota
+  handleStatusCommandImpl?: StatusCommandHandler
 }): CopilotPluginHooksWithChatHeaders {
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
-  const persistStore = input.writeStore ?? writeStore
+  const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => {
+    if (input.writeStore) return input.writeStore(store, meta)
+    return writeStore(store, { debug: meta })
+  }
+  const refreshQuota = input.refreshQuota ?? ((store: StoreFile) => refreshActiveAccountQuota({ store }))
+  const handleStatusCommandImpl = input.handleStatusCommandImpl ?? handleStatusCommand
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
@@ -343,6 +355,26 @@ export function buildPluginHooks(input: {
       methods: input.auth.methods,
       loader,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
+    config: async (config) => {
+      const store = await loadStore().catch(() => undefined)
+      if (store?.experimentalStatusSlashCommandEnabled === false) return
+      if (!config.command) config.command = {}
+      config.command["copilot-status"] = {
+        template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
+        description: "Experimental Copilot quota status workaround",
+      }
+    },
+    "command.execute.before": async (hookInput) => {
+      if (hookInput.command !== "copilot-status") return
+      const store = await loadStore().catch(() => undefined)
+      if (store && store.experimentalStatusSlashCommandEnabled === false) return
+      await handleStatusCommandImpl({
+        client: input.client,
+        loadStore,
+        writeStore: persistStore,
+        refreshQuota,
+      })
+    },
     tool: {
       notify: createNotifyTool({
         client: input.client,

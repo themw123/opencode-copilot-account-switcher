@@ -1,6 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
+import { fetchQuota } from "./active-account-quota.js"
+import { getGitHubToken, normalizeDomain } from "./copilot-api-helpers.js"
 import { applyMenuAction, persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
 import { isTTY } from "./ui/ansi.js"
@@ -11,29 +13,8 @@ function now() {
   return Date.now()
 }
 
-function getGitHubToken(entry: AccountEntry): string {
-  // Prefer access token if it looks like a GitHub access token
-  if (entry.access && (entry.access.startsWith("ghu_") || entry.access.startsWith("gho_") || entry.access.startsWith("ghp_") || entry.access.startsWith("github_pat_"))) {
-    return entry.access
-  }
-  // Fallback to refresh if it looks like a GitHub access token
-  if (entry.refresh && (entry.refresh.startsWith("ghu_") || entry.refresh.startsWith("gho_") || entry.refresh.startsWith("ghp_") || entry.refresh.startsWith("github_pat_"))) {
-    return entry.refresh
-  }
-  // If refresh is a refresh token (ghr_), and access is not, it's safer to try access
-  if (entry.refresh?.startsWith("ghr_") && entry.access && !entry.access.startsWith("ghr_")) {
-    return entry.access
-  }
-  // Fallback to refresh then access
-  return entry.refresh || entry.access
-}
-
 const CLIENT_ID = "Ov23li8tweQw6odWQebz"
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
-
-function normalizeDomain(url: string) {
-  return url.replace(/^https?:\/\//, "").replace(/\/$/, "")
-}
 
 function getUrls(domain: string) {
   return {
@@ -199,28 +180,6 @@ async function promptFilePath(message: string, defaultValue: string): Promise<st
   }
 }
 
-function buildSnapshot(raw?: {
-  entitlement?: number
-  remaining?: number
-  used?: number
-  unlimited?: boolean
-  percent_remaining?: number
-}) {
-  if (!raw) return undefined
-  const entitlement = raw.entitlement
-  const remaining = raw.remaining
-  const used = raw.used ??
-    (entitlement !== undefined && remaining !== undefined ? entitlement - remaining : undefined)
-  const percentRemaining = raw.percent_remaining
-  return {
-    entitlement,
-    remaining,
-    used,
-    unlimited: raw.unlimited,
-    percentRemaining,
-  }
-}
-
 function buildName(entry: AccountEntry, login?: string) {
   const user = login ?? entry.user
   if (!user) return entry.name
@@ -325,65 +284,6 @@ async function refreshIdentity(store: StoreFile) {
     }),
   )
   renameAccounts(store, items)
-}
-
-async function fetchQuota(entry: AccountEntry): Promise<AccountEntry["quota"]> {
-  try {
-    const headers = {
-      Accept: "application/json",
-      Authorization: `token ${getGitHubToken(entry)}`,
-      "User-Agent": "GitHubCopilotChat/0.26.7",
-      "Editor-Version": "vscode/1.96.2",
-      "Copilot-Integration-Id": "vscode-chat",
-      "X-Github-Api-Version": "2025-04-01",
-    }
-    const base = entry.enterpriseUrl ? `https://api.${normalizeDomain(entry.enterpriseUrl)}` : "https://api.github.com"
-    const quotaRes = await fetch(`${base}/copilot_internal/user`, { headers })
-    if (!quotaRes.ok) {
-      return { error: `quota ${quotaRes.status}` }
-    }
-    const quotaData = (await quotaRes.json()) as {
-      access_type_sku?: string
-      copilot_plan?: string
-      quota_reset_date?: string
-      quota_snapshots?: {
-        premium_interactions?: {
-          entitlement?: number
-          remaining?: number
-          used?: number
-          unlimited?: boolean
-          percent_remaining?: number
-        }
-        chat?: {
-          entitlement?: number
-          remaining?: number
-          used?: number
-          unlimited?: boolean
-          percent_remaining?: number
-        }
-        completions?: {
-          entitlement?: number
-          remaining?: number
-          used?: number
-          unlimited?: boolean
-          percent_remaining?: number
-        }
-      }
-    }
-    return {
-      sku: quotaData.access_type_sku,
-      plan: quotaData.copilot_plan,
-      reset: quotaData.quota_reset_date,
-      updatedAt: now(),
-      snapshots: {
-        premium: buildSnapshot(quotaData.quota_snapshots?.premium_interactions),
-        chat: buildSnapshot(quotaData.quota_snapshots?.chat),
-        completions: buildSnapshot(quotaData.quota_snapshots?.completions),
-      },
-    }
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) }
-  }
 }
 
 async function fetchModels(entry: AccountEntry): Promise<AccountEntry["models"]> {
