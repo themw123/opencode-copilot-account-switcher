@@ -66,10 +66,11 @@ export async function showStatusToast(input: {
   variant: ToastVariant
   warn?: (scope: string, error: unknown) => void
 }): Promise<void> {
-  const showToast = input.client?.tui?.showToast
+  const tui = input.client?.tui
+  const showToast = tui?.showToast
   if (!showToast) return
   try {
-    await showToast({
+    await showToast.call(tui, {
       body: {
         message: input.message,
         variant: input.variant,

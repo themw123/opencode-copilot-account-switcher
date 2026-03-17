@@ -72,6 +72,30 @@ test("showStatusToast no-ops when showToast is unavailable", async () => {
   assert.equal(warnings.length, 0)
 })
 
+test("showStatusToast preserves tui showToast this binding", async () => {
+  const calls = []
+  const { showStatusToast } = await import("../dist/status-command.js")
+
+  const tui = {
+    _client: { id: "ok" },
+    async showToast(options) {
+      const marker = this?._client?.id
+      if (!marker) throw new TypeError("undefined is not an object (evaluating 'this._client')")
+      calls.push({ marker, options })
+    },
+  }
+
+  await assert.doesNotReject(() => showStatusToast({
+    client: { tui },
+    message: "fetching quota",
+    variant: "info",
+  }))
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.marker, "ok")
+  assert.equal(calls[0]?.options?.body?.variant, "info")
+})
+
 test("status command reports store load failure with controlled interrupt", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
