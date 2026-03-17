@@ -25,6 +25,183 @@ test("plugin exposes auth and experimental chat system transform hooks", () => {
   assert.equal(typeof plugin["experimental.chat.system.transform"], "function")
 })
 
+test("status slash command is injected when experiment is enabled", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: true,
+    }),
+  })
+
+  const config = { command: {} }
+  await plugin.config?.(config)
+
+  assert.equal(typeof config.command["copilot-status"], "object")
+  assert.match(config.command["copilot-status"].template, /quota|Copilot|status/i)
+  assert.match(config.command["copilot-status"].description, /Copilot|status/i)
+})
+
+test("status slash command is not injected when experiment is disabled", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: false,
+    }),
+  })
+
+  const config = { command: {} }
+  await plugin.config?.(config)
+
+  assert.equal(Object.hasOwn(config.command, "copilot-status"), false)
+})
+
+test("status command hook ignores unrelated commands", async () => {
+  const calls = []
+  const writes = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: true,
+    }),
+    writeStore: async (store, meta) => writes.push({ store, meta }),
+    client: {
+      tui: {
+        showToast: async (options) => calls.push(options),
+      },
+    },
+  })
+
+  assert.equal(typeof plugin["command.execute.before"], "function")
+
+  await assert.doesNotReject(() => plugin["command.execute.before"]?.(
+    { command: "review", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  ))
+
+  assert.equal(calls.length, 0)
+  assert.equal(writes.length, 0)
+})
+
+test("status command hook delegates to status command handler", async () => {
+  const calls = []
+  const writes = []
+  const delegated = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      active: "alice",
+      accounts: {
+        alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+      },
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: true,
+    }),
+    writeStore: async (store, meta) => writes.push({ store, meta }),
+    client: {
+      tui: {
+        showToast: async (options) => calls.push(options),
+      },
+    },
+    handleStatusCommandImpl: async (input) => {
+      delegated.push({
+        loadStore: typeof input.loadStore,
+        writeStore: typeof input.writeStore,
+        refreshQuota: typeof input.refreshQuota,
+      })
+      throw new Error("delegated")
+    },
+  })
+
+  await assert.rejects(
+    plugin["command.execute.before"]?.(
+      { command: "copilot-status", sessionID: "s1", arguments: "" },
+      { parts: [] },
+    ),
+    /delegated/,
+  )
+
+  assert.equal(delegated.length, 1)
+  assert.equal(delegated[0]?.loadStore, "function")
+  assert.equal(delegated[0]?.writeStore, "function")
+  assert.equal(delegated[0]?.refreshQuota, "function")
+  assert.equal(calls.length, 0)
+  assert.equal(writes.length, 0)
+})
+
+test("status command hook still delegates when hook-level loadStore precheck fails", async () => {
+  const delegated = []
+  let refreshCount = 0
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => {
+      throw new Error("store read failed")
+    },
+    handleStatusCommandImpl: async (input) => {
+      delegated.push({
+        loadStore: typeof input.loadStore,
+        refreshQuota: typeof input.refreshQuota,
+      })
+      throw new Error("delegated")
+    },
+    refreshQuota: async () => {
+      refreshCount += 1
+      return { type: "missing-active" }
+    },
+  })
+
+  await assert.rejects(
+    plugin["command.execute.before"]?.(
+      { command: "copilot-status", sessionID: "s1", arguments: "" },
+      { parts: [] },
+    ),
+    /delegated/,
+  )
+
+  assert.equal(delegated.length, 1)
+  assert.equal(delegated[0]?.loadStore, "function")
+  assert.equal(delegated[0]?.refreshQuota, "function")
+  assert.equal(refreshCount, 0)
+})
+
+test("status command hook does nothing when experiment is disabled", async () => {
+  const calls = []
+  const writes = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      active: "alice",
+      accounts: {
+        alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+      },
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: false,
+    }),
+    writeStore: async (store, meta) => writes.push({ store, meta }),
+    client: {
+      tui: {
+        showToast: async (options) => calls.push(options),
+      },
+    },
+    handleStatusCommandImpl: async () => {
+      throw new Error("should not delegate")
+    },
+  })
+
+  await assert.doesNotReject(() => plugin["command.execute.before"]?.(
+    { command: "copilot-status", sessionID: "s1", arguments: "" },
+    { parts: [] },
+  ))
+
+  assert.equal(calls.length, 0)
+  assert.equal(writes.length, 0)
+})
+
 function createToolContext() {
   return {
     sessionID: "s1",

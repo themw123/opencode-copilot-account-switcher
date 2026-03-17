@@ -64,6 +64,18 @@ test("parseStore preserves networkRetryEnabled when explicitly true", () => {
   assert.equal(store.networkRetryEnabled, true)
 })
 
+test("status slash command experiment defaults to enabled", () => {
+  const store = parseStore('{"accounts":{}}')
+
+  assert.equal(store.experimentalStatusSlashCommandEnabled, true)
+})
+
+test("status slash command experiment preserves explicit false", () => {
+  const store = parseStore('{"accounts":{},"experimentalStatusSlashCommandEnabled":false}')
+
+  assert.equal(store.experimentalStatusSlashCommandEnabled, false)
+})
+
 test("parseStore keeps lastAccountSwitchAt when present", () => {
   const store = parseStore(
     '{"accounts":{"primary":{"refresh":"r","access":"a","expires":1}},"lastAccountSwitchAt":1735689600000}'
