@@ -21,8 +21,9 @@ import {
   type OfficialChatHeadersHook,
 } from "./upstream/copilot-loader-adapter.js"
 import { createNotifyTool } from "./notify-tool.js"
+import { createWaitTool } from "./wait-tool.js"
 import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
-import { handleStatusCommand } from "./status-command.js"
+import { handleStatusCommand, showStatusToast } from "./status-command.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
 type AuthProvider = Parameters<NonNullable<AuthLoader>>[1]
@@ -152,6 +153,18 @@ export function buildPluginHooks(input: {
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
+  let injectArmed = false
+
+  const showInjectToast = async (message: string, variant: "info" | "success" | "warning" | "error" = "info") => {
+    await showStatusToast({
+      client: input.client,
+      message,
+      variant,
+      warn: (scope, error) => {
+        console.warn(`[${scope}] failed to show toast`, error)
+      },
+    })
+  }
 
   const lookupSessionAncestry = async (sessionID: string) => {
     const session = await (input.client?.session?.get as undefined | ((input: {
@@ -357,28 +370,87 @@ export function buildPluginHooks(input: {
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
     config: async (config) => {
       const store = await loadStore().catch(() => undefined)
-      if (store?.experimentalStatusSlashCommandEnabled === false) return
       if (!config.command) config.command = {}
-      config.command["copilot-status"] = {
-        template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
-        description: "Experimental Copilot quota status workaround",
+      if (store?.experimentalStatusSlashCommandEnabled !== false) {
+        config.command["copilot-status"] = {
+          template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
+          description: "Experimental Copilot quota status workaround",
+        }
+      }
+      config.command["copilot-inject"] = {
+        template: "Arm an immediate tool-output inject marker flow that drives model to question.",
+        description: "Experimental force-intervene hook for Copilot workflows",
       }
     },
     "command.execute.before": async (hookInput) => {
-      if (hookInput.command !== "copilot-status") return
-      const store = await loadStore().catch(() => undefined)
-      if (store && store.experimentalStatusSlashCommandEnabled === false) return
-      await handleStatusCommandImpl({
-        client: input.client,
-        loadStore,
-        writeStore: persistStore,
-        refreshQuota,
-      })
+      if (hookInput.command === "copilot-inject") {
+        injectArmed = true
+        await showInjectToast("将在模型下次调用工具的时候要求模型立刻调用提问工具", "info")
+        return
+      }
+
+      if (hookInput.command === "copilot-status") {
+        const store = await loadStore().catch(() => undefined)
+        if (store && store.experimentalStatusSlashCommandEnabled === false) return
+        await handleStatusCommandImpl({
+          client: input.client,
+          loadStore,
+          writeStore: persistStore,
+          refreshQuota,
+        })
+      }
+    },
+    "tool.execute.before": async (hookInput) => {
+      if (!injectArmed) return
+      if (hookInput.tool !== "question") return
+      injectArmed = false
+    },
+    "tool.execute.after": async (hookInput, output) => {
+      if (hookInput.tool === "question") {
+        injectArmed = false
+        return
+      }
+
+      if (!injectArmed) return
+
+      const begin = "[COPILOT_INJECT_V1_BEGIN]"
+      const body = "立即调用 question 工具并等待用户指示；在收到用户新指示前，不要继续执行后续任务。"
+      const end = "[COPILOT_INJECT_V1_END]"
+      const markerBlock = `${begin}\n${body}\n${end}`
+
+      const currentOutput = output.output == null ? "" : String(output.output)
+      const hasBegin = currentOutput.includes(begin)
+      const hasEnd = currentOutput.includes(end)
+
+      let normalized = currentOutput
+      if (hasBegin !== hasEnd) {
+        normalized = normalized
+          .replace(begin, "")
+          .replace(end, "")
+          .trimEnd()
+      }
+
+      if (normalized.includes(begin) && normalized.includes(end)) {
+        output.output = normalized
+        return
+      }
+
+      output.output = `${normalized}${normalized.length > 0 ? "\n\n" : ""}${markerBlock}`
+      await showInjectToast("已要求模型立刻调用提问工具", "warning")
     },
     tool: {
       notify: createNotifyTool({
         client: input.client,
       }),
+      wait: createWaitTool(),
+    },
+    "tool.definition": async (hookInput, output) => {
+      if (hookInput.toolID === "question") {
+        output.description = "Use for required user response, explicit wait state, final handoff, or any uncertain routing case."
+      }
+      if (hookInput.toolID === "notify") {
+        output.description = "Use for non-blocking progress and phase updates only; do not require immediate user response."
+      }
     },
     "chat.headers": chatHeaders,
     "experimental.chat.system.transform": createLoopSafetySystemTransform(

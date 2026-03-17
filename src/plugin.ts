@@ -476,20 +476,10 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
       if (!store.active) store.active = preferred?.[1].name
     }
 
-    if (!Object.entries(store.accounts).length) {
-      const { name, entry } = await promptAccountEntry([])
-      store.accounts[name] = entry
-      store.active = name
-        await activateAddedAccount({
-          store,
-          name,
-          switchAccount: () => switchAccount(client, entry),
-          writeStore: persistStore,
-        })
-      // fallthrough to menu
-    }
-
-    if (!Object.values(store.accounts).some((entry) => entry.user || entry.email || (entry.orgs && entry.orgs.length > 0))) {
+    if (
+      Object.keys(store.accounts).length > 0
+      && !Object.values(store.accounts).some((entry) => entry.user || entry.email || (entry.orgs && entry.orgs.length > 0))
+    ) {
       await refreshIdentity(store)
       dedupe(store)
       await persistStore(store, {

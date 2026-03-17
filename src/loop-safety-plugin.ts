@@ -5,17 +5,17 @@ import { readStoreSafe, type StoreFile } from "./store.js"
 export const LOOP_SAFETY_POLICY = `Guided Loop Safety Policy
 - Continue working on any remaining non-blocked task before stopping to report or wait for more instructions.
 - If you are not fully blocked, do not stop just because you feel ready to pause; finish the work that can still be done safely.
-- Strong-interaction contract: When the question tool is available and permitted in the current session, every user-visible interaction that requires user intervention MUST go through the question tool.
-- Strong-interaction contract: This includes decisions, approvals, risk confirmations, missing required inputs that cannot be inferred safely, explicit waiting states, and final completion handoff.
-- Strong-interaction contract: Do not move strong-interaction content into notify or direct assistant text just to avoid interrupting the workflow.
-- Notify progress contract: Pure progress updates, phase changes, background activity, and non-blocking "still working" status updates should go through notify when notify is available and permitted.
-- Notify progress contract: Do not upgrade pure progress to question, and do not hide requests for decisions or required answers inside notify.
+- Channel contract: Use only question or notify for user-visible interactions; never emit ordinary assistant plain text.
+- Notify contract: Pure progress, phase switches, and non-blocking background status updates belong to notify.
+- Question contract: Required user response, explicit waiting states, final handoff, and no-safe-work-left states belong to question.
+- Decision matrix: If uncertain which tool applies, or the situation is outside known notify/question patterns, default to question.
+- Marker contract: If a tool output contains [COPILOT_INJECT_V1_BEGIN] ... [COPILOT_INJECT_V1_END], immediately call question and wait for user instruction before continuing.
 - Silent fallback discipline: If notify is unavailable, denied, absent, or fails, pure progress stays silent and work continues; do not automatically escalate that progress into question.
 - Silent fallback discipline: If question is unavailable, denied, or absent, only strong-interaction content may fall back to direct assistant text.
 - Silent fallback discipline: Tool availability does not change the interaction class of the content itself; progress stays progress and strong interaction stays strong interaction.
 - Reflection and violation diagnosis: If the user says the reporting behavior was wrong, first check whether content was assigned to the wrong interaction class or sent through the wrong channel.
 - Reflection and violation diagnosis: Check notify/question misclassification before blaming verbosity, timing, tone, or the policy itself.
-- Reflection and violation diagnosis: Final completion handoff and explicit waiting states remain strong-interaction events, so they still belong to question.
+- Reflection and violation diagnosis: Final completion handoff and explicit waiting states remain question events.
 `
 
 export type ExperimentalChatSystemTransformHook = (
