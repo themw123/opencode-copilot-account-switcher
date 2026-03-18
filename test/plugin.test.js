@@ -2503,7 +2503,7 @@ test("plugin menu toggle path forwards debug reason for experimental slash comma
   ])
 })
 
-test("persistAccountSwitch updates active account timestamps and persists store", async () => {
+test("persistAccountSwitch keeps active in sync while preserving activeAccountNames and updates lastUsed", async () => {
   const { persistAccountSwitch } = await import("../dist/plugin-actions.js")
 
   assert.equal(typeof persistAccountSwitch, "function")
@@ -2512,6 +2512,7 @@ test("persistAccountSwitch updates active account timestamps and persists store"
   const writes = []
   const store = {
     active: "old-account",
+    activeAccountNames: ["old-account", "new-account"],
     lastAccountSwitchAt: 123,
     accounts: {
       "old-account": { name: "old-account", refresh: "r1", access: "a1", expires: 0, lastUsed: 10 },
@@ -2526,6 +2527,7 @@ test("persistAccountSwitch updates active account timestamps and persists store"
     writeStore: async (next) => {
       writes.push({
         active: next.active,
+        activeAccountNames: next.activeAccountNames,
         lastUsed: next.accounts["new-account"].lastUsed,
         lastAccountSwitchAt: next.lastAccountSwitchAt,
       })
@@ -2533,15 +2535,34 @@ test("persistAccountSwitch updates active account timestamps and persists store"
   })
 
   assert.equal(store.active, "new-account")
+  assert.deepEqual(store.activeAccountNames, ["old-account", "new-account"])
   assert.equal(store.accounts["new-account"].lastUsed, at)
   assert.equal(store.lastAccountSwitchAt, at)
   assert.deepEqual(writes, [
     {
       active: "new-account",
+      activeAccountNames: ["old-account", "new-account"],
       lastUsed: at,
       lastAccountSwitchAt: at,
     },
   ])
+
+  const storeWithoutDefaultGroup = {
+    active: "old-account",
+    accounts: {
+      "old-account": { name: "old-account", refresh: "r1", access: "a1", expires: 0, lastUsed: 10 },
+      "new-account": { name: "new-account", refresh: "r2", access: "a2", expires: 0 },
+    },
+  }
+
+  await persistAccountSwitch({
+    store: storeWithoutDefaultGroup,
+    name: "new-account",
+    at,
+    writeStore: async () => {},
+  })
+
+  assert.deepEqual(storeWithoutDefaultGroup.activeAccountNames, ["new-account"])
 })
 
 test("activateAddedAccount records switch metadata only after switch succeeds", async () => {
