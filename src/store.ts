@@ -71,8 +71,11 @@ export type StoreFile = {
   lastAccountSwitchAt?: number
   lastQuotaRefresh?: number
   loopSafetyEnabled?: boolean
+  loopSafetyProviderScope?: "copilot-only" | "all-models"
   networkRetryEnabled?: boolean
   syntheticAgentInitiatorEnabled?: boolean
+  experimentalSlashCommandsEnabled?: boolean
+  // legacy migration fallback; new writes should use experimentalSlashCommandsEnabled
   experimentalStatusSlashCommandEnabled?: boolean
 }
 
@@ -92,7 +95,9 @@ function buildStoreSnapshot(store: StoreFile | undefined) {
     active: store?.active ?? null,
     accountCount: Object.keys(store?.accounts ?? {}).length,
     loopSafetyEnabled: store?.loopSafetyEnabled ?? null,
+    loopSafetyProviderScope: store?.loopSafetyProviderScope ?? null,
     networkRetryEnabled: store?.networkRetryEnabled ?? null,
+    experimentalSlashCommandsEnabled: store?.experimentalSlashCommandsEnabled ?? null,
     lastAccountSwitchAt: store?.lastAccountSwitchAt ?? null,
     syntheticAgentInitiatorEnabled: store?.syntheticAgentInitiatorEnabled ?? false,
   }
@@ -148,14 +153,19 @@ export function authPath(): string {
 
 export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
+  const legacySlashCommandsEnabled = (data as StoreFile & { experimentalStatusSlashCommandEnabled?: unknown }).experimentalStatusSlashCommandEnabled
   if (!data.accounts) data.accounts = {}
   if (typeof data.lastAccountSwitchAt !== "number" || Number.isNaN(data.lastAccountSwitchAt)) {
     delete data.lastAccountSwitchAt
   }
   if (data.loopSafetyEnabled !== false) data.loopSafetyEnabled = true
+  if (data.loopSafetyProviderScope !== "all-models") data.loopSafetyProviderScope = "copilot-only"
   if (data.networkRetryEnabled !== true) data.networkRetryEnabled = false
   if (data.syntheticAgentInitiatorEnabled !== true) data.syntheticAgentInitiatorEnabled = false
-  if (data.experimentalStatusSlashCommandEnabled !== false) data.experimentalStatusSlashCommandEnabled = true
+  if (data.experimentalSlashCommandsEnabled !== true && data.experimentalSlashCommandsEnabled !== false) {
+    data.experimentalSlashCommandsEnabled = legacySlashCommandsEnabled === false ? false : true
+  }
+  delete (data as StoreFile & { experimentalStatusSlashCommandEnabled?: unknown }).experimentalStatusSlashCommandEnabled
   for (const [name, entry] of Object.entries(data.accounts)) {
     const info = entry as AccountEntry
     if (!info.name) info.name = name

@@ -2,7 +2,9 @@ import { appendFileSync } from "node:fs"
 import {
   createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
+  getLoopSafetyProviderScope,
   isCopilotProvider,
+  type LoopSafetyProviderScope,
   type CopilotPluginHooks,
 } from "./loop-safety-plugin.js"
 import {
@@ -60,6 +62,13 @@ export class InjectCommandHandledError extends Error {
   constructor() {
     super("copilot-inject-handled")
     this.name = "InjectCommandHandledError"
+  }
+}
+
+export class PolicyScopeCommandHandledError extends Error {
+  constructor() {
+    super("copilot-policy-scope-handled")
+    this.name = "PolicyScopeCommandHandledError"
   }
 }
 
@@ -131,6 +140,12 @@ function readRetryStoreContext(store: StoreFile | undefined): RetryStoreContext 
   }
 }
 
+function areExperimentalSlashCommandsEnabled(store: StoreFile | undefined) {
+  if (store?.experimentalSlashCommandsEnabled === false) return false
+  if (store?.experimentalStatusSlashCommandEnabled === false) return false
+  return true
+}
+
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
@@ -163,6 +178,9 @@ export function buildPluginHooks(input: {
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
   let injectArmed = false
+  let policyScopeOverride: LoopSafetyProviderScope | undefined
+
+  const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
 
   const showInjectToast = async (message: string, variant: "info" | "success" | "warning" | "error" = "info") => {
     await showStatusToast({
@@ -380,27 +398,44 @@ export function buildPluginHooks(input: {
     config: async (config) => {
       if (!config.command) config.command = {}
       const store = loadStoreSync()
-      if (store?.experimentalStatusSlashCommandEnabled !== false) {
-        config.command["copilot-status"] = {
-          template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
-          description: "Experimental Copilot quota status workaround",
-        }
+      if (!areExperimentalSlashCommandsEnabled(store)) return
+      config.command["copilot-status"] = {
+        template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
+        description: "Experimental Copilot quota status workaround",
       }
       config.command["copilot-inject"] = {
         template: "Arm an immediate tool-output inject marker flow that drives model to question.",
         description: "Experimental force-intervene hook for Copilot workflows",
       }
+      config.command["copilot-policy-all-models"] = {
+        template: "Toggle the current OpenCode instance policy injection scope between Copilot-only and all providers/models.",
+        description: "Experimental policy scope toggle for all providers",
+      }
     },
     "command.execute.before": async (hookInput) => {
+      const store = await loadStore().catch(() => undefined)
       if (hookInput.command === "copilot-inject") {
+        if (!areExperimentalSlashCommandsEnabled(store)) return
         injectArmed = true
         await showInjectToast("将在模型下次调用工具的时候要求模型立刻调用提问工具", "info")
         throw new InjectCommandHandledError()
       }
 
+      if (hookInput.command === "copilot-policy-all-models") {
+        if (!areExperimentalSlashCommandsEnabled(store)) return
+        const next = getPolicyScope(store) === "all-models" ? "copilot-only" : "all-models"
+        policyScopeOverride = next
+        await showInjectToast(
+          next === "all-models"
+            ? "当前实例已将 policy 注入扩展到所有 provider 和所有模型"
+            : "当前实例已恢复为仅对 Copilot provider 注入 policy",
+          "info",
+        )
+        throw new PolicyScopeCommandHandledError()
+      }
+
       if (hookInput.command === "copilot-status") {
-        const store = await loadStore().catch(() => undefined)
-        if (store && store.experimentalStatusSlashCommandEnabled === false) return
+        if (!areExperimentalSlashCommandsEnabled(store)) return
         await handleStatusCommandImpl({
           client: input.client,
           loadStore,
@@ -466,6 +501,7 @@ export function buildPluginHooks(input: {
       loadStore,
       compactionLoopSafetyBypass.consume,
       lookupSessionAncestry,
+      getPolicyScope,
     ),
     "experimental.session.compacting": compactionLoopSafetyBypass.hook,
   }

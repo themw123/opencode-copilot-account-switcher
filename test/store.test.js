@@ -64,16 +64,40 @@ test("parseStore preserves networkRetryEnabled when explicitly true", () => {
   assert.equal(store.networkRetryEnabled, true)
 })
 
-test("status slash command experiment defaults to enabled", () => {
+test("experimental slash commands default to enabled", () => {
   const store = parseStore('{"accounts":{}}')
 
-  assert.equal(store.experimentalStatusSlashCommandEnabled, true)
+  assert.equal(store.experimentalSlashCommandsEnabled, true)
 })
 
-test("status slash command experiment preserves explicit false", () => {
+test("experimental slash commands preserve explicit false", () => {
+  const store = parseStore('{"accounts":{},"experimentalSlashCommandsEnabled":false}')
+
+  assert.equal(store.experimentalSlashCommandsEnabled, false)
+})
+
+test("experimental slash commands inherit legacy status slash false when new flag is missing", () => {
   const store = parseStore('{"accounts":{},"experimentalStatusSlashCommandEnabled":false}')
 
-  assert.equal(store.experimentalStatusSlashCommandEnabled, false)
+  assert.equal(store.experimentalSlashCommandsEnabled, false)
+})
+
+test("experimental slash commands explicit true overrides legacy false", () => {
+  const store = parseStore('{"accounts":{},"experimentalSlashCommandsEnabled":true,"experimentalStatusSlashCommandEnabled":false}')
+
+  assert.equal(store.experimentalSlashCommandsEnabled, true)
+})
+
+test("loop safety provider scope defaults to copilot-only", () => {
+  const store = parseStore('{"accounts":{}}')
+
+  assert.equal(store.loopSafetyProviderScope, "copilot-only")
+})
+
+test("loop safety provider scope preserves explicit all-models", () => {
+  const store = parseStore('{"accounts":{},"loopSafetyProviderScope":"all-models"}')
+
+  assert.equal(store.loopSafetyProviderScope, "all-models")
 })
 
 test("parseStore keeps lastAccountSwitchAt when present", () => {
@@ -255,7 +279,9 @@ test("writeStore emits enabled debug log with reason and before-after snapshots"
     active: null,
     accountCount: 1,
     loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: true,
+    experimentalSlashCommandsEnabled: true,
     lastAccountSwitchAt: 123,
     syntheticAgentInitiatorEnabled: false,
   })
@@ -263,7 +289,9 @@ test("writeStore emits enabled debug log with reason and before-after snapshots"
     active: null,
     accountCount: 0,
     loopSafetyEnabled: false,
+    loopSafetyProviderScope: null,
     networkRetryEnabled: true,
+    experimentalSlashCommandsEnabled: null,
     lastAccountSwitchAt: null,
     syntheticAgentInitiatorEnabled: false,
   })

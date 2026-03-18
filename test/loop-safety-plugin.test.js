@@ -43,6 +43,18 @@ test("applyLoopSafetyPolicy leaves non-Copilot providers unchanged", () => {
   assert.deepEqual(next, ["base prompt"])
 })
 
+test("applyLoopSafetyPolicy appends for non-Copilot providers when scope is all-models", () => {
+  const system = ["base prompt"]
+  const next = applyLoopSafetyPolicy({
+    providerID: "google",
+    enabled: true,
+    scope: "all-models",
+    system,
+  })
+
+  assert.deepEqual(next, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
 test("applyLoopSafetyPolicy leaves disabled Copilot sessions unchanged", () => {
   const system = ["base prompt"]
   const next = applyLoopSafetyPolicy({
@@ -273,6 +285,47 @@ test("createLoopSafetySystemTransform does not check ancestry for non-Copilot tr
   )
 
   assert.equal(ancestryChecks, 0)
+  assert.deepEqual(output.system, ["base prompt"])
+})
+
+test("createLoopSafetySystemTransform appends for non-Copilot providers when default scope is all-models", async () => {
+  const transform = createLoopSafetySystemTransform(async () => ({
+    accounts: {},
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "all-models",
+  }))
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "s1", model: { providerID: "google" } },
+    output,
+  )
+
+  assert.deepEqual(output.system, ["base prompt", LOOP_SAFETY_POLICY])
+})
+
+test("createLoopSafetySystemTransform skips non-Copilot derived child sessions when default scope is all-models", async () => {
+  const ancestryCalls = []
+  const transform = createLoopSafetySystemTransform(
+    async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+      loopSafetyProviderScope: "all-models",
+    }),
+    () => false,
+    async (sessionID) => {
+      ancestryCalls.push(sessionID)
+      return [{ sessionID, parentID: "root-session" }]
+    },
+  )
+  const output = { system: ["base prompt"] }
+
+  await transform(
+    { sessionID: "child-session", model: { providerID: "google" } },
+    output,
+  )
+
+  assert.deepEqual(ancestryCalls, ["child-session"])
   assert.deepEqual(output.system, ["base prompt"])
 })
 

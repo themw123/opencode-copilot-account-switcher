@@ -17,6 +17,16 @@ async function armInject(plugin, args = "") {
   )
 }
 
+async function toggleAllModelsPolicy(plugin) {
+  await assert.rejects(
+    async () => plugin["command.execute.before"]?.(
+      { command: "copilot-policy-all-models", sessionID: "s1", arguments: "" },
+      { parts: [] },
+    ),
+    (error) => error?.name === "PolicyScopeCommandHandledError",
+  )
+}
+
 test("plugin exposes auth and experimental chat system transform hooks", () => {
   const plugin = buildPluginHooks({
     auth: {
@@ -41,12 +51,12 @@ test("status slash command is injected when experiment is enabled", async () => 
     loadStoreSync: () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: true,
+      experimentalSlashCommandsEnabled: true,
     }),
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: true,
+      experimentalSlashCommandsEnabled: true,
     }),
   })
 
@@ -57,21 +67,22 @@ test("status slash command is injected when experiment is enabled", async () => 
   assert.match(config.command["copilot-status"].template, /quota|Copilot|status/i)
   assert.match(config.command["copilot-status"].description, /Copilot|status/i)
   assert.equal(typeof config.command["copilot-inject"], "object")
+  assert.equal(typeof config.command["copilot-policy-all-models"], "object")
   assert.match(config.command["copilot-inject"].template, /tool|question|inject|intervene/i)
 })
 
-test("status slash command is not injected when experiment is disabled", async () => {
+test("experimental slash commands are not injected when unified switch is disabled", async () => {
   const plugin = buildPluginHooks({
     auth: { provider: "github-copilot", methods: [] },
     loadStoreSync: () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: false,
+      experimentalSlashCommandsEnabled: false,
     }),
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: false,
+      experimentalSlashCommandsEnabled: false,
     }),
   })
 
@@ -79,7 +90,8 @@ test("status slash command is not injected when experiment is disabled", async (
   await plugin.config?.(config)
 
   assert.equal(Object.hasOwn(config.command, "copilot-status"), false)
-  assert.equal(typeof config.command["copilot-inject"], "object")
+  assert.equal(Object.hasOwn(config.command, "copilot-inject"), false)
+  assert.equal(Object.hasOwn(config.command, "copilot-policy-all-models"), false)
 })
 
 test("slash commands are injected immediately without waiting for async store load", () => {
@@ -89,7 +101,7 @@ test("slash commands are injected immediately without waiting for async store lo
     loadStoreSync: () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: true,
+      experimentalSlashCommandsEnabled: true,
     }),
   })
 
@@ -98,16 +110,17 @@ test("slash commands are injected immediately without waiting for async store lo
 
   assert.equal(typeof config.command["copilot-status"], "object")
   assert.equal(typeof config.command["copilot-inject"], "object")
+  assert.equal(typeof config.command["copilot-policy-all-models"], "object")
 })
 
-test("disabled status slash is decided from sync store path without waiting for async store load", () => {
+test("disabled experimental slash switch is decided from sync store path without waiting for async store load", () => {
   const plugin = buildPluginHooks({
     auth: { provider: "github-copilot", methods: [] },
     loadStore: () => new Promise(() => {}),
     loadStoreSync: () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: false,
+      experimentalSlashCommandsEnabled: false,
     }),
   })
 
@@ -115,7 +128,50 @@ test("disabled status slash is decided from sync store path without waiting for 
   plugin.config?.(config)
 
   assert.equal(Object.hasOwn(config.command, "copilot-status"), false)
-  assert.equal(typeof config.command["copilot-inject"], "object")
+  assert.equal(Object.hasOwn(config.command, "copilot-inject"), false)
+  assert.equal(Object.hasOwn(config.command, "copilot-policy-all-models"), false)
+})
+
+test("policy all-models command toggles current instance policy injection scope for non-Copilot providers", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: true,
+      experimentalSlashCommandsEnabled: true,
+      loopSafetyProviderScope: "copilot-only",
+    }),
+    client: {
+      tui: {
+        showToast: async () => {},
+      },
+    },
+  })
+  const before = { system: ["base prompt"] }
+  await plugin["experimental.chat.system.transform"]?.(
+    { sessionID: "s1", model: { providerID: "google" } },
+    before,
+  )
+
+  await toggleAllModelsPolicy(plugin)
+
+  const afterEnable = { system: ["base prompt"] }
+  await plugin["experimental.chat.system.transform"]?.(
+    { sessionID: "s1", model: { providerID: "google" } },
+    afterEnable,
+  )
+
+  await toggleAllModelsPolicy(plugin)
+
+  const afterDisable = { system: ["base prompt"] }
+  await plugin["experimental.chat.system.transform"]?.(
+    { sessionID: "s1", model: { providerID: "google" } },
+    afterDisable,
+  )
+
+  assert.deepEqual(before.system, ["base prompt"])
+  assert.match(afterEnable.system.join("\n"), /Guided Loop Safety Policy/)
+  assert.deepEqual(afterDisable.system, ["base prompt"])
 })
 
 test("copilot-inject command ignores arguments, arms inject mode, and stops extra command execution", async () => {
@@ -377,7 +433,7 @@ test("status command hook ignores unrelated commands", async () => {
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: true,
+      experimentalSlashCommandsEnabled: true,
     }),
     writeStore: async (store, meta) => writes.push({ store, meta }),
     client: {
@@ -410,7 +466,7 @@ test("status command hook delegates to status command handler", async () => {
         alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
       },
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: true,
+      experimentalSlashCommandsEnabled: true,
     }),
     writeStore: async (store, meta) => writes.push({ store, meta }),
     client: {
@@ -479,7 +535,7 @@ test("status command hook still delegates when hook-level loadStore precheck fai
   assert.equal(refreshCount, 0)
 })
 
-test("status command hook does nothing when experiment is disabled", async () => {
+test("status command hook does nothing when unified slash switch is disabled", async () => {
   const calls = []
   const writes = []
   const plugin = buildPluginHooks({
@@ -490,7 +546,7 @@ test("status command hook does nothing when experiment is disabled", async () =>
         alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
       },
       loopSafetyEnabled: false,
-      experimentalStatusSlashCommandEnabled: false,
+      experimentalSlashCommandsEnabled: false,
     }),
     writeStore: async (store, meta) => writes.push({ store, meta }),
     client: {

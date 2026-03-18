@@ -55,6 +55,8 @@ export type SessionAncestryEntry = {
   parentID?: string
 }
 
+export type LoopSafetyProviderScope = "copilot-only" | "all-models"
+
 export type LookupSessionAncestry = (
   sessionID: string,
 ) => Promise<SessionAncestryEntry[] | undefined>
@@ -68,15 +70,25 @@ export function isCopilotProvider(providerID: string): boolean {
   return providerID === "github-copilot" || providerID === "github-copilot-enterprise"
 }
 
+export function getLoopSafetyProviderScope(
+  store: StoreFile | undefined,
+  override?: LoopSafetyProviderScope,
+): LoopSafetyProviderScope {
+  if (override === "all-models" || override === "copilot-only") return override
+  if (store?.loopSafetyProviderScope === "all-models") return "all-models"
+  return "copilot-only"
+}
+
 export function applyLoopSafetyPolicy(input: {
   providerID: string
   enabled: boolean
+  scope?: LoopSafetyProviderScope
   skip?: boolean
   system: string[]
 }): string[] {
   if (!input.enabled) return input.system
   if (input.skip) return input.system
-  if (!isCopilotProvider(input.providerID)) return input.system
+  if (input.scope !== "all-models" && !isCopilotProvider(input.providerID)) return input.system
   if (input.system.includes(LOOP_SAFETY_POLICY)) return input.system
   return [...input.system, LOOP_SAFETY_POLICY]
 }
@@ -85,14 +97,16 @@ export function createLoopSafetySystemTransform(
   loadStore: () => Promise<StoreFile | undefined> = readStoreSafe,
   consumeCompactionBypass: (sessionID?: string) => boolean = () => false,
   lookupSessionAncestry: LookupSessionAncestry = async () => undefined,
+  resolveScope: (store: StoreFile | undefined) => LoopSafetyProviderScope = (store) => getLoopSafetyProviderScope(store),
 ): ExperimentalChatSystemTransformHook {
   return async (input, output) => {
     const store = await loadStore().catch(() => undefined)
     const enabled = store?.loopSafetyEnabled === true
+    const scope = resolveScope(store)
     const sessionID = typeof input.sessionID === "string" && input.sessionID.length > 0
       ? input.sessionID
       : undefined
-    const shouldCheckProvider = isCopilotProvider(input.model.providerID)
+    const shouldCheckProvider = scope === "all-models" || isCopilotProvider(input.model.providerID)
     const bypassed = enabled && shouldCheckProvider
       ? consumeCompactionBypass(sessionID)
       : false
@@ -108,6 +122,7 @@ export function createLoopSafetySystemTransform(
     const next = applyLoopSafetyPolicy({
       providerID: input.model.providerID,
       enabled,
+      scope,
       skip,
       system: output.system,
     })
