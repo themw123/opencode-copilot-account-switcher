@@ -288,13 +288,13 @@ async function configureModelAccountAssignments(store: StoreFile) {
   const modelID = await select(
     [
       { label: "Back", value: "" },
-      ...models.map((model) => ({
-        label: model,
-        value: model,
-        hint: store.modelAccountAssignments?.[model]
-          ? `assigned to ${store.modelAccountAssignments[model]}`
+        ...models.map((model) => ({
+          label: model,
+          value: model,
+          hint: store.modelAccountAssignments?.[model]
+          ? `assigned to ${(store.modelAccountAssignments[model] ?? []).join(", ")}`
           : `fallbacks to ${activeLabel}`,
-      })),
+        })),
     ],
     {
       message: "Choose a Copilot model",
@@ -340,7 +340,7 @@ async function configureModelAccountAssignments(store: StoreFile) {
 
   store.modelAccountAssignments = {
     ...(store.modelAccountAssignments ?? {}),
-    [modelID]: assigned,
+    [modelID]: [assigned],
   }
   return true
 }

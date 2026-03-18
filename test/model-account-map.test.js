@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import {
   listAssignableAccountsForModel,
   listKnownCopilotModels,
-  resolveCopilotModelAccount,
+  resolveCopilotModelAccounts,
   rewriteModelAccountAssignments,
 } from "../dist/model-account-map.js"
 
@@ -56,28 +56,74 @@ test("listAssignableAccountsForModel returns accounts exposing the target model"
   assert.deepEqual(accounts.map((item) => item.name), ["alt", "main"])
 })
 
-test("resolveCopilotModelAccount prefers mapped account and falls back to active", () => {
+test("resolveCopilotModelAccounts prefers mapped account group and falls back to activeAccountNames", () => {
   const store = {
     active: "main",
+    activeAccountNames: ["main", "fallback"],
     modelAccountAssignments: {
-      "gpt-5": "alt",
+      "gpt-5": ["alt", "org"],
     },
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
-      alt: { name: "alt", refresh: "r2", access: "a2", expires: 0 },
+      fallback: { name: "fallback", refresh: "r2", access: "a2", expires: 0 },
+      alt: { name: "alt", refresh: "r3", access: "a3", expires: 0 },
+      org: { name: "org", refresh: "r4", access: "a4", expires: 0 },
     },
   }
 
-  assert.deepEqual(resolveCopilotModelAccount(store, "gpt-5"), {
-    name: "alt",
-    entry: store.accounts.alt,
-    source: "model",
-  })
-  assert.deepEqual(resolveCopilotModelAccount(store, "o3"), {
-    name: "main",
-    entry: store.accounts.main,
-    source: "active",
-  })
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["alt", "org"])
+  assert.deepEqual(resolveCopilotModelAccounts(store, "o3").map((item) => item.name), ["main", "fallback"])
+})
+
+test("resolveCopilotModelAccounts keeps unknown model metadata candidates but excludes explicitly disabled ones", () => {
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "unknown", "disabled"],
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "r1",
+        access: "a1",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      unknown: { name: "unknown", refresh: "r2", access: "a2", expires: 0 },
+      disabled: {
+        name: "disabled",
+        refresh: "r3",
+        access: "a3",
+        expires: 0,
+        models: { available: [], disabled: ["gpt-5"] },
+      },
+    },
+  }
+
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "unknown"])
+})
+
+test("resolveCopilotModelAccounts excludes accounts whose available list is present but does not include the model", () => {
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "other-model"],
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "r1",
+        access: "a1",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      "other-model": {
+        name: "other-model",
+        refresh: "r2",
+        access: "a2",
+        expires: 0,
+        models: { available: ["o3"], disabled: [] },
+      },
+    },
+  }
+
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main"])
 })
 
 test("rewriteModelAccountAssignments renames and drops stale account mappings", () => {
@@ -85,11 +131,12 @@ test("rewriteModelAccountAssignments renames and drops stale account mappings", 
     active: "main",
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
-      renamed: { name: "renamed", refresh: "r2", access: "a2", expires: 0 },
+      alt: { name: "alt", refresh: "r2", access: "a2", expires: 0 },
+      renamed: { name: "renamed", refresh: "r3", access: "a3", expires: 0 },
     },
     modelAccountAssignments: {
-      "gpt-5": "alt",
-      "o3": "missing",
+      "gpt-5": ["alt", "missing"],
+      "o3": ["missing"],
     },
   }
 
@@ -99,6 +146,6 @@ test("rewriteModelAccountAssignments renames and drops stale account mappings", 
   })
 
   assert.deepEqual(store.modelAccountAssignments, {
-    "gpt-5": "renamed",
+    "gpt-5": ["renamed"],
   })
 })
