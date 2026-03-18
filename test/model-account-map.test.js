@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   listAssignableAccountsForModel,
   listKnownCopilotModels,
+  resolveCopilotModelAccount,
   resolveCopilotModelAccounts,
   rewriteModelAccountAssignments,
 } from "../dist/model-account-map.js"
@@ -124,6 +125,78 @@ test("resolveCopilotModelAccounts excludes accounts whose available list is pres
   }
 
   assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main"])
+})
+
+test("resolveCopilotModelAccounts falls back to activeAccountNames when mapped accounts are unusable", () => {
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "fallback"],
+    modelAccountAssignments: {
+      "gpt-5": ["missing", "disabled"],
+    },
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "r1",
+        access: "a1",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      fallback: {
+        name: "fallback",
+        refresh: "r2",
+        access: "a2",
+        expires: 0,
+      },
+      disabled: {
+        name: "disabled",
+        refresh: "r3",
+        access: "a3",
+        expires: 0,
+        models: { available: [], disabled: ["gpt-5"] },
+      },
+    },
+  }
+
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "fallback"])
+})
+
+test("resolveCopilotModelAccounts falls back to activeAccountNames when model mapping is empty", () => {
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "fallback"],
+    modelAccountAssignments: {
+      "gpt-5": [],
+    },
+    accounts: {
+      main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
+      fallback: { name: "fallback", refresh: "r2", access: "a2", expires: 0 },
+    },
+  }
+
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "fallback"])
+})
+
+test("resolveCopilotModelAccount returns the first candidate from group resolution", () => {
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "fallback"],
+    modelAccountAssignments: {
+      "gpt-5": ["alt", "org"],
+    },
+    accounts: {
+      main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
+      fallback: { name: "fallback", refresh: "r2", access: "a2", expires: 0 },
+      alt: { name: "alt", refresh: "r3", access: "a3", expires: 0 },
+      org: { name: "org", refresh: "r4", access: "a4", expires: 0 },
+    },
+  }
+
+  assert.deepEqual(resolveCopilotModelAccount(store, "gpt-5"), {
+    name: "alt",
+    entry: store.accounts.alt,
+    source: "model",
+  })
 })
 
 test("rewriteModelAccountAssignments renames and drops stale account mappings", () => {

@@ -1,16 +1,12 @@
 import type { AccountEntry, StoreFile } from "./store.js"
 
-export type ResolvedModelAccount = {
-  name: string
-  entry: AccountEntry
-  source: "model" | "active"
-}
-
 export type ResolvedModelAccountCandidate = {
   name: string
   entry: AccountEntry
   source: "model" | "active"
 }
+
+export type ResolvedModelAccount = ResolvedModelAccountCandidate
 
 export function listKnownCopilotModels(store: StoreFile): string[] {
   return [...new Set(
@@ -31,27 +27,6 @@ export function listAssignableAccountsForModel(store: StoreFile, modelID: string
     .map((name) => ({ name, entry: store.accounts[name] }))
 }
 
-function resolveCandidateAccountNames(store: StoreFile, modelID?: string) {
-  if (modelID && store.modelAccountAssignments && Object.prototype.hasOwnProperty.call(store.modelAccountAssignments, modelID)) {
-    return {
-      names: store.modelAccountAssignments[modelID] ?? [],
-      source: "model" as const,
-    }
-  }
-
-  if (Array.isArray(store.activeAccountNames)) {
-    return {
-      names: store.activeAccountNames,
-      source: "active" as const,
-    }
-  }
-
-  return {
-    names: store.active ? [store.active] : [],
-    source: "active" as const,
-  }
-}
-
 function isCandidateAvailableForModel(entry: AccountEntry, modelID?: string) {
   if (!modelID) return true
   const models = entry.models
@@ -62,8 +37,12 @@ function isCandidateAvailableForModel(entry: AccountEntry, modelID?: string) {
   return true
 }
 
-export function resolveCopilotModelAccounts(store: StoreFile, modelID?: string): ResolvedModelAccountCandidate[] {
-  const { names, source } = resolveCandidateAccountNames(store, modelID)
+function resolveCandidatesFromNames(
+  store: StoreFile,
+  names: string[],
+  source: ResolvedModelAccountCandidate["source"],
+  modelID?: string,
+) {
   const seen = new Set<string>()
   const resolved: ResolvedModelAccountCandidate[] = []
 
@@ -81,6 +60,25 @@ export function resolveCopilotModelAccounts(store: StoreFile, modelID?: string):
   }
 
   return resolved
+}
+
+export function resolveCopilotModelAccounts(store: StoreFile, modelID?: string): ResolvedModelAccountCandidate[] {
+  const hasMappedGroup = Boolean(
+    modelID
+    && store.modelAccountAssignments
+    && Object.prototype.hasOwnProperty.call(store.modelAccountAssignments, modelID),
+  )
+
+  if (hasMappedGroup) {
+    const mapped = resolveCandidatesFromNames(store, store.modelAccountAssignments?.[modelID!] ?? [], "model", modelID)
+    if (mapped.length > 0) return mapped
+  }
+
+  if (Array.isArray(store.activeAccountNames)) {
+    return resolveCandidatesFromNames(store, store.activeAccountNames, "active", modelID)
+  }
+
+  return resolveCandidatesFromNames(store, store.active ? [store.active] : [], "active", modelID)
 }
 
 export function resolveCopilotModelAccount(store: StoreFile, modelID?: string): ResolvedModelAccount | undefined {
