@@ -190,8 +190,9 @@ export function parseStore(raw: string): StoreFile {
   const parsed = raw ? (JSON.parse(raw) as LegacyStoreFile) : ({ accounts: {} } as LegacyStoreFile)
   const legacySlashCommandsEnabled = parsed.experimentalStatusSlashCommandEnabled
   const accounts = parsed.accounts ?? {}
+  const { experimentalStatusSlashCommandEnabled: _legacyStatusSlash, ...parsedWithoutLegacy } = parsed
   const store: StoreFile = {
-    ...(parsed as StoreFile),
+    ...(parsedWithoutLegacy as StoreFile),
     accounts,
   }
 

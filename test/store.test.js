@@ -88,6 +88,12 @@ test("experimental slash commands explicit true overrides legacy false", () => {
   assert.equal(store.experimentalSlashCommandsEnabled, true)
 })
 
+test("parseStore does not leak legacy experimentalStatusSlashCommandEnabled field", () => {
+  const store = parseStore('{"accounts":{},"experimentalStatusSlashCommandEnabled":false}')
+
+  assert.equal("experimentalStatusSlashCommandEnabled" in store, false)
+})
+
 test("loop safety provider scope defaults to copilot-only", () => {
   const store = parseStore('{"accounts":{}}')
 
