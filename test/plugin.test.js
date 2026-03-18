@@ -840,6 +840,147 @@ function createChatHeadersInput(input = {}) {
   }
 }
 
+function createFirstUseInitiatorHarness(input = {}) {
+  const outgoing = []
+  const officialInitiators = new Map()
+  const store = {
+    active: input.active ?? "main",
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "main-refresh",
+        access: "main-access",
+        expires: 0,
+      },
+      alt: {
+        name: "alt",
+        refresh: "alt-refresh",
+        access: "alt-access",
+        expires: 0,
+      },
+      ...(input.accounts ?? {}),
+    },
+    modelAccountAssignments: input.modelAccountAssignments,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    ...(input.store ?? {}),
+  }
+
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => store,
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        const normalizedHeaders = Object.fromEntries(new Headers(init?.headers).entries())
+        const call = {
+          auth,
+          url: request instanceof URL ? request.href : String(request),
+          headers: normalizedHeaders,
+          body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        }
+        outgoing.push(call)
+
+        if (typeof input.fetchImpl === "function") {
+          return input.fetchImpl({
+            request,
+            init,
+            auth,
+            call,
+            attempt: outgoing.length,
+          })
+        }
+
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+    loadOfficialChatHeaders: async () => async (hookInput, output) => {
+      for (const [name, value] of Object.entries(input.officialHeaders ?? {})) {
+        output.headers[name] = value
+      }
+
+      if (!officialInitiators.has(hookInput.message.id)) {
+        return
+      }
+
+      const initiator = officialInitiators.get(hookInput.message.id)
+      if (initiator !== null) {
+        output.headers["x-initiator"] = initiator
+      }
+    },
+  })
+
+  const authOptionsPromise = plugin.auth?.loader?.(
+    async () => {
+      const active = store.accounts[store.active]
+      return {
+        type: "oauth",
+        refresh: active.refresh,
+        access: active.access,
+        expires: active.expires,
+        enterpriseUrl: active.enterpriseUrl,
+      }
+    },
+    { models: {} },
+  )
+
+  return {
+    outgoing,
+    store,
+    async sendRequest(options = {}) {
+      const messageID = options.messageID ?? `message-${outgoing.length + 1}`
+      const sessionID = options.sessionID ?? "session-123"
+      const headers = { ...(options.initialHeaders ?? {}) }
+
+      if (Object.hasOwn(options, "officialInitiator")) {
+        officialInitiators.set(messageID, options.officialInitiator ?? null)
+      }
+
+      await plugin["chat.headers"]?.(
+        createChatHeadersInput({
+          sessionID,
+          providerID: options.providerID,
+          message: {
+            id: messageID,
+            sessionID,
+          },
+        }),
+        { headers },
+      )
+
+      const authOptions = await authOptionsPromise
+      return authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: options.model ?? "o3" }),
+      })
+    },
+  }
+}
+
+async function sendFirstUseRequest(harness, options = {}) {
+  await harness.sendRequest(options)
+  return harness.outgoing.at(-1)
+}
+
+function assertInitiatorHeader(call, expected) {
+  if (expected === undefined) {
+    assert.equal(Object.hasOwn(call.headers, "x-initiator"), false)
+    return
+  }
+
+  assert.equal(call.headers["x-initiator"], expected)
+}
+
 test("plugin chat headers synthetic stays disabled by default", async () => {
   const { chatHeaders } = createSyntheticChatHeadersHarness({
     messageResponse: {
@@ -1227,7 +1368,7 @@ test("plugin auth loader wraps official fetch when network retry is enabled", as
   assert.equal(options?.fetch, wrappedFetch)
 })
 
-test("plugin auth loader preserves subagent initiator header when network retry is enabled", async () => {
+test("plugin auth loader suppresses first-use agent initiator once and restores agent initiator on later requests", async () => {
   const outgoing = []
   const plugin = buildPluginHooks({
     auth: {
@@ -1235,7 +1376,15 @@ test("plugin auth loader preserves subagent initiator header when network retry 
       methods: [],
     },
     loadStore: async () => ({
-      accounts: {},
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
       loopSafetyEnabled: false,
       networkRetryEnabled: true,
     }),
@@ -1243,11 +1392,7 @@ test("plugin auth loader preserves subagent initiator header when network retry 
       baseURL: "https://api.githubcopilot.com",
       apiKey: "",
       fetch: async (_request, init) => {
-        outgoing.push({
-          "x-initiator": "user",
-          ...(init?.headers),
-          Authorization: "Bearer test-token",
-        })
+        outgoing.push(Object.fromEntries(new Headers(init?.headers).entries()))
         return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
       },
     }),
@@ -1257,40 +1402,47 @@ test("plugin auth loader preserves subagent initiator header when network retry 
     },
   })
 
-  const headers = {}
-  await plugin["chat.headers"]?.(
-    {
-      sessionID: "child-session",
-      agent: "task",
-      model: {
-        providerID: "github-copilot",
-        api: {
-          npm: "@ai-sdk/anthropic",
-        },
-      },
-      provider: { source: "custom", info: {}, options: {} },
-      message: { id: "msg-1" },
-    },
-    { headers },
-  )
-
   const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
     models: {},
   })
-  await options?.fetch?.("https://api.githubcopilot.com/responses", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      input: [{ role: "user", content: [] }],
-    }),
-  })
+  const sendAgentRequest = async (messageID) => {
+    const headers = {}
+    await plugin["chat.headers"]?.(
+      {
+        sessionID: "child-session",
+        agent: "task",
+        model: {
+          providerID: "github-copilot",
+          api: {
+            npm: "@ai-sdk/anthropic",
+          },
+        },
+        provider: { source: "custom", info: {}, options: {} },
+        message: { id: messageID },
+      },
+      { headers },
+    )
 
-  assert.equal(outgoing.length, 1)
-  assert.equal(outgoing[0]["x-initiator"], "agent")
-  assert.equal(outgoing[0]["anthropic-beta"], "interleaved-thinking-2025-05-14")
+    await options?.fetch?.("https://api.githubcopilot.com/responses", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "o3",
+        input: [{ role: "user", content: [] }],
+      }),
+    })
+  }
+
+  await sendAgentRequest("msg-1")
+  await sendAgentRequest("msg-2")
+
+  assert.equal(outgoing.length, 2)
+  assert.equal(Object.hasOwn(outgoing[0], "x-initiator"), false)
+  assert.equal(outgoing[1]["x-initiator"], "agent")
+  assert.equal(outgoing[1]["anthropic-beta"], "interleaved-thinking-2025-05-14")
 })
 
-test("plugin auth loader preserves subagent initiator header across retry requests", async () => {
+test("plugin auth loader only suppresses first use once and keeps subagent initiator across later retry requests", async () => {
   const outgoing = []
   const plugin = buildPluginHooks({
     auth: {
@@ -1298,7 +1450,15 @@ test("plugin auth loader preserves subagent initiator header across retry reques
       methods: [],
     },
     loadStore: async () => ({
-      accounts: {},
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
       loopSafetyEnabled: false,
       networkRetryEnabled: true,
     }),
@@ -1332,43 +1492,330 @@ test("plugin auth loader preserves subagent initiator header across retry reques
     },
   })
 
-  const headers = {}
-  await plugin["chat.headers"]?.(
-    {
-      sessionID: "child-session",
-      agent: "task",
-      model: {
-        providerID: "github-copilot",
-        api: {
-          npm: "@ai-sdk/anthropic",
-        },
-      },
-      provider: { source: "custom", info: {}, options: {} },
-      message: { id: "msg-1" },
-    },
-    { headers },
-  )
-
   const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
     models: {},
   })
-  await options?.fetch?.("https://api.githubcopilot.com/responses", {
+  const sendAgentRequest = async (messageID, body) => {
+    const headers = {}
+    await plugin["chat.headers"]?.(
+      {
+        sessionID: "child-session",
+        agent: "task",
+        model: {
+          providerID: "github-copilot",
+          api: {
+            npm: "@ai-sdk/anthropic",
+          },
+        },
+        provider: { source: "custom", info: {}, options: {} },
+        message: { id: messageID },
+      },
+      { headers },
+    )
+
+    await options?.fetch?.("https://api.githubcopilot.com/responses", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    })
+  }
+
+  await sendAgentRequest("msg-1", {
+    model: "o3",
+    input: [{ role: "user", content: [] }],
+  })
+  await sendAgentRequest("msg-2", {
+    model: "o3",
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+    ],
+  })
+
+  assert.equal(outgoing.length, 3)
+  assert.equal(outgoing[0].headers["x-initiator"], "user")
+  assert.equal(outgoing[1].headers["x-initiator"], "agent")
+  assert.equal(outgoing[1].headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
+  assert.equal(outgoing[2].headers["x-initiator"], "agent")
+  assert.equal(outgoing[2].headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
+  assert.equal(outgoing[2].body.input[1].id, undefined)
+})
+
+test("plugin auth loader initiator first use strips first agent request for an account", async () => {
+  const harness = createFirstUseInitiatorHarness({
+    officialHeaders: {
+      "anthropic-beta": "interleaved-thinking-2025-05-14",
+    },
+  })
+
+  const firstCall = await sendFirstUseRequest(harness, {
+    model: "o3",
+    officialInitiator: "agent",
+    initialHeaders: {
+      "x-test-header": "kept",
+    },
+  })
+
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(firstCall.auth.refresh, "main-refresh")
+  assertInitiatorHeader(firstCall, undefined)
+  assert.equal(firstCall.headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
+  assert.equal(firstCall.headers["x-test-header"], "kept")
+})
+
+test("plugin auth loader initiator first use restores agent header on second request for same account", async () => {
+  const harness = createFirstUseInitiatorHarness()
+
+  const firstCall = await sendFirstUseRequest(harness, {
+    model: "o3",
+    officialInitiator: "agent",
+    initialHeaders: {
+      "x-test-header": "first",
+    },
+  })
+  const secondCall = await sendFirstUseRequest(harness, {
+    model: "o3",
+    officialInitiator: "agent",
+    initialHeaders: {
+      "x-test-header": "second",
+    },
+  })
+
+  assert.equal(harness.outgoing.length, 2)
+  assertInitiatorHeader(firstCall, undefined)
+  assert.equal(firstCall.headers["x-test-header"], "first")
+  assertInitiatorHeader(secondCall, "agent")
+  assert.equal(secondCall.headers["x-test-header"], "second")
+})
+
+test("plugin auth loader initiator first use is tracked independently per account", async () => {
+  const harness = createFirstUseInitiatorHarness({
+    modelAccountAssignments: {
+      "gpt-5": "alt",
+    },
+  })
+
+  const altFirstCall = await sendFirstUseRequest(harness, { model: "gpt-5", officialInitiator: "agent" })
+  const mainFirstCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: "agent" })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(altFirstCall.auth.refresh, "alt-refresh")
+  assertInitiatorHeader(altFirstCall, undefined)
+  assert.equal(mainFirstCall.auth.refresh, "main-refresh")
+  assertInitiatorHeader(mainFirstCall, undefined)
+})
+
+test("plugin auth loader initiator first use keeps first user header and leaves next agent request unchanged", async () => {
+  const harness = createFirstUseInitiatorHarness()
+
+  const firstUserCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: "user" })
+  const secondAgentCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: "agent" })
+
+  assert.equal(harness.outgoing.length, 2)
+  assertInitiatorHeader(firstUserCall, "user")
+  assertInitiatorHeader(secondAgentCall, "agent")
+})
+
+test("plugin auth loader initiator first use keeps missing initiator missing and leaves next agent request unchanged", async () => {
+  const harness = createFirstUseInitiatorHarness()
+
+  const firstMissingCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: null })
+  const secondAgentCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: "agent" })
+
+  assert.equal(harness.outgoing.length, 2)
+  assertInitiatorHeader(firstMissingCall, undefined)
+  assertInitiatorHeader(secondAgentCall, "agent")
+})
+
+test("plugin auth loader initiator first use consumes first use when account is chosen by active fallback", async () => {
+  const harness = createFirstUseInitiatorHarness({
+    active: "alt",
+    modelAccountAssignments: {
+      "gpt-5": "alt",
+    },
+  })
+
+  const fallbackFirstCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: "agent" })
+  const mappedSecondCall = await sendFirstUseRequest(harness, { model: "gpt-5", officialInitiator: "agent" })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(fallbackFirstCall.auth.refresh, "alt-refresh")
+  assertInitiatorHeader(fallbackFirstCall, undefined)
+  assert.equal(mappedSecondCall.auth.refresh, "alt-refresh")
+  assertInitiatorHeader(mappedSecondCall, "agent")
+})
+
+test("plugin auth loader initiator first use does not roll back when first send fails", async () => {
+  const harness = createFirstUseInitiatorHarness({
+    fetchImpl: ({ attempt }) => {
+      if (attempt === 1) {
+        throw new Error("send failed")
+      }
+
+      return new Response("{}", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await assert.rejects(
+    harness.sendRequest({ model: "o3", officialInitiator: "agent" }),
+    /send failed/,
+  )
+  const secondCall = await sendFirstUseRequest(harness, { model: "o3", officialInitiator: "agent" })
+
+  assert.equal(harness.outgoing.length, 2)
+  assertInitiatorHeader(harness.outgoing[0], undefined)
+  assertInitiatorHeader(secondCall, "agent")
+})
+
+test("plugin auth loader initiator first use normalizes Request and init headers together", async () => {
+  const outgoing = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        const headers = new Headers(request instanceof Request ? request.headers : undefined)
+        for (const [name, value] of new Headers(init?.headers).entries()) {
+          headers.set(name, value)
+        }
+        const normalizedHeaders = Object.fromEntries(headers.entries())
+        outgoing.push({ auth, headers: normalizedHeaders })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  await authOptions?.fetch?.(new Request("https://api.githubcopilot.com/chat/completions", {
     method: "POST",
-    headers,
-    body: JSON.stringify({
-      input: [
-        { role: "user", content: [{ type: "input_text", text: "hi" }] },
-        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
-      ],
+    headers: {
+      "x-test-header": "request",
+    },
+    body: JSON.stringify({ model: "o3" }),
+  }), {
+    headers: new Headers({
+      "x-initiator": "agent",
+      "x-added-header": "init",
+    }),
+  })
+  await authOptions?.fetch?.(new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "x-test-header": "request",
+    },
+    body: JSON.stringify({ model: "o3" }),
+  }), {
+    headers: new Headers({
+      "x-initiator": "agent",
+      "x-added-header": "init",
     }),
   })
 
   assert.equal(outgoing.length, 2)
-  assert.equal(outgoing[0].headers["x-initiator"], "agent")
-  assert.equal(outgoing[0].headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
-  assert.equal(outgoing[1].headers["x-initiator"], "agent")
-  assert.equal(outgoing[1].headers["anthropic-beta"], "interleaved-thinking-2025-05-14")
-  assert.equal(outgoing[1].body.input[1].id, undefined)
+  assert.equal(outgoing[0].auth.refresh, "main-refresh")
+  assertInitiatorHeader(outgoing[0], undefined)
+  assert.equal(outgoing[0].headers["x-test-header"], "request")
+  assert.equal(outgoing[0].headers["x-added-header"], "init")
+  assertInitiatorHeader(outgoing[1], "agent")
+  assert.equal(outgoing[1].headers["x-test-header"], "request")
+  assert.equal(outgoing[1].headers["x-added-header"], "init")
+})
+
+test("plugin auth loader first-use agent detection uses merged header precedence", async () => {
+  const outgoing = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        const headers = new Headers(request instanceof Request ? request.headers : undefined)
+        for (const [name, value] of new Headers(init?.headers).entries()) {
+          headers.set(name, value)
+        }
+        outgoing.push({ auth, headers: Object.fromEntries(headers.entries()) })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  await authOptions?.fetch?.(new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "x-initiator": "user",
+    },
+    body: JSON.stringify({ model: "o3" }),
+  }), {
+    headers: new Headers({
+      "x-initiator": "agent",
+      "x-added-header": "init",
+    }),
+  })
+
+  assert.equal(outgoing.length, 1)
+  assertInitiatorHeader(outgoing[0], undefined)
+  assert.equal(outgoing[0].headers["x-added-header"], "init")
 })
 
 test("plugin auth loader passes plugin context into retry wrapper factory", async () => {

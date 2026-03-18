@@ -184,6 +184,54 @@ function rewriteRequestForAccount(request: Request | URL | string, enterpriseUrl
   }
 }
 
+function mergeAndRewriteRequestHeaders(
+  request: Request | URL | string,
+  init?: RequestInit,
+  rewriteHeaders?: (headers: Headers) => void,
+): {
+  request: Request | URL | string
+  init: RequestInit | undefined
+} {
+  const hasRequestHeaders = request instanceof Request && [...request.headers].length > 0
+  const hasInitHeaders = init?.headers != null && [...new Headers(init.headers)].length > 0
+  if (!hasRequestHeaders && !hasInitHeaders && !rewriteHeaders) {
+    return {
+      request,
+      init,
+    }
+  }
+
+  const headers = new Headers(request instanceof Request ? request.headers : undefined)
+  if (init?.headers != null) {
+    for (const [name, value] of new Headers(init.headers).entries()) {
+      headers.set(name, value)
+    }
+  }
+  rewriteHeaders?.(headers)
+
+  const normalizedInit = init == null ? undefined : { ...init, headers }
+
+  if (request instanceof Request) {
+    return {
+      request: new Request(request, { headers }),
+      init: normalizedInit,
+    }
+  }
+
+  return {
+    request,
+    init: normalizedInit ?? { headers },
+  }
+}
+
+function getMergedRequestHeader(request: Request | URL | string, init: RequestInit | undefined, name: string) {
+  const headers = new Headers(request instanceof Request ? request.headers : undefined)
+  for (const [headerName, value] of new Headers(init?.headers).entries()) {
+    headers.set(headerName, value)
+  }
+  return headers.get(name)
+}
+
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
@@ -217,6 +265,7 @@ export function buildPluginHooks(input: {
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
   let injectArmed = false
   let policyScopeOverride: LoopSafetyProviderScope | undefined
+  const modelAccountFirstUse = new Set<string>()
 
   const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
 
@@ -295,7 +344,25 @@ export function buildPluginHooks(input: {
       const latestStore = await loadStore().catch(() => undefined)
       const modelID = await readRequestModelID(request, init)
       const resolved = latestStore ? resolveCopilotModelAccount(latestStore, modelID) : undefined
-      if (!resolved || resolved.source !== "model") return config.fetch(request, init)
+      if (!resolved) return config.fetch(request, init)
+
+      const isFirstUse = modelAccountFirstUse.has(resolved.name) === false
+      if (isFirstUse) {
+        modelAccountFirstUse.add(resolved.name)
+      }
+
+      let nextRequest = request
+      let nextInit = init
+      if (isFirstUse) {
+        const currentInitiator = getMergedRequestHeader(request, init, "x-initiator")
+        if (currentInitiator === "agent") {
+          const rewritten = mergeAndRewriteRequestHeaders(request, init, (headers) => {
+            headers.delete("x-initiator")
+          })
+          nextRequest = rewritten.request
+          nextInit = rewritten.init
+        }
+      }
 
       const auth: CopilotAuthState = {
         type: "oauth",
@@ -305,7 +372,10 @@ export function buildPluginHooks(input: {
         enterpriseUrl: resolved.entry.enterpriseUrl,
       }
 
-      return authOverride.run(auth, () => config.fetch(rewriteRequestForAccount(request, resolved.entry.enterpriseUrl), init))
+      return authOverride.run(auth, () => config.fetch(
+        rewriteRequestForAccount(nextRequest, resolved.entry.enterpriseUrl),
+        nextInit,
+      ))
     }
 
     if (retryStore?.networkRetryEnabled !== true) return {
