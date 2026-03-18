@@ -75,7 +75,8 @@ export function resolveCopilotModelAccounts(store: StoreFile, modelID?: string):
   }
 
   if (Array.isArray(store.activeAccountNames)) {
-    return resolveCandidatesFromNames(store, store.activeAccountNames, "active", modelID)
+    const fromActiveGroup = resolveCandidatesFromNames(store, store.activeAccountNames, "active", modelID)
+    if (fromActiveGroup.length > 0) return fromActiveGroup
   }
 
   return resolveCandidatesFromNames(store, store.active ? [store.active] : [], "active", modelID)

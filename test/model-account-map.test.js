@@ -177,6 +177,38 @@ test("resolveCopilotModelAccounts falls back to activeAccountNames when model ma
   assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "fallback"])
 })
 
+test("resolveCopilotModelAccounts falls back to active when activeAccountNames candidates are all unusable", () => {
+  const store = {
+    active: "main",
+    activeAccountNames: ["disabled", "other-model"],
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "r1",
+        access: "a1",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      disabled: {
+        name: "disabled",
+        refresh: "r2",
+        access: "a2",
+        expires: 0,
+        models: { available: [], disabled: ["gpt-5"] },
+      },
+      "other-model": {
+        name: "other-model",
+        refresh: "r3",
+        access: "a3",
+        expires: 0,
+        models: { available: ["o3"], disabled: [] },
+      },
+    },
+  }
+
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main"])
+})
+
 test("resolveCopilotModelAccount returns the first candidate from group resolution", () => {
   const store = {
     active: "main",
