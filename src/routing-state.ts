@@ -97,12 +97,18 @@ function emptySnapshot(): RoutingSnapshot {
 }
 
 async function readSnapshot(filePath: string): Promise<RoutingSnapshot> {
+  let raw = ""
   try {
-    const raw = await fs.readFile(filePath, "utf8")
-    return normalizeSnapshot(JSON.parse(raw))
+    raw = await fs.readFile(filePath, "utf8")
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code === "ENOENT") return emptySnapshot()
+    throw error
+  }
+
+  try {
+    return normalizeSnapshot(JSON.parse(raw))
+  } catch {
     return emptySnapshot()
   }
 }
@@ -149,7 +155,7 @@ async function readEventsFromLog(filePath: string): Promise<RoutingEvent[]> {
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code === "ENOENT") return []
-    return []
+    throw error
   }
 
   const events: RoutingEvent[] = []
@@ -244,5 +250,6 @@ export async function readRoutingState(directory: string): Promise<RoutingSnapsh
 
   const activeEvents = await activeEventsPromise
   state = foldRoutingEvents(state, activeEvents)
+  state.appliedSegments = [...new Set([...(snapshot.appliedSegments ?? []), ...sealedSegments])]
   return state
 }
