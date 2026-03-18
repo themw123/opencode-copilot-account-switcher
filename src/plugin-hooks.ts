@@ -56,6 +56,13 @@ type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
 type StatusCommandHandler = typeof handleStatusCommand
 type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
 
+export class InjectCommandHandledError extends Error {
+  constructor() {
+    super("copilot-inject-handled")
+    this.name = "InjectCommandHandledError"
+  }
+}
+
 type RetryStoreContext = {
   networkRetryEnabled?: boolean
   lastAccountSwitchAt?: number
@@ -388,7 +395,7 @@ export function buildPluginHooks(input: {
       if (hookInput.command === "copilot-inject") {
         injectArmed = true
         await showInjectToast("将在模型下次调用工具的时候要求模型立刻调用提问工具", "info")
-        return
+        throw new InjectCommandHandledError()
       }
 
       if (hookInput.command === "copilot-status") {

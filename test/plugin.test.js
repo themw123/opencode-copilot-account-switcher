@@ -7,6 +7,16 @@ import { applyMenuAction } from "../dist/plugin-actions.js"
 import { buildPluginHooks } from "../dist/plugin-hooks.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
 
+async function armInject(plugin, args = "") {
+  await assert.rejects(
+    async () => plugin["command.execute.before"]?.(
+      { command: "copilot-inject", sessionID: "s1", arguments: args },
+      { parts: [] },
+    ),
+    (error) => error?.name === "InjectCommandHandledError",
+  )
+}
+
 test("plugin exposes auth and experimental chat system transform hooks", () => {
   const plugin = buildPluginHooks({
     auth: {
@@ -108,7 +118,7 @@ test("disabled status slash is decided from sync store path without waiting for 
   assert.equal(typeof config.command["copilot-inject"], "object")
 })
 
-test("copilot-inject command ignores arguments and still arms inject mode", async () => {
+test("copilot-inject command ignores arguments, arms inject mode, and stops extra command execution", async () => {
   const calls = []
   const plugin = buildPluginHooks({
     auth: { provider: "github-copilot", methods: [] },
@@ -122,10 +132,7 @@ test("copilot-inject command ignores arguments and still arms inject mode", asyn
     },
   })
 
-  await assert.doesNotReject(() => plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "anything here" },
-    { parts: [] },
-  ))
+  await armInject(plugin, "anything here")
 
   assert.match(String(calls[0]?.body?.message ?? ""), /下次调用工具|next tool/i)
 })
@@ -137,10 +144,7 @@ test("inject appends marker to non-question tool output", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
 
   const output = { title: "run", output: "original output", metadata: {} }
   await plugin["tool.execute.after"]?.(
@@ -160,10 +164,7 @@ test("inject preserves original output and appends only", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
 
   const raw = "line1\nline2"
   const output = { title: "x", output: raw, metadata: {} }
@@ -182,10 +183,7 @@ test("inject avoids duplicate marker when already present", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
 
   const marker = [
     "[COPILOT_INJECT_V1_BEGIN]",
@@ -209,10 +207,7 @@ test("inject repairs partial marker and appends full marker pair", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
 
   const output = { title: "x", output: "before\n[COPILOT_INJECT_V1_BEGIN]\n", metadata: {} }
   await plugin["tool.execute.after"]?.(
@@ -234,10 +229,7 @@ test("inject normalizes empty or non-string output before append", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
 
   const emptyOutput = { title: "x", output: undefined, metadata: {} }
   await plugin["tool.execute.after"]?.(
@@ -268,10 +260,7 @@ test("inject toasts on every actual append", async () => {
     },
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
   const output1 = { title: "x", output: "o1", metadata: {} }
   const output2 = { title: "x", output: "o2", metadata: {} }
   await plugin["tool.execute.after"]?.(
@@ -302,10 +291,7 @@ test("inject stays fail-open when toast dispatch fails", async () => {
     },
   })
 
-  await assert.doesNotReject(() => plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  ))
+  await armInject(plugin)
 
   const output = { title: "x", output: "original", metadata: {} }
   await assert.doesNotReject(() => plugin["tool.execute.after"]?.(
@@ -322,10 +308,7 @@ test("question clears inject armed state", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
   await plugin["tool.execute.before"]?.(
     { tool: "question", sessionID: "s1", callID: "q1" },
     { args: {} },
@@ -347,10 +330,7 @@ test("after question inject no longer appends markers", async () => {
     client: {},
   })
 
-  await plugin["command.execute.before"]?.(
-    { command: "copilot-inject", sessionID: "s1", arguments: "" },
-    { parts: [] },
-  )
+  await armInject(plugin)
   await plugin["tool.execute.after"]?.(
     { tool: "question", sessionID: "s1", callID: "q1", args: {} },
     { title: "q", output: "question output", metadata: {} },
