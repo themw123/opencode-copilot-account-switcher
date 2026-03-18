@@ -11,7 +11,7 @@ import {
   type FetchLike,
 } from "./copilot-network-retry.js"
 import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
-import { readStoreSafe, writeStore, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
+import { readStoreSafe, readStoreSafeSync, writeStore, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 import {
   loadOfficialCopilotConfig,
   loadOfficialCopilotChatHeaders,
@@ -127,6 +127,7 @@ function readRetryStoreContext(store: StoreFile | undefined): RetryStoreContext 
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
+  loadStoreSync?: () => StoreFile | undefined
   writeStore?: (store: StoreFile, meta?: StoreWriteDebugMeta) => Promise<void>
   loadOfficialConfig?: (input: {
     getAuth: () => Promise<CopilotAuthState | undefined>
@@ -144,6 +145,7 @@ export function buildPluginHooks(input: {
 }): CopilotPluginHooksWithChatHeaders {
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
+  const loadStoreSync = input.loadStoreSync ?? readStoreSafeSync
   const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => {
     if (input.writeStore) return input.writeStore(store, meta)
     return writeStore(store, { debug: meta })
@@ -369,8 +371,8 @@ export function buildPluginHooks(input: {
       loader,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
     config: async (config) => {
-      const store = await loadStore().catch(() => undefined)
       if (!config.command) config.command = {}
+      const store = loadStoreSync()
       if (store?.experimentalStatusSlashCommandEnabled !== false) {
         config.command["copilot-status"] = {
           template: "Show the current GitHub Copilot quota status via the experimental workaround path.",

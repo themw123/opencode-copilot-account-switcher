@@ -1,6 +1,7 @@
 import path from "node:path"
 import os from "node:os"
 import { promises as fs } from "node:fs"
+import { readFileSync } from "node:fs"
 import { xdgConfig, xdgData } from "xdg-basedir"
 
 export type StoreWriteDebugMeta = {
@@ -174,6 +175,16 @@ export async function readStoreSafe(filePath = storePath()): Promise<StoreFile |
   try {
     const raw = await fs.readFile(filePath, "utf-8")
     return parseStore(raw)
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") return parseStore("")
+    return undefined
+  }
+}
+
+export function readStoreSafeSync(filePath = storePath()): StoreFile | undefined {
+  try {
+    return parseStore(readFileSync(filePath, "utf-8"))
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code === "ENOENT") return parseStore("")

@@ -28,6 +28,11 @@ test("plugin exposes auth and experimental chat system transform hooks", () => {
 test("status slash command is injected when experiment is enabled", async () => {
   const plugin = buildPluginHooks({
     auth: { provider: "github-copilot", methods: [] },
+    loadStoreSync: () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: true,
+    }),
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -48,6 +53,11 @@ test("status slash command is injected when experiment is enabled", async () => 
 test("status slash command is not injected when experiment is disabled", async () => {
   const plugin = buildPluginHooks({
     auth: { provider: "github-copilot", methods: [] },
+    loadStoreSync: () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: false,
+    }),
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -57,6 +67,42 @@ test("status slash command is not injected when experiment is disabled", async (
 
   const config = { command: {} }
   await plugin.config?.(config)
+
+  assert.equal(Object.hasOwn(config.command, "copilot-status"), false)
+  assert.equal(typeof config.command["copilot-inject"], "object")
+})
+
+test("slash commands are injected immediately without waiting for async store load", () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: () => new Promise(() => {}),
+    loadStoreSync: () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: true,
+    }),
+  })
+
+  const config = { command: {} }
+  plugin.config?.(config)
+
+  assert.equal(typeof config.command["copilot-status"], "object")
+  assert.equal(typeof config.command["copilot-inject"], "object")
+})
+
+test("disabled status slash is decided from sync store path without waiting for async store load", () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: () => new Promise(() => {}),
+    loadStoreSync: () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalStatusSlashCommandEnabled: false,
+    }),
+  })
+
+  const config = { command: {} }
+  plugin.config?.(config)
 
   assert.equal(Object.hasOwn(config.command, "copilot-status"), false)
   assert.equal(typeof config.command["copilot-inject"], "object")
