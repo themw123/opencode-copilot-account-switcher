@@ -65,6 +65,7 @@ export type AccountEntry = {
 
 export type StoreFile = {
   active?: string
+  activeAccountNames?: string[]
   accounts: Record<string, AccountEntry>
   modelAccountAssignments?: Record<string, string>
   autoRefresh?: boolean
@@ -156,17 +157,48 @@ export function authPath(): string {
 export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
   const legacySlashCommandsEnabled = (data as StoreFile & { experimentalStatusSlashCommandEnabled?: unknown }).experimentalStatusSlashCommandEnabled
+  const rawActiveAccountNames = (data as StoreFile & { activeAccountNames?: unknown }).activeAccountNames
   if (!data.accounts) data.accounts = {}
-  if (!data.modelAccountAssignments || typeof data.modelAccountAssignments !== "object" || Array.isArray(data.modelAccountAssignments)) {
-    delete data.modelAccountAssignments
-  }
-  if (data.modelAccountAssignments) {
-    data.modelAccountAssignments = Object.fromEntries(
-      Object.entries(data.modelAccountAssignments).filter(
-        ([modelID, accountName]) => typeof modelID === "string" && typeof accountName === "string" && modelID.length > 0 && accountName.length > 0,
-      ),
+
+  const normalizeAccountNameList = (names: unknown) => {
+    if (!Array.isArray(names)) return undefined
+    const next = [...new Set(names.filter((item): item is string => typeof item === "string" && item.length > 0 && !!data.accounts[item]))].sort((a, b) =>
+      a.localeCompare(b),
     )
-    if (Object.keys(data.modelAccountAssignments).length === 0) delete data.modelAccountAssignments
+    return next.length > 0 ? next : undefined
+  }
+
+  const normalizedActiveAccountNames = normalizeAccountNameList(rawActiveAccountNames)
+  if (normalizedActiveAccountNames) data.activeAccountNames = normalizedActiveAccountNames
+  else if (typeof data.active === "string" && data.active.length > 0 && data.accounts[data.active]) {
+    data.activeAccountNames = [data.active]
+  } else {
+    delete data.activeAccountNames
+  }
+
+  const modelAccountAssignments = (data as StoreFile & {
+    modelAccountAssignments?: Record<string, unknown>
+  }).modelAccountAssignments
+  if (!modelAccountAssignments || typeof modelAccountAssignments !== "object" || Array.isArray(modelAccountAssignments)) {
+    delete (data as StoreFile & { modelAccountAssignments?: Record<string, unknown> }).modelAccountAssignments
+  }
+  if (modelAccountAssignments && typeof modelAccountAssignments === "object" && !Array.isArray(modelAccountAssignments)) {
+    const normalizedAssignments = Object.fromEntries(
+      Object.entries(modelAccountAssignments).flatMap(([modelID, accountName]) => {
+        if (typeof modelID !== "string" || modelID.length === 0) return []
+        if (typeof accountName === "string") {
+          const names = normalizeAccountNameList([accountName])
+          return names ? [[modelID, names]] : []
+        }
+        const names = normalizeAccountNameList(accountName)
+        return names ? [[modelID, names]] : []
+      }),
+    )
+    if (Object.keys(normalizedAssignments).length === 0) {
+      delete (data as StoreFile & { modelAccountAssignments?: Record<string, unknown> }).modelAccountAssignments
+    } else {
+      ;(data as unknown as { modelAccountAssignments?: Record<string, string[]> }).modelAccountAssignments = normalizedAssignments
+    }
   }
   if (typeof data.lastAccountSwitchAt !== "number" || Number.isNaN(data.lastAccountSwitchAt)) {
     delete data.lastAccountSwitchAt

@@ -127,6 +127,39 @@ test("parseStore leaves lastAccountSwitchAt undefined by default", () => {
   assert.equal(store.accounts.secondary.name, "secondary")
 })
 
+test("parseStore migrates legacy active into activeAccountNames while preserving active", () => {
+  const store = parseStore(
+    JSON.stringify({
+      active: "main",
+      accounts: {
+        main: { name: "main", refresh: "r", access: "a", expires: 0 },
+      },
+    }),
+  )
+
+  assert.equal(store.active, "main")
+  assert.deepEqual(store.activeAccountNames, ["main"])
+})
+
+test("parseStore normalizes array model assignments and drops missing accounts", () => {
+  const store = parseStore(
+    JSON.stringify({
+      active: "main",
+      activeAccountNames: ["main", "missing", "main"],
+      modelAccountAssignments: {
+        "gpt-5": ["alt", "alt", "missing"],
+      },
+      accounts: {
+        main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
+        alt: { name: "alt", refresh: "r2", access: "a2", expires: 0 },
+      },
+    }),
+  )
+
+  assert.deepEqual(store.activeAccountNames, ["main"])
+  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["alt"] })
+})
+
 test("parseStore throws on malformed JSON for strict readers", () => {
   assert.throws(() => parseStore("{"))
 })
