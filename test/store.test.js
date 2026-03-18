@@ -145,9 +145,9 @@ test("parseStore normalizes array model assignments and drops missing accounts",
   const store = parseStore(
     JSON.stringify({
       active: "main",
-      activeAccountNames: ["main", "missing", "main"],
+      activeAccountNames: ["alt", "missing", "main", "alt"],
       modelAccountAssignments: {
-        "gpt-5": ["alt", "alt", "missing"],
+        "gpt-5": ["main", "alt", "main", "missing"],
       },
       accounts: {
         main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
@@ -156,7 +156,24 @@ test("parseStore normalizes array model assignments and drops missing accounts",
     }),
   )
 
-  assert.deepEqual(store.activeAccountNames, ["main"])
+  assert.deepEqual(store.activeAccountNames, ["alt", "main"])
+  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["main", "alt"] })
+})
+
+test("parseStore migrates legacy string model assignment into single-element array", () => {
+  const store = parseStore(
+    JSON.stringify({
+      active: "main",
+      modelAccountAssignments: {
+        "gpt-5": "alt",
+      },
+      accounts: {
+        main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
+        alt: { name: "alt", refresh: "r2", access: "a2", expires: 0 },
+      },
+    }),
+  )
+
   assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["alt"] })
 })
 

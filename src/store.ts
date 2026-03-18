@@ -67,7 +67,7 @@ export type StoreFile = {
   active?: string
   activeAccountNames?: string[]
   accounts: Record<string, AccountEntry>
-  modelAccountAssignments?: Record<string, string>
+  modelAccountAssignments?: Record<string, string[]>
   autoRefresh?: boolean
   refreshMinutes?: number
   lastAccountSwitchAt?: number
@@ -79,6 +79,12 @@ export type StoreFile = {
   experimentalSlashCommandsEnabled?: boolean
   // legacy migration fallback; new writes should use experimentalSlashCommandsEnabled
   experimentalStatusSlashCommandEnabled?: boolean
+}
+
+type LegacyStoreFile = Omit<StoreFile, "activeAccountNames" | "modelAccountAssignments"> & {
+  activeAccountNames?: unknown
+  modelAccountAssignments?: Record<string, unknown>
+  experimentalStatusSlashCommandEnabled?: unknown
 }
 
 const filename = "copilot-accounts.json"
@@ -154,68 +160,65 @@ export function authPath(): string {
   return path.join(dataDir, "opencode", authFile)
 }
 
+function normalizeAccountNameList(names: unknown, accounts: Record<string, AccountEntry>) {
+  if (!Array.isArray(names)) return undefined
+  const seen = new Set<string>()
+  const normalized: string[] = []
+  for (const item of names) {
+    if (typeof item !== "string" || item.length === 0 || !accounts[item] || seen.has(item)) continue
+    seen.add(item)
+    normalized.push(item)
+  }
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function normalizeModelAccountAssignments(raw: unknown, accounts: Record<string, AccountEntry>) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const normalized: Record<string, string[]> = {}
+  for (const [modelID, accountNames] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof modelID !== "string" || modelID.length === 0) continue
+    const next = typeof accountNames === "string"
+      ? normalizeAccountNameList([accountNames], accounts)
+      : normalizeAccountNameList(accountNames, accounts)
+    if (!next) continue
+    normalized[modelID] = next
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
 export function parseStore(raw: string): StoreFile {
-  const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
-  const legacySlashCommandsEnabled = (data as StoreFile & { experimentalStatusSlashCommandEnabled?: unknown }).experimentalStatusSlashCommandEnabled
-  const rawActiveAccountNames = (data as StoreFile & { activeAccountNames?: unknown }).activeAccountNames
-  if (!data.accounts) data.accounts = {}
-
-  const normalizeAccountNameList = (names: unknown) => {
-    if (!Array.isArray(names)) return undefined
-    const next = [...new Set(names.filter((item): item is string => typeof item === "string" && item.length > 0 && !!data.accounts[item]))].sort((a, b) =>
-      a.localeCompare(b),
-    )
-    return next.length > 0 ? next : undefined
+  const parsed = raw ? (JSON.parse(raw) as LegacyStoreFile) : ({ accounts: {} } as LegacyStoreFile)
+  const legacySlashCommandsEnabled = parsed.experimentalStatusSlashCommandEnabled
+  const accounts = parsed.accounts ?? {}
+  const store: StoreFile = {
+    ...(parsed as StoreFile),
+    accounts,
   }
 
-  const normalizedActiveAccountNames = normalizeAccountNameList(rawActiveAccountNames)
-  if (normalizedActiveAccountNames) data.activeAccountNames = normalizedActiveAccountNames
-  else if (typeof data.active === "string" && data.active.length > 0 && data.accounts[data.active]) {
-    data.activeAccountNames = [data.active]
+  const normalizedActiveAccountNames = normalizeAccountNameList(parsed.activeAccountNames, accounts)
+  if (normalizedActiveAccountNames) store.activeAccountNames = normalizedActiveAccountNames
+  else if (typeof store.active === "string" && store.active.length > 0 && accounts[store.active]) {
+    store.activeAccountNames = [store.active]
   } else {
-    delete data.activeAccountNames
+    delete store.activeAccountNames
   }
 
-  const modelAccountAssignments = (data as StoreFile & {
-    modelAccountAssignments?: Record<string, unknown>
-  }).modelAccountAssignments
-  if (!modelAccountAssignments || typeof modelAccountAssignments !== "object" || Array.isArray(modelAccountAssignments)) {
-    delete (data as StoreFile & { modelAccountAssignments?: Record<string, unknown> }).modelAccountAssignments
+  store.modelAccountAssignments = normalizeModelAccountAssignments(parsed.modelAccountAssignments, accounts)
+  if (typeof store.lastAccountSwitchAt !== "number" || Number.isNaN(store.lastAccountSwitchAt)) {
+    delete store.lastAccountSwitchAt
   }
-  if (modelAccountAssignments && typeof modelAccountAssignments === "object" && !Array.isArray(modelAccountAssignments)) {
-    const normalizedAssignments = Object.fromEntries(
-      Object.entries(modelAccountAssignments).flatMap(([modelID, accountName]) => {
-        if (typeof modelID !== "string" || modelID.length === 0) return []
-        if (typeof accountName === "string") {
-          const names = normalizeAccountNameList([accountName])
-          return names ? [[modelID, names]] : []
-        }
-        const names = normalizeAccountNameList(accountName)
-        return names ? [[modelID, names]] : []
-      }),
-    )
-    if (Object.keys(normalizedAssignments).length === 0) {
-      delete (data as StoreFile & { modelAccountAssignments?: Record<string, unknown> }).modelAccountAssignments
-    } else {
-      ;(data as unknown as { modelAccountAssignments?: Record<string, string[]> }).modelAccountAssignments = normalizedAssignments
-    }
+  if (store.loopSafetyEnabled !== false) store.loopSafetyEnabled = true
+  if (store.loopSafetyProviderScope !== "all-models") store.loopSafetyProviderScope = "copilot-only"
+  if (store.networkRetryEnabled !== true) store.networkRetryEnabled = false
+  if (store.syntheticAgentInitiatorEnabled !== true) store.syntheticAgentInitiatorEnabled = false
+  if (store.experimentalSlashCommandsEnabled !== true && store.experimentalSlashCommandsEnabled !== false) {
+    store.experimentalSlashCommandsEnabled = legacySlashCommandsEnabled === false ? false : true
   }
-  if (typeof data.lastAccountSwitchAt !== "number" || Number.isNaN(data.lastAccountSwitchAt)) {
-    delete data.lastAccountSwitchAt
-  }
-  if (data.loopSafetyEnabled !== false) data.loopSafetyEnabled = true
-  if (data.loopSafetyProviderScope !== "all-models") data.loopSafetyProviderScope = "copilot-only"
-  if (data.networkRetryEnabled !== true) data.networkRetryEnabled = false
-  if (data.syntheticAgentInitiatorEnabled !== true) data.syntheticAgentInitiatorEnabled = false
-  if (data.experimentalSlashCommandsEnabled !== true && data.experimentalSlashCommandsEnabled !== false) {
-    data.experimentalSlashCommandsEnabled = legacySlashCommandsEnabled === false ? false : true
-  }
-  delete (data as StoreFile & { experimentalStatusSlashCommandEnabled?: unknown }).experimentalStatusSlashCommandEnabled
-  for (const [name, entry] of Object.entries(data.accounts)) {
+  for (const [name, entry] of Object.entries(store.accounts)) {
     const info = entry as AccountEntry
     if (!info.name) info.name = name
   }
-  return data
+  return store
 }
 
 export async function readStore(filePath = storePath()): Promise<StoreFile> {
