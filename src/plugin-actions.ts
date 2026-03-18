@@ -44,6 +44,28 @@ export async function applyMenuAction(input: {
     return true
   }
 
+  if (input.action.type === "toggle-loop-safety-provider-scope") {
+    input.store.loopSafetyProviderScope = input.store.loopSafetyProviderScope === "all-models"
+      ? "copilot-only"
+      : "all-models"
+    await input.writeStore(input.store, {
+      reason: "toggle-loop-safety-provider-scope",
+      source: "applyMenuAction",
+      actionType: "toggle-loop-safety-provider-scope",
+    })
+    return true
+  }
+
+  if (input.action.type === "toggle-experimental-slash-commands") {
+    input.store.experimentalSlashCommandsEnabled = input.store.experimentalSlashCommandsEnabled !== true
+    await input.writeStore(input.store, {
+      reason: "toggle-experimental-slash-commands",
+      source: "applyMenuAction",
+      actionType: "toggle-experimental-slash-commands",
+    })
+    return true
+  }
+
   if (input.action.type === "toggle-network-retry") {
     input.store.networkRetryEnabled = input.store.networkRetryEnabled !== true
     await input.writeStore(input.store, {

@@ -648,6 +648,8 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         lastQuotaRefresh: store.lastQuotaRefresh,
         modelAccountAssignmentCount: Object.keys(store.modelAccountAssignments ?? {}).length,
         loopSafetyEnabled: store.loopSafetyEnabled === true,
+        loopSafetyProviderScope: store.loopSafetyProviderScope,
+        experimentalSlashCommandsEnabled: store.experimentalSlashCommandsEnabled,
         networkRetryEnabled: store.networkRetryEnabled === true,
         syntheticAgentInitiatorEnabled: store.syntheticAgentInitiatorEnabled === true,
       })

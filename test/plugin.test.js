@@ -1915,6 +1915,69 @@ test("plugin menu toggle path persists synthetic initiator state", async () => {
   assert.deepEqual(writes, [true])
 })
 
+test("plugin menu toggle path persists loopSafetyProviderScope", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-loop-safety-provider-scope" },
+    store,
+    writeStore: async (next) => {
+      writes.push(next.loopSafetyProviderScope)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.equal(store.loopSafetyProviderScope, "all-models")
+  assert.deepEqual(writes, ["all-models"])
+})
+
+test("plugin menu toggle path toggles loopSafetyProviderScope back to copilot-only", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "all-models",
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-loop-safety-provider-scope" },
+    store,
+    writeStore: async (next) => {
+      writes.push(next.loopSafetyProviderScope)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.equal(store.loopSafetyProviderScope, "copilot-only")
+  assert.deepEqual(writes, ["copilot-only"])
+})
+
+test("plugin menu toggle path persists experimental slash commands state", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: true,
+    experimentalSlashCommandsEnabled: true,
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-experimental-slash-commands" },
+    store,
+    writeStore: async (next) => {
+      writes.push(next.experimentalSlashCommandsEnabled)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.equal(store.experimentalSlashCommandsEnabled, false)
+  assert.deepEqual(writes, [false])
+})
+
 test("plugin menu toggle path forwards debug reason for loop safety writes", async () => {
   const writes = []
   const store = {
@@ -1937,6 +2000,58 @@ test("plugin menu toggle path forwards debug reason for loop safety writes", asy
       reason: "toggle-loop-safety",
       source: "applyMenuAction",
       actionType: "toggle-loop-safety",
+    },
+  ])
+})
+
+test("plugin menu toggle path forwards debug reason for policy scope writes", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-loop-safety-provider-scope" },
+    store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.deepEqual(writes, [
+    {
+      reason: "toggle-loop-safety-provider-scope",
+      source: "applyMenuAction",
+      actionType: "toggle-loop-safety-provider-scope",
+    },
+  ])
+})
+
+test("plugin menu toggle path forwards debug reason for experimental slash command writes", async () => {
+  const writes = []
+  const store = {
+    accounts: {},
+    loopSafetyEnabled: true,
+    experimentalSlashCommandsEnabled: true,
+  }
+
+  const handled = await applyMenuAction({
+    action: { type: "toggle-experimental-slash-commands" },
+    store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+  })
+
+  assert.equal(handled, true)
+  assert.deepEqual(writes, [
+    {
+      reason: "toggle-experimental-slash-commands",
+      source: "applyMenuAction",
+      actionType: "toggle-experimental-slash-commands",
     },
   ])
 })

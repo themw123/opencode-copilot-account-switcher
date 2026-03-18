@@ -37,6 +37,8 @@ export type MenuAction =
   | { type: "set-interval" }
   | { type: "toggle-language" }
   | { type: "toggle-loop-safety" }
+  | { type: "toggle-loop-safety-provider-scope" }
+  | { type: "toggle-experimental-slash-commands" }
   | { type: "toggle-network-retry" }
   | { type: "toggle-synthetic-agent-initiator" }
   | { type: "switch"; account: AccountInfo }
@@ -56,22 +58,29 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
       addAccount: "Add account",
       addAccountHint: "device login or manual",
       importAuth: "Import from auth.json",
-      checkQuotas: "Check quotas",
-      refreshIdentity: "Refresh identity",
-      checkModels: "Check models",
-      assignModels: "Assign models to accounts",
-      enableRefresh: "Enable auto refresh",
-      disableRefresh: "Disable auto refresh",
+      checkQuotas: "Refresh quota info",
+      refreshIdentity: "Sync account identity",
+      checkModels: "Sync available models",
+      assignModels: "Assign accounts per model",
+      autoRefreshOn: "Auto refresh: On",
+      autoRefreshOff: "Auto refresh: Off",
       setRefresh: "Set refresh interval",
-      enableLoopSafety: "Enable guided loop safety",
-      disableLoopSafety: "Disable guided loop safety",
-      loopSafetyHint: "Prompt-guided: fewer report interruptions, less unnecessary waiting",
-      enableRetry: "Enable Copilot network retry",
-      disableRetry: "Disable Copilot network retry",
-      retryHint: "Overrides official fetch path; may drift from upstream",
-      enableSyntheticInitiator: "Enable agent initiator for synthetic messages",
-      disableSyntheticInitiator: "Disable agent initiator for synthetic messages",
-      syntheticInitiatorHint: "Differs from upstream behavior; misuse can be treated as abuse and may trigger unexpected billing",
+      loopSafetyOn: "Guided Loop Safety: On",
+      loopSafetyOff: "Guided Loop Safety: Off",
+      loopSafetyHint: "Reduce unnecessary handoff replies while work can continue",
+      policyScopeCopilotOnly: "Policy default scope: Copilot only",
+      policyScopeAllModels: "Policy default scope: All models",
+      policyScopeHint: "Choose whether Guided Loop Safety applies only to Copilot by default or to all models",
+      experimentalSlashCommandsOn: "Experimental slash commands: On",
+      experimentalSlashCommandsOff: "Experimental slash commands: Off",
+      experimentalSlashCommandsHint:
+        "Controls whether /copilot-status, /copilot-inject, and /copilot-policy-all-models are registered",
+      retryOn: "Copilot Network Retry: On",
+      retryOff: "Copilot Network Retry: Off",
+      retryHint: "Helps recover some requests after account switches or malformed retries",
+      syntheticInitiatorOn: "Send synthetic messages as agent: On",
+      syntheticInitiatorOff: "Send synthetic messages as agent: Off",
+      syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
       accountsHeading: "Accounts",
       dangerHeading: "Danger zone",
       removeAll: "Remove all accounts",
@@ -86,22 +95,28 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
     addAccount: "添加账号",
     addAccountHint: "设备登录或手动录入",
     importAuth: "从 auth.json 导入",
-    checkQuotas: "检查配额",
-    refreshIdentity: "刷新身份信息",
-    checkModels: "检查模型",
-    assignModels: "为模型指定账号",
-    enableRefresh: "开启自动刷新",
-    disableRefresh: "关闭自动刷新",
+    checkQuotas: "刷新配额信息",
+    refreshIdentity: "同步账号身份信息",
+    checkModels: "同步可用模型列表",
+    assignModels: "为指定模型绑定账号",
+    autoRefreshOn: "自动刷新：已开启",
+    autoRefreshOff: "自动刷新：已关闭",
     setRefresh: "设置刷新间隔",
-    enableLoopSafety: "开启 Guided Loop Safety",
-    disableLoopSafety: "关闭 Guided Loop Safety",
-    loopSafetyHint: "提示词引导：减少汇报打断与不必要等待",
-    enableRetry: "开启 Copilot Network Retry",
-    disableRetry: "关闭 Copilot Network Retry",
-    retryHint: "包装官方 fetch；可能随 upstream 产生漂移",
-    enableSyntheticInitiator: "开启 synthetic 消息的 agent initiator",
-    disableSyntheticInitiator: "关闭 synthetic 消息的 agent initiator",
-    syntheticInitiatorHint: "与 upstream 行为存在差异；滥用可能被视为 abuse，并带来 unexpected billing 风险",
+    loopSafetyOn: "Guided Loop Safety：已开启",
+    loopSafetyOff: "Guided Loop Safety：已关闭",
+    loopSafetyHint: "让模型更少无谓汇报，没做完前优先继续干活",
+    policyScopeCopilotOnly: "Policy 默认注入范围：仅 Copilot",
+    policyScopeAllModels: "Policy 默认注入范围：所有模型",
+    policyScopeHint: "决定 Guided Loop Safety 默认只作用于 Copilot，还是扩展到所有模型",
+    experimentalSlashCommandsOn: "实验性 Slash Commands：已开启",
+    experimentalSlashCommandsOff: "实验性 Slash Commands：已关闭",
+    experimentalSlashCommandsHint: "控制 /copilot-status、/copilot-inject、/copilot-policy-all-models 是否注册",
+    retryOn: "Copilot Network Retry：已开启",
+    retryOff: "Copilot Network Retry：已关闭",
+    retryHint: "账号切换后若出现请求异常，可自动重试并修复部分请求",
+    syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
+    syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
+    syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
     accountsHeading: "账号",
     dangerHeading: "危险操作",
     removeAll: "删除全部账号",
@@ -134,12 +149,16 @@ export function buildMenuItems(input: {
   lastQuotaRefresh?: number
   modelAccountAssignmentCount?: number
   loopSafetyEnabled: boolean
+  loopSafetyProviderScope?: "copilot-only" | "all-models"
   networkRetryEnabled: boolean
   syntheticAgentInitiatorEnabled?: boolean
+  experimentalSlashCommandsEnabled?: boolean
   language?: MenuLanguage
 }): MenuItem<MenuAction>[] {
   const copy = getMenuCopy(input.language)
   const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
+  const loopSafetyProviderScope = input.loopSafetyProviderScope ?? "copilot-only"
+  const experimentalSlashCommandsEnabled = input.experimentalSlashCommandsEnabled !== false
 
   return [
     { label: copy.actionsHeading, value: { type: "cancel" }, kind: "heading" },
@@ -156,26 +175,38 @@ export function buildMenuItems(input: {
       hint: input.modelAccountAssignmentCount ? `${input.modelAccountAssignmentCount} mapped` : undefined,
     },
     {
-      label: input.refresh?.enabled ? copy.disableRefresh : copy.enableRefresh,
+      label: input.refresh?.enabled ? copy.autoRefreshOn : copy.autoRefreshOff,
       value: { type: "toggle-refresh" },
       color: "cyan",
       hint: input.refresh ? `${input.refresh.minutes}m` : undefined,
     },
     { label: copy.setRefresh, value: { type: "set-interval" }, color: "cyan" },
     {
-      label: input.loopSafetyEnabled ? copy.disableLoopSafety : copy.enableLoopSafety,
+      label: input.loopSafetyEnabled ? copy.loopSafetyOn : copy.loopSafetyOff,
       value: { type: "toggle-loop-safety" },
       color: "cyan",
       hint: copy.loopSafetyHint,
     },
     {
-      label: input.networkRetryEnabled ? copy.disableRetry : copy.enableRetry,
+      label: loopSafetyProviderScope === "all-models" ? copy.policyScopeAllModels : copy.policyScopeCopilotOnly,
+      value: { type: "toggle-loop-safety-provider-scope" },
+      color: "cyan",
+      hint: copy.policyScopeHint,
+    },
+    {
+      label: experimentalSlashCommandsEnabled ? copy.experimentalSlashCommandsOn : copy.experimentalSlashCommandsOff,
+      value: { type: "toggle-experimental-slash-commands" },
+      color: "cyan",
+      hint: copy.experimentalSlashCommandsHint,
+    },
+    {
+      label: input.networkRetryEnabled ? copy.retryOn : copy.retryOff,
       value: { type: "toggle-network-retry" },
       color: "cyan",
       hint: copy.retryHint,
     },
     {
-      label: input.syntheticAgentInitiatorEnabled ? copy.disableSyntheticInitiator : copy.enableSyntheticInitiator,
+      label: input.syntheticAgentInitiatorEnabled ? copy.syntheticInitiatorOn : copy.syntheticInitiatorOff,
       value: { type: "toggle-synthetic-agent-initiator" },
       color: "cyan",
       hint: copy.syntheticInitiatorHint,
@@ -218,8 +249,10 @@ export async function showMenu(
     lastQuotaRefresh?: number
     modelAccountAssignmentCount?: number
     loopSafetyEnabled?: boolean
+    loopSafetyProviderScope?: "copilot-only" | "all-models"
     networkRetryEnabled?: boolean
     syntheticAgentInitiatorEnabled?: boolean
+    experimentalSlashCommandsEnabled?: boolean
     language?: MenuLanguage
   } = {},
 ): Promise<MenuAction> {
@@ -233,8 +266,10 @@ export async function showMenu(
       lastQuotaRefresh: input.lastQuotaRefresh,
       modelAccountAssignmentCount: input.modelAccountAssignmentCount,
       loopSafetyEnabled: input.loopSafetyEnabled === true,
+      loopSafetyProviderScope: input.loopSafetyProviderScope,
       networkRetryEnabled: input.networkRetryEnabled === true,
       syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled === true,
+      experimentalSlashCommandsEnabled: input.experimentalSlashCommandsEnabled,
       language: currentLanguage,
     })
     const result = await select(items, {
