@@ -3,10 +3,16 @@ import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
 import { fetchQuota } from "./active-account-quota.js"
 import { getGitHubToken, normalizeDomain } from "./copilot-api-helpers.js"
+import {
+  listAssignableAccountsForModel,
+  listKnownCopilotModels,
+  rewriteModelAccountAssignments,
+} from "./model-account-map.js"
 import { applyMenuAction, persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
 import { isTTY } from "./ui/ansi.js"
 import { showAccountActions, showMenu, type AccountInfo } from "./ui/menu.js"
+import { select } from "./ui/select.js"
 import { authPath, readAuth, readStore, writeStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 
 function now() {
@@ -209,11 +215,13 @@ function dedupe(store: StoreFile) {
     }
     const currentEntry = store.accounts[current]
     if (score(entry) > score(currentEntry)) {
+      rewriteModelAccountAssignments(store, { [current]: name })
       delete store.accounts[current]
       seen.set(k, name)
       if (store.active === current) store.active = name
       continue
     }
+    rewriteModelAccountAssignments(store, { [name]: current })
     delete store.accounts[name]
     if (store.active === name) store.active = current
   }
@@ -261,8 +269,80 @@ function renameAccounts(store: StoreFile, items: Array<{ oldName: string; base: 
     acc[item.name] = item.entry
     return acc
   }, {} as Record<string, AccountEntry>)
+  rewriteModelAccountAssignments(
+    store,
+    Object.fromEntries(renamed.map((item) => [item.oldName, item.name])),
+  )
   const active = renamed.find((item) => item.oldName === store.active)
   if (active) store.active = active.name
+}
+
+async function configureModelAccountAssignments(store: StoreFile) {
+  const models = listKnownCopilotModels(store)
+  if (models.length === 0) {
+    console.log("No Copilot models available yet. Run Check models first.")
+    return false
+  }
+
+  const activeLabel = store.active ? store.accounts[store.active]?.name ?? store.active : "none"
+  const modelID = await select(
+    [
+      { label: "Back", value: "" },
+      ...models.map((model) => ({
+        label: model,
+        value: model,
+        hint: store.modelAccountAssignments?.[model]
+          ? `assigned to ${store.modelAccountAssignments[model]}`
+          : `fallbacks to ${activeLabel}`,
+      })),
+    ],
+    {
+      message: "Choose a Copilot model",
+      subtitle: "Select which model should use a dedicated account",
+      clearScreen: true,
+      autoSelectSingle: false,
+    },
+  )
+  if (!modelID) return false
+
+  const options = listAssignableAccountsForModel(store, modelID)
+  if (options.length === 0) {
+    console.log(`No account currently exposes model ${modelID}. Run Check models first.`)
+    return false
+  }
+
+  const assigned = await select(
+    [
+      { label: "Back", value: "" },
+      { label: "Use main account fallback", value: "__default__", color: "yellow" },
+      ...options.map((item) => ({
+        label: item.name,
+        value: item.name,
+        hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
+      })),
+    ],
+    {
+      message: modelID,
+      subtitle: "Pick the account for this model",
+      clearScreen: true,
+      autoSelectSingle: false,
+    },
+  )
+  if (!assigned) return false
+
+  if (assigned === "__default__") {
+    delete store.modelAccountAssignments?.[modelID]
+    if (store.modelAccountAssignments && Object.keys(store.modelAccountAssignments).length === 0) {
+      delete store.modelAccountAssignments
+    }
+    return true
+  }
+
+  store.modelAccountAssignments = {
+    ...(store.modelAccountAssignments ?? {}),
+    [modelID]: assigned,
+  }
+  return true
 }
 
 async function refreshIdentity(store: StoreFile) {
@@ -566,6 +646,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
       const action = await showMenu(accounts, {
         refresh: { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 },
         lastQuotaRefresh: store.lastQuotaRefresh,
+        modelAccountAssignmentCount: Object.keys(store.modelAccountAssignments ?? {}).length,
         loopSafetyEnabled: store.loopSafetyEnabled === true,
         networkRetryEnabled: store.networkRetryEnabled === true,
         syntheticAgentInitiatorEnabled: store.syntheticAgentInitiatorEnabled === true,
@@ -731,9 +812,21 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         continue
       }
 
+      if (action.type === "assign-models") {
+        const changed = await configureModelAccountAssignments(store)
+        if (!changed) continue
+        await persistStore(store, {
+          reason: "assign-model-account",
+          source: "plugin.runMenu",
+          actionType: "assign-model-account",
+        })
+        continue
+      }
+
       if (action.type === "remove-all") {
         store.accounts = {}
         store.active = undefined
+        delete store.modelAccountAssignments
         await persistStore(store, {
           reason: "remove-all",
           source: "plugin.runMenu",
@@ -749,6 +842,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         const decision = await showAccountActions(action.account)
         if (decision === "back") continue
         if (decision === "remove") {
+          rewriteModelAccountAssignments(store, { [name]: undefined })
           delete store.accounts[name]
           if (store.active === name) store.active = undefined
           await persistStore(store, {

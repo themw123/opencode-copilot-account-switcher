@@ -1153,7 +1153,11 @@ test("plugin chat headers debug logs include evidence and candidates without lea
 })
 
 test("plugin auth loader keeps official fetch when network retry is disabled", async () => {
-  const fetchImpl = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  const calls = []
+  const fetchImpl = async (request, init) => {
+    calls.push({ request, init })
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+  }
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -1179,7 +1183,13 @@ test("plugin auth loader keeps official fetch when network retry is disabled", a
   })
 
   assert.equal(options?.baseURL, "https://api.githubcopilot.com")
-  assert.equal(options?.fetch, fetchImpl)
+  assert.equal(typeof options?.fetch, "function")
+  assert.notEqual(options?.fetch, fetchImpl)
+  await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "o3" }),
+  })
+  assert.equal(calls.length, 1)
 })
 
 test("plugin auth loader wraps official fetch when network retry is enabled", async () => {
@@ -1211,7 +1221,9 @@ test("plugin auth loader wraps official fetch when network retry is enabled", as
     models: {},
   })
 
-  assert.deepEqual(calls, [officialFetch])
+  assert.equal(calls.length, 1)
+  assert.equal(typeof calls[0], "function")
+  assert.notEqual(calls[0], officialFetch)
   assert.equal(options?.fetch, wrappedFetch)
 })
 
@@ -1392,7 +1404,8 @@ test("plugin auth loader passes plugin context into retry wrapper factory", asyn
   })
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].fetch, officialFetch)
+  assert.equal(typeof calls[0].fetch, "function")
+  assert.notEqual(calls[0].fetch, officialFetch)
   assert.equal(calls[0].ctx?.client, fakeClient)
   assert.equal(calls[0].ctx?.directory, "C:/repo")
   assert.equal(calls[0].ctx?.serverUrl?.href, "http://localhost:4096/")
@@ -1757,6 +1770,86 @@ test("plugin auth loader returns empty config when official loader has no oauth 
   const options = await plugin.auth?.loader?.(async () => ({ type: "token" }), { models: {} })
 
   assert.deepEqual(options, {})
+})
+
+test("plugin auth loader uses mapped account for matching Copilot model requests and falls back otherwise", async () => {
+  const calls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+        alt: {
+          name: "alt",
+          refresh: "alt-refresh",
+          access: "alt-access",
+          expires: 0,
+          enterpriseUrl: "example.ghe.com",
+          models: {
+            available: ["gpt-5"],
+            disabled: [],
+          },
+        },
+      },
+      modelAccountAssignments: {
+        "gpt-5": "alt",
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const info = await getAuth()
+        calls.push({
+          info,
+          url: request instanceof URL ? request.href : String(request),
+          body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        })
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const options = await plugin.auth?.loader?.(
+    async () => ({
+      type: "oauth",
+      refresh: "main-refresh",
+      access: "main-access",
+      expires: 0,
+    }),
+    { models: {} },
+  )
+
+  assert.equal(typeof options?.fetch, "function")
+
+  await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-5" }),
+  })
+  await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "o3" }),
+  })
+
+  assert.equal(calls[0]?.info?.refresh, "alt-refresh")
+  assert.match(String(calls[0]?.url), /copilot-api\.example\.ghe\.com/)
+  assert.equal(calls[1]?.info?.refresh, "main-refresh")
+  assert.match(String(calls[1]?.url), /api\.githubcopilot\.com/)
 })
 
 test("plugin menu toggle path persists loopSafetyEnabled", async () => {

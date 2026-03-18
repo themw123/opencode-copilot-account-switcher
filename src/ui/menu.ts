@@ -32,6 +32,7 @@ export type MenuAction =
   | { type: "quota" }
   | { type: "refresh-identity" }
   | { type: "check-models" }
+  | { type: "assign-models" }
   | { type: "toggle-refresh" }
   | { type: "set-interval" }
   | { type: "toggle-language" }
@@ -58,6 +59,7 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
       checkQuotas: "Check quotas",
       refreshIdentity: "Refresh identity",
       checkModels: "Check models",
+      assignModels: "Assign models to accounts",
       enableRefresh: "Enable auto refresh",
       disableRefresh: "Disable auto refresh",
       setRefresh: "Set refresh interval",
@@ -87,6 +89,7 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
     checkQuotas: "检查配额",
     refreshIdentity: "刷新身份信息",
     checkModels: "检查模型",
+    assignModels: "为模型指定账号",
     enableRefresh: "开启自动刷新",
     disableRefresh: "关闭自动刷新",
     setRefresh: "设置刷新间隔",
@@ -129,6 +132,7 @@ export function buildMenuItems(input: {
   accounts: AccountInfo[]
   refresh?: { enabled: boolean; minutes: number }
   lastQuotaRefresh?: number
+  modelAccountAssignmentCount?: number
   loopSafetyEnabled: boolean
   networkRetryEnabled: boolean
   syntheticAgentInitiatorEnabled?: boolean
@@ -145,6 +149,12 @@ export function buildMenuItems(input: {
     { label: copy.checkQuotas, value: { type: "quota" }, color: "cyan", hint: quotaHint },
     { label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" },
     { label: copy.checkModels, value: { type: "check-models" }, color: "cyan" },
+    {
+      label: copy.assignModels,
+      value: { type: "assign-models" },
+      color: "cyan",
+      hint: input.modelAccountAssignmentCount ? `${input.modelAccountAssignmentCount} mapped` : undefined,
+    },
     {
       label: input.refresh?.enabled ? copy.disableRefresh : copy.enableRefresh,
       value: { type: "toggle-refresh" },
@@ -206,6 +216,7 @@ export async function showMenu(
   input: {
     refresh?: { enabled: boolean; minutes: number }
     lastQuotaRefresh?: number
+    modelAccountAssignmentCount?: number
     loopSafetyEnabled?: boolean
     networkRetryEnabled?: boolean
     syntheticAgentInitiatorEnabled?: boolean
@@ -220,6 +231,7 @@ export async function showMenu(
       accounts,
       refresh: input.refresh,
       lastQuotaRefresh: input.lastQuotaRefresh,
+      modelAccountAssignmentCount: input.modelAccountAssignmentCount,
       loopSafetyEnabled: input.loopSafetyEnabled === true,
       networkRetryEnabled: input.networkRetryEnabled === true,
       syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled === true,

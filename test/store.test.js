@@ -278,6 +278,7 @@ test("writeStore emits enabled debug log with reason and before-after snapshots"
   assert.deepEqual(event.before, {
     active: null,
     accountCount: 1,
+    modelAccountAssignmentCount: 0,
     loopSafetyEnabled: true,
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: true,
@@ -288,6 +289,7 @@ test("writeStore emits enabled debug log with reason and before-after snapshots"
   assert.deepEqual(event.after, {
     active: null,
     accountCount: 0,
+    modelAccountAssignmentCount: 0,
     loopSafetyEnabled: false,
     loopSafetyProviderScope: null,
     networkRetryEnabled: true,

@@ -66,6 +66,7 @@ export type AccountEntry = {
 export type StoreFile = {
   active?: string
   accounts: Record<string, AccountEntry>
+  modelAccountAssignments?: Record<string, string>
   autoRefresh?: boolean
   refreshMinutes?: number
   lastAccountSwitchAt?: number
@@ -94,6 +95,7 @@ function buildStoreSnapshot(store: StoreFile | undefined) {
   return {
     active: store?.active ?? null,
     accountCount: Object.keys(store?.accounts ?? {}).length,
+    modelAccountAssignmentCount: Object.keys(store?.modelAccountAssignments ?? {}).length,
     loopSafetyEnabled: store?.loopSafetyEnabled ?? null,
     loopSafetyProviderScope: store?.loopSafetyProviderScope ?? null,
     networkRetryEnabled: store?.networkRetryEnabled ?? null,
@@ -155,6 +157,17 @@ export function parseStore(raw: string): StoreFile {
   const data = raw ? (JSON.parse(raw) as StoreFile) : ({ accounts: {} } as StoreFile)
   const legacySlashCommandsEnabled = (data as StoreFile & { experimentalStatusSlashCommandEnabled?: unknown }).experimentalStatusSlashCommandEnabled
   if (!data.accounts) data.accounts = {}
+  if (!data.modelAccountAssignments || typeof data.modelAccountAssignments !== "object" || Array.isArray(data.modelAccountAssignments)) {
+    delete data.modelAccountAssignments
+  }
+  if (data.modelAccountAssignments) {
+    data.modelAccountAssignments = Object.fromEntries(
+      Object.entries(data.modelAccountAssignments).filter(
+        ([modelID, accountName]) => typeof modelID === "string" && typeof accountName === "string" && modelID.length > 0 && accountName.length > 0,
+      ),
+    )
+    if (Object.keys(data.modelAccountAssignments).length === 0) delete data.modelAccountAssignments
+  }
   if (typeof data.lastAccountSwitchAt !== "number" || Number.isNaN(data.lastAccountSwitchAt)) {
     delete data.lastAccountSwitchAt
   }

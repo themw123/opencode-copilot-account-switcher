@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs"
+import { AsyncLocalStorage } from "node:async_hooks"
 import {
   createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
@@ -13,6 +14,8 @@ import {
   type FetchLike,
 } from "./copilot-network-retry.js"
 import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
+import { resolveCopilotModelAccount } from "./model-account-map.js"
+import { normalizeDomain } from "./copilot-api-helpers.js"
 import { readStoreSafe, readStoreSafeSync, writeStore, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 import {
   loadOfficialCopilotConfig,
@@ -146,6 +149,41 @@ function areExperimentalSlashCommandsEnabled(store: StoreFile | undefined) {
   return true
 }
 
+async function readRequestBody(request: Request | URL | string, init?: RequestInit) {
+  if (typeof init?.body === "string") return init.body
+  if (request instanceof Request) return request.clone().text().catch(() => undefined)
+  return undefined
+}
+
+async function readRequestModelID(request: Request | URL | string, init?: RequestInit) {
+  const raw = await readRequestBody(request, init)
+  if (!raw) return undefined
+
+  try {
+    const body = JSON.parse(raw) as { model?: unknown }
+    return typeof body.model === "string" && body.model.length > 0 ? body.model : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function rewriteRequestForAccount(request: Request | URL | string, enterpriseUrl?: string) {
+  const nextBase = enterpriseUrl ? `https://copilot-api.${normalizeDomain(enterpriseUrl)}` : "https://api.githubcopilot.com"
+
+  try {
+    const current = new URL(request instanceof Request ? request.url : request.toString())
+    const target = new URL(nextBase)
+    if (current.origin === target.origin) return request
+    current.protocol = target.protocol
+    current.host = target.host
+    if (request instanceof Request) return new Request(current, request)
+    if (request instanceof URL) return current
+    return current.toString()
+  } catch {
+    return request
+  }
+}
+
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
@@ -243,32 +281,53 @@ export function buildPluginHooks(input: {
   })
 
   const loader: AuthLoader = async (getAuth, provider) => {
+    const authOverride = new AsyncLocalStorage<CopilotAuthState | undefined>()
+    const getScopedAuth = async () => authOverride.getStore() ?? getAuth()
     const config = await loadOfficialConfig({
-      getAuth: getAuth as () => Promise<CopilotAuthState | undefined>,
+      getAuth: getScopedAuth as () => Promise<CopilotAuthState | undefined>,
       provider: provider as unknown as CopilotProviderConfig | undefined,
     })
     if (!config) return {}
 
-    const store = readRetryStoreContext(await loadStore().catch(() => undefined))
-    if (store?.networkRetryEnabled !== true) {
-      return config
+    const store = await loadStore().catch(() => undefined)
+    const retryStore = readRetryStoreContext(store)
+    const fetchWithModelAccount = async (request: Request | URL | string, init?: RequestInit) => {
+      const latestStore = await loadStore().catch(() => undefined)
+      const modelID = await readRequestModelID(request, init)
+      const resolved = latestStore ? resolveCopilotModelAccount(latestStore, modelID) : undefined
+      if (!resolved || resolved.source !== "model") return config.fetch(request, init)
+
+      const auth: CopilotAuthState = {
+        type: "oauth",
+        refresh: resolved.entry.refresh,
+        access: resolved.entry.access,
+        expires: resolved.entry.expires,
+        enterpriseUrl: resolved.entry.enterpriseUrl,
+      }
+
+      return authOverride.run(auth, () => config.fetch(rewriteRequestForAccount(request, resolved.entry.enterpriseUrl), init))
+    }
+
+    if (retryStore?.networkRetryEnabled !== true) return {
+      ...config,
+      fetch: fetchWithModelAccount,
     }
 
     return {
       ...config,
-      fetch: createRetryFetch(config.fetch, {
+      fetch: createRetryFetch(fetchWithModelAccount, {
         client: input.client,
         directory: input.directory,
         serverUrl: input.serverUrl,
-        lastAccountSwitchAt: store.lastAccountSwitchAt,
+        lastAccountSwitchAt: retryStore.lastAccountSwitchAt,
         notifier: createCopilotRetryNotifier({
           client: input.client,
-          lastAccountSwitchAt: store.lastAccountSwitchAt,
+          lastAccountSwitchAt: retryStore.lastAccountSwitchAt,
           getLastAccountSwitchAt: getLatestLastAccountSwitchAt,
           clearAccountSwitchContext,
           now: input.now,
         }),
-        clearAccountSwitchContext: async () => clearAccountSwitchContext(store.lastAccountSwitchAt),
+        clearAccountSwitchContext: async () => clearAccountSwitchContext(retryStore.lastAccountSwitchAt),
       }),
     }
   }

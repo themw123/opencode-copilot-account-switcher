@@ -129,6 +129,23 @@ test("Copilot network retry toggle is placed after guided loop safety and before
   assert.equal(retryIndex < separatorIndex, true)
 })
 
+test("assign models action is placed after Check models", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    language: "en",
+  })
+
+  const labels = items.map((item) => item.label)
+  const modelsIndex = labels.indexOf("Check models")
+  const assignIndex = labels.indexOf("Assign models to accounts")
+
+  assert.equal(assignIndex, modelsIndex + 1)
+})
+
 test("buildMenuItems shows synthetic initiator enable copy and risk hint when disabled", () => {
   const items = buildMenuItems({
     accounts: [],
