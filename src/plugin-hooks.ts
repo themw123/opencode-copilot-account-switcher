@@ -673,7 +673,7 @@ export function buildPluginHooks(input: {
               now: observedAt,
             })
             const currentLoad = nextLoads.get(resolved.name) ?? (loads.get(resolved.name) ?? 0)
-            const replacement = [...candidates]
+            const replacements = [...candidates]
               .filter((item) => item.name !== resolved.name)
               .filter((item) => isAccountRateLimitCooledDown({
                 snapshot: routingSnapshot!,
@@ -681,12 +681,10 @@ export function buildPluginHooks(input: {
                 now: observedAt,
                 cooldownMs: RATE_LIMIT_COOLDOWN_MS,
               }))
-              .filter((item) => (nextLoads.get(item.name) ?? 0) < currentLoad)
-              .sort((a, b) => {
-                const loadDiff = (nextLoads.get(a.name) ?? 0) - (nextLoads.get(b.name) ?? 0)
-                if (loadDiff !== 0) return loadDiff
-                return a.name.localeCompare(b.name)
-              })[0]
+              .filter((item) => (nextLoads.get(item.name) ?? 0) <= currentLoad)
+            const minimumReplacementLoad = Math.min(...replacements.map((item) => nextLoads.get(item.name) ?? 0))
+            const replacementTied = replacements.filter((item) => (nextLoads.get(item.name) ?? 0) === minimumReplacementLoad)
+            const replacement = replacementTied[Math.min(replacementTied.length - 1, Math.floor(random() * replacementTied.length))]
 
             if (replacement) {
               let retriedRequest = nextRequest

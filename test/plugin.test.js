@@ -2581,6 +2581,90 @@ test("plugin auth loader uses response-observed time for rate-limit window and f
   assert.equal(events[0]?.at, currentNow)
 })
 
+test("switches accounts after rate limit when replacement load equals current load", async () => {
+  let now = 1_000_000
+  const harness = createSessionBindingHarness({
+    now: () => now,
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
+        alt: {
+          touchBuckets: { [String(now - 60_000)]: 1 },
+          lastRateLimitedAt: now - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
+      ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        })
+      : new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+  })
+
+  await harness.sendRequest({ sessionID: "equal-load-switch", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  await harness.sendRequest({ sessionID: "equal-load-switch", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  const response = await harness.sendRequest({ sessionID: "equal-load-switch", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(response?.status, 200)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
+})
+
+test("rate-limit replacement breaks equal-load ties with injected random", async () => {
+  let now = 1_200_000
+  const harness = createSessionBindingHarness({
+    now: () => now,
+    random: () => 0.9,
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
+        alt: {
+          touchBuckets: { [String(now - 60_000)]: 1 },
+          lastRateLimitedAt: now - 11 * 60 * 1000,
+        },
+        org: {
+          touchBuckets: { [String(now - 60_000)]: 1 },
+          lastRateLimitedAt: now - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    store: {
+      active: "main",
+      activeAccountNames: ["main", "alt", "org"],
+      accounts: {
+        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+        org: { name: "org", refresh: "org-refresh", access: "org-access", expires: 0 },
+      },
+    },
+    fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
+      ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        })
+      : new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+  })
+
+  await harness.sendRequest({ sessionID: "equal-load-random-switch", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  await harness.sendRequest({ sessionID: "equal-load-random-switch", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  const response = await harness.sendRequest({ sessionID: "equal-load-random-switch", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(response?.status, 200)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "org-refresh")
+})
+
 test("switches to a lower-load account whose lastRateLimitedAt is older than ten minutes", async () => {
   let currentNow = 1_000_000
   const toasts = []
