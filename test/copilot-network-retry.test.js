@@ -92,6 +92,30 @@ test("detects rate limit from 429 and too_many_requests payloads", async () => {
   assert.equal(fromRateLimitCode.matched, true)
 })
 
+test("does not match rate-limit payload evidence on successful responses", async () => {
+  const { detectRateLimitEvidence } = await import("../dist/copilot-network-retry.js")
+
+  const successTooManyRequests = await detectRateLimitEvidence(
+    new Response(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+  )
+  assert.equal(successTooManyRequests.matched, false)
+
+  const successRateLimitCode = await detectRateLimitEvidence(
+    new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+      status: 201,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+  )
+  assert.equal(successRateLimitCode.matched, false)
+})
+
 test("normalizes unable to connect errors for copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")

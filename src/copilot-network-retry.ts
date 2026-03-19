@@ -341,6 +341,12 @@ export async function detectRateLimitEvidence(response: Response): Promise<RateL
     }
   }
 
+  if (response.status < 400) {
+    return {
+      matched: false,
+    }
+  }
+
   const payload = await readJsonResponseBody(response)
   const error = payload?.error
   const errorRecord = error && typeof error === "object" && !Array.isArray(error)

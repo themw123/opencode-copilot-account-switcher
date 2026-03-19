@@ -2537,6 +2537,42 @@ test("plugin auth loader flags account as rate-limited only after three hits wit
   assert.equal(events.length, 1)
 })
 
+test("plugin auth loader uses response-observed time for rate-limit window and flagged timestamp", async () => {
+  let currentNow = 0
+  const events = []
+  let call = 0
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    appendRoutingEventImpl: async (input) => {
+      events.push(input.event)
+    },
+    fetchImpl: async () => {
+      call += 1
+      if (call === 1) currentNow += 100_000
+      else currentNow += 1_000
+      return new Response(
+        JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+        {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      )
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "child-rate-observed", initiator: "agent", model: "gpt-5" })
+  currentNow += 220_000
+  await harness.sendRequest({ sessionID: "child-rate-observed", initiator: "agent", model: "gpt-5" })
+  currentNow += 10_000
+  await harness.sendRequest({ sessionID: "child-rate-observed", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(events.length, 1)
+  assert.equal(events[0]?.type, "rate-limit-flagged")
+  assert.equal(events[0]?.at, currentNow)
+})
+
 test("plugin auth loader selection path can consume routing-state-derived loads", async () => {
   const now = 2_000_000
   const harness = createSessionBindingHarness({

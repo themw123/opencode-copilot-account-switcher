@@ -575,6 +575,7 @@ export function buildPluginHooks(input: {
         nextInit,
       ))
 
+      const observedAt = now()
       let rateLimitEvidence: { matched: boolean; retryAfterMs?: number } = { matched: false }
       try {
         rateLimitEvidence = await detectRateLimitEvidence(response)
@@ -583,9 +584,9 @@ export function buildPluginHooks(input: {
       }
       if (rateLimitEvidence.matched) {
         const existingQueue = rateLimitQueues.get(resolved.name) ?? []
-        const cutoff = requestAt - RATE_LIMIT_WINDOW_MS
+        const cutoff = observedAt - RATE_LIMIT_WINDOW_MS
         const queue = existingQueue.filter((at) => at >= cutoff)
-        queue.push(requestAt)
+        queue.push(observedAt)
         rateLimitQueues.set(resolved.name, queue)
 
         if (queue.length === RATE_LIMIT_HIT_THRESHOLD) {
@@ -594,7 +595,7 @@ export function buildPluginHooks(input: {
             event: {
               type: "rate-limit-flagged",
               accountName: resolved.name,
-              at: requestAt,
+              at: observedAt,
               retryAfterMs: rateLimitEvidence.retryAfterMs,
             },
           }).catch(() => undefined)
