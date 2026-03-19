@@ -1003,6 +1003,11 @@ function createSessionBindingHarness(input = {}) {
       if (typeof input.loadCandidateAccountLoads !== "function") return undefined
       return input.loadCandidateAccountLoads({ ...ctx, call: loadCall++ })
     },
+    appendSessionTouchEventImpl: input.appendSessionTouchEventImpl,
+    routingStateDirectory: input.routingStateDirectory,
+    touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
+    touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
+    now: input.now,
     loadOfficialConfig: async ({ getAuth }) => ({
       apiKey: "",
       fetch: async (request, init) => {
@@ -2491,6 +2496,64 @@ test("plugin auth loader selection path can consume routing-state-derived loads"
 
   assert.equal(harness.outgoing.length, 1)
   assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+})
+
+test("plugin auth loader supports injected routing-state write path", async () => {
+  const touched = []
+  const harness = createSessionBindingHarness({
+    appendSessionTouchEventImpl: async (input) => {
+      touched.push(input)
+      return true
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "child-injected-touch",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(touched.length, 1)
+  assert.equal(typeof touched[0]?.directory, "string")
+  assert.equal(touched[0]?.accountName, "main")
+  assert.equal(touched[0]?.sessionID, "child-injected-touch")
+})
+
+test("plugin auth loader prunes touch cache by ttl and max entries", async () => {
+  const touched = []
+  let currentNow = 1_000_000
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    touchWriteCacheIdleTtlMs: 60_000,
+    touchWriteCacheMaxEntries: 2,
+    appendSessionTouchEventImpl: async (input) => {
+      touched.push({
+        accountName: input.accountName,
+        sessionID: input.sessionID,
+        at: input.at,
+        cacheKeys: [...input.lastTouchWrites.keys()].sort(),
+      })
+      input.lastTouchWrites.set(`${input.accountName}:${input.sessionID}`, input.at)
+      return true
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "s1", initiator: "agent", model: "gpt-5" })
+  currentNow += 10_000
+  await harness.sendRequest({ sessionID: "s2", initiator: "agent", model: "gpt-5" })
+  currentNow += 10_000
+  await harness.sendRequest({ sessionID: "s3", initiator: "agent", model: "gpt-5" })
+  currentNow += 1_000
+  await harness.sendRequest({ sessionID: "s4", initiator: "agent", model: "gpt-5" })
+  currentNow += 120_000
+  await harness.sendRequest({ sessionID: "s5", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(touched.length, 5)
+  assert.deepEqual(touched[0]?.cacheKeys, [])
+  assert.deepEqual(touched[1]?.cacheKeys, ["main:s1"])
+  assert.deepEqual(touched[2]?.cacheKeys, ["main:s1", "main:s2"])
+  assert.deepEqual(touched[3]?.cacheKeys, ["main:s2", "main:s3"])
+  assert.deepEqual(touched[4]?.cacheKeys, [])
 })
 
 test("plugin auth loader keeps candidate order as tie-breaker when loads are equal", async () => {

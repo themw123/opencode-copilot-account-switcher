@@ -30,6 +30,7 @@ import { createWaitTool } from "./wait-tool.js"
 import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
 import { handleStatusCommand, showStatusToast } from "./status-command.js"
 import {
+  type AppendSessionTouchEventInput,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
   readRoutingState,
@@ -75,6 +76,8 @@ type SessionBinding = {
 
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_SESSION_BINDINGS = 256
+const TOUCH_WRITE_CACHE_IDLE_TTL_MS = 30 * 60 * 1000
+const MAX_TOUCH_WRITE_CACHE_ENTRIES = 2048
 
 export class InjectCommandHandledError extends Error {
   constructor() {
@@ -326,6 +329,27 @@ function pruneSessionBindings(bindings: Map<string, SessionBinding>, now: number
   }
 }
 
+function pruneTouchWriteCache(input: {
+  cache: Map<string, number>
+  now: number
+  idleTtlMs: number
+  maxEntries: number
+}) {
+  for (const [key, lastWriteAt] of input.cache.entries()) {
+    if (input.now - lastWriteAt > input.idleTtlMs) {
+      input.cache.delete(key)
+    }
+  }
+
+  if (input.cache.size <= input.maxEntries) return
+
+  const oldest = [...input.cache.entries()].sort((a, b) => a[1] - b[1])
+  for (const [key] of oldest) {
+    if (input.cache.size <= input.maxEntries) break
+    input.cache.delete(key)
+  }
+}
+
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
@@ -350,6 +374,10 @@ export function buildPluginHooks(input: {
     store: StoreFile
     candidates: ResolvedModelAccountCandidate[]
   }) => Promise<CandidateAccountLoads | undefined>
+  routingStateDirectory?: string
+  appendSessionTouchEventImpl?: (input: AppendSessionTouchEventInput) => Promise<boolean>
+  touchWriteCacheIdleTtlMs?: number
+  touchWriteCacheMaxEntries?: number
 }): CopilotPluginHooksWithChatHeaders {
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
@@ -369,7 +397,10 @@ export function buildPluginHooks(input: {
   const modelAccountFirstUse = new Set<string>()
   const sessionAccountBindings = new Map<string, SessionBinding>()
   const lastTouchWrites = new Map<string, number>()
-  const routingDirectory = routingStatePath()
+  const routingDirectory = input.routingStateDirectory ?? routingStatePath()
+  const touchWriteCacheIdleTtlMs = input.touchWriteCacheIdleTtlMs ?? TOUCH_WRITE_CACHE_IDLE_TTL_MS
+  const touchWriteCacheMaxEntries = input.touchWriteCacheMaxEntries ?? MAX_TOUCH_WRITE_CACHE_ENTRIES
+  const appendSessionTouchEventImpl = input.appendSessionTouchEventImpl ?? appendSessionTouchEvent
 
   const loadCandidateAccountLoads = input.loadCandidateAccountLoads ?? (async (ctx: {
     candidates: ResolvedModelAccountCandidate[]
@@ -461,6 +492,12 @@ export function buildPluginHooks(input: {
       const modelID = await readRequestModelID(request, init)
       const requestAt = now()
       pruneSessionBindings(sessionAccountBindings, requestAt)
+      pruneTouchWriteCache({
+        cache: lastTouchWrites,
+        now: requestAt,
+        idleTtlMs: touchWriteCacheIdleTtlMs,
+        maxEntries: touchWriteCacheMaxEntries,
+      })
       const sessionID = getMergedRequestHeader(request, init, "x-opencode-session-id") ?? ""
       const initiator = getMergedRequestHeader(request, init, "x-initiator")
       const allowReselect = initiator === "user"
@@ -490,7 +527,7 @@ export function buildPluginHooks(input: {
           lastUsedAt: requestAt,
         })
 
-        await appendSessionTouchEvent({
+        await appendSessionTouchEventImpl({
           directory: routingDirectory,
           accountName: resolved.name,
           sessionID,

@@ -238,6 +238,29 @@ test("session-touch writes are throttled to once per minute per account-session 
   })
 })
 
+test("session-touch write path supports injected append handler", async () => {
+  const captured = []
+  const lastTouchWrites = new Map()
+
+  const result = await appendSessionTouchEvent({
+    directory: "C:/tmp/ignored-by-test",
+    accountName: "main",
+    sessionID: "s1",
+    at: 100_000,
+    lastTouchWrites,
+    appendEvent: async (input) => {
+      captured.push(input)
+    },
+  })
+
+  assert.equal(result, true)
+  assert.equal(captured.length, 1)
+  assert.equal(captured[0]?.directory, "C:/tmp/ignored-by-test")
+  assert.equal(captured[0]?.event?.type, "session-touch")
+  assert.equal(captured[0]?.event?.accountName, "main")
+  assert.equal(captured[0]?.event?.sessionID, "s1")
+})
+
 test("load comparison counts distinct sessions used within 30 minutes", () => {
   const now = 2_000_000
   const loads = buildCandidateAccountLoads({

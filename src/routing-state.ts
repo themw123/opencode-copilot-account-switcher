@@ -38,6 +38,10 @@ export type AppendSessionTouchEventInput = {
   sessionID: string
   at: number
   lastTouchWrites: Map<string, number>
+  appendEvent?: (input: {
+    directory: string
+    event: RoutingEvent
+  }) => Promise<void>
 }
 
 export function routingStatePath(): string {
@@ -60,7 +64,8 @@ export async function appendSessionTouchEvent(input: AppendSessionTouchEventInpu
     return false
   }
 
-  await appendRoutingEvent({
+  const appendEvent = input.appendEvent ?? appendRoutingEvent
+  await appendEvent({
     directory: input.directory,
     event: {
       type: "session-touch",
