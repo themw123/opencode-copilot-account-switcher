@@ -14,7 +14,7 @@ import {
   type FetchLike,
 } from "./copilot-network-retry.js"
 import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
-import { resolveCopilotModelAccount } from "./model-account-map.js"
+import { resolveCopilotModelAccounts, type ResolvedModelAccountCandidate } from "./model-account-map.js"
 import { normalizeDomain } from "./copilot-api-helpers.js"
 import { readStoreSafe, readStoreSafeSync, writeStore, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 import {
@@ -60,6 +60,8 @@ type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
 
 type StatusCommandHandler = typeof handleStatusCommand
 type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
+
+type CandidateAccountLoads = Record<string, number> | Map<string, number>
 
 export class InjectCommandHandledError extends Error {
   constructor() {
@@ -232,6 +234,46 @@ function getMergedRequestHeader(request: Request | URL | string, init: RequestIn
   return headers.get(name)
 }
 
+function toLoadMap(value: CandidateAccountLoads | undefined) {
+  if (value instanceof Map) return value
+
+  const loads = new Map<string, number>()
+  if (!value) return loads
+  for (const [name, count] of Object.entries(value)) {
+    if (typeof count !== "number" || Number.isFinite(count) === false) continue
+    loads.set(name, count)
+  }
+  return loads
+}
+
+function chooseCandidateAccount(input: {
+  candidates: ResolvedModelAccountCandidate[]
+  sessionID: string
+  allowReselect: boolean
+  sessionBindings: Map<string, string>
+  loads: Map<string, number>
+}) {
+  const ranked = [...input.candidates].sort((a, b) => {
+    const loadA = input.loads.get(a.name) ?? 0
+    const loadB = input.loads.get(b.name) ?? 0
+    if (loadA !== loadB) return loadA - loadB
+    return a.name.localeCompare(b.name)
+  })
+  const lowest = ranked[0]
+  const boundName = input.sessionBindings.get(input.sessionID)
+  const bound = boundName ? input.candidates.find((item) => item.name === boundName) : undefined
+
+  if (!bound) return lowest
+  if (!input.allowReselect) return bound
+
+  const currentLoad = input.loads.get(bound.name) ?? 0
+  const minimumLoad = input.loads.get(lowest.name) ?? 0
+  if (currentLoad - minimumLoad >= 3) {
+    return lowest
+  }
+  return bound
+}
+
 export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
@@ -250,6 +292,12 @@ export function buildPluginHooks(input: {
   now?: () => number
   refreshQuota?: RefreshQuota
   handleStatusCommandImpl?: StatusCommandHandler
+  loadCandidateAccountLoads?: (input: {
+    sessionID: string
+    modelID?: string
+    store: StoreFile
+    candidates: ResolvedModelAccountCandidate[]
+  }) => Promise<CandidateAccountLoads | undefined>
 }): CopilotPluginHooksWithChatHeaders {
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
@@ -266,6 +314,7 @@ export function buildPluginHooks(input: {
   let injectArmed = false
   let policyScopeOverride: LoopSafetyProviderScope | undefined
   const modelAccountFirstUse = new Set<string>()
+  const sessionAccountBindings = new Map<string, string>()
 
   const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
 
@@ -343,8 +392,32 @@ export function buildPluginHooks(input: {
     const fetchWithModelAccount = async (request: Request | URL | string, init?: RequestInit) => {
       const latestStore = await loadStore().catch(() => undefined)
       const modelID = await readRequestModelID(request, init)
-      const resolved = latestStore ? resolveCopilotModelAccount(latestStore, modelID) : undefined
+      const sessionID = getMergedRequestHeader(request, init, "x-opencode-session-id") ?? ""
+      const initiator = getMergedRequestHeader(request, init, "x-initiator")
+      const allowReselect = initiator === "user"
+      const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
+      const loads = latestStore && candidates.length > 0
+        ? toLoadMap(await input.loadCandidateAccountLoads?.({
+          sessionID,
+          modelID,
+          store: latestStore,
+          candidates,
+        }).catch(() => undefined))
+        : new Map<string, number>()
+      const resolved = candidates.length > 0
+        ? chooseCandidateAccount({
+          candidates,
+          sessionID,
+          allowReselect,
+          sessionBindings: sessionAccountBindings,
+          loads,
+        })
+        : undefined
       if (!resolved) return config.fetch(request, init)
+
+      if (sessionID.length > 0) {
+        sessionAccountBindings.set(sessionID, resolved.name)
+      }
 
       const isFirstUse = modelAccountFirstUse.has(resolved.name) === false
       if (isFirstUse) {

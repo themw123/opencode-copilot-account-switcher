@@ -967,6 +967,95 @@ function createFirstUseInitiatorHarness(input = {}) {
   }
 }
 
+function createSessionBindingHarness(input = {}) {
+  const outgoing = []
+  let loadCall = 0
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "alt"],
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "main-refresh",
+        access: "main-access",
+        expires: 0,
+      },
+      alt: {
+        name: "alt",
+        refresh: "alt-refresh",
+        access: "alt-access",
+        expires: 0,
+      },
+    },
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    ...(input.store ?? {}),
+  }
+
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => store,
+    loadCandidateAccountLoads: async (ctx) => {
+      if (typeof input.loadCandidateAccountLoads !== "function") return undefined
+      return input.loadCandidateAccountLoads({ ...ctx, call: loadCall++ })
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        const normalizedHeaders = Object.fromEntries(new Headers(init?.headers).entries())
+        outgoing.push({
+          auth,
+          url: request instanceof URL ? request.href : String(request),
+          headers: normalizedHeaders,
+          body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptionsPromise = plugin.auth?.loader?.(
+    async () => {
+      const active = store.accounts[store.active]
+      return {
+        type: "oauth",
+        refresh: active.refresh,
+        access: active.access,
+        expires: active.expires,
+        enterpriseUrl: active.enterpriseUrl,
+      }
+    },
+    { models: {} },
+  )
+
+  return {
+    outgoing,
+    async sendRequest(options = {}) {
+      const authOptions = await authOptionsPromise
+      return authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+        method: "POST",
+        headers: {
+          "x-opencode-session-id": options.sessionID ?? "child-session",
+          "x-initiator": options.initiator ?? "agent",
+          ...(options.headers ?? {}),
+        },
+        body: JSON.stringify({
+          model: options.model ?? "gpt-5",
+        }),
+      })
+    },
+  }
+}
+
 async function sendFirstUseRequest(harness, options = {}) {
   await harness.sendRequest(options)
   return harness.outgoing.at(-1)
@@ -2297,6 +2386,74 @@ test("plugin auth loader uses mapped account for matching Copilot model requests
   assert.match(String(calls[0]?.url), /copilot-api\.example\.ghe\.com/)
   assert.equal(calls[1]?.info?.refresh, "main-refresh")
   assert.match(String(calls[1]?.url), /api\.githubcopilot\.com/)
+})
+
+test("plugin auth loader binds the first real request of a child session to a selected account from candidates", async () => {
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async () => ({
+      main: 4,
+      alt: 1,
+    }),
+  })
+
+  await harness.sendRequest({
+    sessionID: "child-1",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+})
+
+test("plugin auth loader reuses the bound account for non-user-turn follow-up requests", async () => {
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 0, alt: 10 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+  })
+
+  await harness.sendRequest({
+    sessionID: "child-2",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "child-2",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "alt-refresh")
+})
+
+test("plugin auth loader reselects on a new user turn when current account load exceeds min by 3 or more", async () => {
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+  })
+
+  await harness.sendRequest({
+    sessionID: "child-3",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "child-3",
+    initiator: "user",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
 test("configureModelAccountAssignments stores multiple selected accounts", async () => {
