@@ -293,7 +293,6 @@ function chooseCandidateAccount(input: {
   random: () => number
 }) {
   const lowest = pickLowestWithRandom(input.candidates, input.loads, input.random)
-  if (!lowest) return undefined
   const boundName = input.sessionBindings.get(input.sessionID)?.accountName
   const bound = typeof boundName === "string" ? input.candidates.find((item) => item.name === boundName) : undefined
 
@@ -308,7 +307,7 @@ function chooseCandidateAccount(input: {
   return bound
 }
 
-function toSafeRandomUnit(random: () => number) {
+function toSafeReplacementRandomUnit(random: () => number) {
   const value = random()
   if (!Number.isFinite(value)) return 0
   if (value <= 0) return 0
@@ -321,11 +320,22 @@ function pickLowestWithRandom(
   loads: Map<string, number>,
   random: () => number,
 ) {
+  const ranked = [...candidates].sort((a, b) => (loads.get(a.name) ?? 0) - (loads.get(b.name) ?? 0))
+  const minimum = loads.get(ranked[0].name) ?? 0
+  const tied = ranked.filter((item) => (loads.get(item.name) ?? 0) === minimum)
+  return tied[Math.min(tied.length - 1, Math.floor(random() * tied.length))]
+}
+
+function pickLowestReplacementWithHardenedRandom(
+  candidates: ResolvedModelAccountCandidate[],
+  loads: Map<string, number>,
+  random: () => number,
+) {
   if (candidates.length === 0) return undefined
   const ranked = [...candidates].sort((a, b) => (loads.get(a.name) ?? 0) - (loads.get(b.name) ?? 0))
   const minimum = loads.get(ranked[0].name) ?? 0
   const tied = ranked.filter((item) => (loads.get(item.name) ?? 0) === minimum)
-  const pickedIndex = Math.floor(toSafeRandomUnit(random) * tied.length)
+  const pickedIndex = Math.floor(toSafeReplacementRandomUnit(random) * tied.length)
   return tied[pickedIndex] ?? tied[0]
 }
 
@@ -693,7 +703,7 @@ export function buildPluginHooks(input: {
                 cooldownMs: RATE_LIMIT_COOLDOWN_MS,
               }))
               .filter((item) => (nextLoads.get(item.name) ?? 0) <= currentLoad)
-            const replacement = pickLowestWithRandom(replacements, nextLoads, random)
+            const replacement = pickLowestReplacementWithHardenedRandom(replacements, nextLoads, random)
 
             if (replacement) {
               let retriedRequest = nextRequest

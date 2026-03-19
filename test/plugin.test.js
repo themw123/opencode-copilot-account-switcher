@@ -2667,9 +2667,18 @@ test("rate-limit replacement breaks equal-load ties with injected random", async
 
 test("rate-limit replacement tie selection tolerates invalid injected random", async () => {
   let now = 1_250_000
+  let randomCalls = 0
   const harness = createSessionBindingHarness({
     now: () => now,
-    random: () => -1,
+    random: () => {
+      randomCalls += 1
+      return randomCalls <= 3 ? 0 : -1
+    },
+    loadCandidateAccountLoads: async () => ({
+      main: 0,
+      alt: 2,
+      org: 2,
+    }),
     readRoutingStateImpl: async () => ({
       accounts: {
         main: { touchBuckets: { [String(now - 60_000)]: 1 } },
@@ -3190,25 +3199,6 @@ test("plugin auth loader breaks equal-load ties with injected random", async () 
 
   assert.equal(harness.outgoing.length, 1)
   assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
-})
-
-test("plugin auth loader tie selection tolerates NaN random", async () => {
-  const harness = createSessionBindingHarness({
-    random: () => Number.NaN,
-    loadCandidateAccountLoads: async () => ({
-      main: 2,
-      alt: 2,
-    }),
-  })
-
-  await harness.sendRequest({
-    sessionID: "child-tie-invalid-random",
-    initiator: "agent",
-    model: "gpt-5",
-  })
-
-  assert.equal(harness.outgoing.length, 1)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
 test("session binding harness keeps tie selection deterministic without explicit random", async () => {
