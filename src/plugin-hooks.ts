@@ -10,6 +10,7 @@ import {
 } from "./loop-safety-plugin.js"
 import {
   createCopilotRetryingFetch,
+  cleanupLongIdsForAccountSwitch,
   detectRateLimitEvidence,
   type CopilotRetryContext,
   type FetchLike,
@@ -35,8 +36,10 @@ import {
   appendRoutingEvent,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
+  isAccountRateLimitCooledDown,
   readRoutingState,
   routingStatePath,
+  type RoutingSnapshot,
   type RoutingEvent,
 } from "./routing-state.js"
 
@@ -80,9 +83,19 @@ type SessionBinding = {
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const RATE_LIMIT_HIT_THRESHOLD = 3
+const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000
 const MAX_SESSION_BINDINGS = 256
 const TOUCH_WRITE_CACHE_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_TOUCH_WRITE_CACHE_ENTRIES = 2048
+
+type TriggerBillingCompensationInput = {
+  fromAccountName: string
+  toAccountName: string
+  sessionID: string
+  modelID?: string
+  at: number
+  retryAfterMs?: number
+}
 
 export class InjectCommandHandledError extends Error {
   constructor() {
@@ -382,6 +395,8 @@ export function buildPluginHooks(input: {
   routingStateDirectory?: string
   appendSessionTouchEventImpl?: (input: AppendSessionTouchEventInput) => Promise<boolean>
   appendRoutingEventImpl?: (input: { directory: string; event: RoutingEvent }) => Promise<void>
+  readRoutingStateImpl?: (directory: string) => Promise<RoutingSnapshot>
+  triggerBillingCompensation?: (input: TriggerBillingCompensationInput) => Promise<void>
   touchWriteCacheIdleTtlMs?: number
   touchWriteCacheMaxEntries?: number
 }): CopilotPluginHooksWithChatHeaders {
@@ -409,11 +424,13 @@ export function buildPluginHooks(input: {
   const touchWriteCacheMaxEntries = input.touchWriteCacheMaxEntries ?? MAX_TOUCH_WRITE_CACHE_ENTRIES
   const appendSessionTouchEventImpl = input.appendSessionTouchEventImpl ?? appendSessionTouchEvent
   const appendRoutingEventImpl = input.appendRoutingEventImpl ?? appendRoutingEvent
+  const readRoutingStateImpl = input.readRoutingStateImpl ?? readRoutingState
+  const triggerBillingCompensation = input.triggerBillingCompensation ?? (async () => {})
 
   const loadCandidateAccountLoads = input.loadCandidateAccountLoads ?? (async (ctx: {
     candidates: ResolvedModelAccountCandidate[]
   }) => {
-    const snapshot = await readRoutingState(routingDirectory)
+    const snapshot = await readRoutingStateImpl(routingDirectory)
     return buildCandidateAccountLoads({
       snapshot,
       candidateAccountNames: ctx.candidates.map((item) => item.name),
@@ -510,6 +527,17 @@ export function buildPluginHooks(input: {
       const initiator = getMergedRequestHeader(request, init, "x-initiator")
       const allowReselect = initiator === "user"
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
+      const hasExplicitModelGroup = Boolean(
+        latestStore
+        && typeof modelID === "string"
+        && modelID.length > 0
+        && latestStore.modelAccountAssignments
+        && Object.prototype.hasOwnProperty.call(latestStore.modelAccountAssignments, modelID),
+      )
+      const hasUsableExplicitModelCandidate = candidates.some((item) => item.source === "model")
+      if (hasExplicitModelGroup && !hasUsableExplicitModelCandidate) {
+        throw new Error(`No usable account for model ${modelID}`)
+      }
       const loads = latestStore && candidates.length > 0
         ? toLoadMap(await loadCandidateAccountLoads({
           sessionID,
@@ -570,10 +598,21 @@ export function buildPluginHooks(input: {
         enterpriseUrl: resolved.entry.enterpriseUrl,
       }
 
-      const response = await authOverride.run(auth, () => config.fetch(
-        rewriteRequestForAccount(nextRequest, resolved.entry.enterpriseUrl),
-        nextInit,
-      ))
+      const sendWithAccount = async (candidate: ResolvedModelAccountCandidate, requestValue: Request | URL | string, initValue: RequestInit | undefined) => {
+        const candidateAuth: CopilotAuthState = {
+          type: "oauth",
+          refresh: candidate.entry.refresh,
+          access: candidate.entry.access,
+          expires: candidate.entry.expires,
+          enterpriseUrl: candidate.entry.enterpriseUrl,
+        }
+        return authOverride.run(candidateAuth, () => config.fetch(
+          rewriteRequestForAccount(requestValue, candidate.entry.enterpriseUrl),
+          initValue,
+        ))
+      }
+
+      const response = await sendWithAccount(resolved, nextRequest, nextInit)
 
       const observedAt = now()
       let rateLimitEvidence: { matched: boolean; retryAfterMs?: number } = { matched: false }
@@ -599,6 +638,88 @@ export function buildPluginHooks(input: {
               retryAfterMs: rateLimitEvidence.retryAfterMs,
             },
           }).catch(() => undefined)
+
+          let routingSnapshot: RoutingSnapshot | undefined
+          try {
+            routingSnapshot = await readRoutingStateImpl(routingDirectory)
+          } catch {
+            routingSnapshot = undefined
+          }
+
+          if (routingSnapshot) {
+            const nextLoads = buildCandidateAccountLoads({
+              snapshot: routingSnapshot,
+              candidateAccountNames: candidates.map((item) => item.name),
+              now: observedAt,
+            })
+            const currentLoad = nextLoads.get(resolved.name) ?? (loads.get(resolved.name) ?? 0)
+            const replacement = [...candidates]
+              .filter((item) => item.name !== resolved.name)
+              .filter((item) => isAccountRateLimitCooledDown({
+                snapshot: routingSnapshot!,
+                accountName: item.name,
+                now: observedAt,
+                cooldownMs: RATE_LIMIT_COOLDOWN_MS,
+              }))
+              .filter((item) => (nextLoads.get(item.name) ?? 0) < currentLoad)
+              .sort((a, b) => {
+                const loadDiff = (nextLoads.get(a.name) ?? 0) - (nextLoads.get(b.name) ?? 0)
+                if (loadDiff !== 0) return loadDiff
+                return a.name.localeCompare(b.name)
+              })[0]
+
+            if (replacement) {
+              let retriedRequest = nextRequest
+              let retriedInit = nextInit
+              const rawPayload = await readRequestBody(nextRequest, nextInit)
+              if (typeof rawPayload === "string") {
+                try {
+                  const parsed = JSON.parse(rawPayload) as Record<string, unknown>
+                  const cleaned = await cleanupLongIdsForAccountSwitch({ payload: parsed })
+                  if (cleaned.changed) {
+                    const rewritten = mergeAndRewriteRequestHeaders(nextRequest, nextInit, (headers) => {
+                      if (!headers.has("content-type")) headers.set("content-type", "application/json")
+                    })
+                    retriedRequest = rewritten.request
+                    retriedInit = {
+                      ...(rewritten.init ?? {}),
+                      body: JSON.stringify(cleaned.payload),
+                    }
+                  }
+                } catch {
+                  // keep fail-open on payload parse failures
+                }
+              }
+
+              if (sessionID.length > 0) {
+                sessionAccountBindings.set(sessionID, {
+                  accountName: replacement.name,
+                  lastUsedAt: observedAt,
+                })
+              }
+
+              modelAccountFirstUse.add(replacement.name)
+              await showStatusToast({
+                client: input.client,
+                message: `已切换到 ${replacement.name}`,
+                variant: "warning",
+                warn: (scope, error) => {
+                  console.warn(`[${scope}] failed to show toast`, error)
+                },
+              }).catch(() => undefined)
+
+              await triggerBillingCompensation({
+                fromAccountName: resolved.name,
+                toAccountName: replacement.name,
+                sessionID,
+                modelID,
+                at: observedAt,
+                retryAfterMs: rateLimitEvidence.retryAfterMs,
+              }).catch(() => undefined)
+
+              return sendWithAccount(replacement, retriedRequest, retriedInit)
+            }
+          }
         }
       }
 

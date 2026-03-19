@@ -1553,6 +1553,50 @@ test("falls back to targeted payload retry when session patch request fails befo
   assert.equal(response.status, 200)
 })
 
+test("falls back to existing targeted cleanup when bulk cleanup cannot patch session state", async () => {
+  const calls = []
+  const { cleanupLongIdsForAccountSwitch } = await import("../dist/copilot-network-retry.js")
+
+  const payload = {
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "output_text", text: "a" }], id: "x".repeat(300) },
+      { role: "assistant", content: [{ type: "output_text", text: "b" }], id: "y".repeat(280) },
+    ],
+  }
+
+  const result = await cleanupLongIdsForAccountSwitch({
+    payload,
+    bulkCleanup: async () => {
+      calls.push("bulk")
+      return {
+        payload,
+        patchedSessionState: false,
+        changed: false,
+      }
+    },
+    targetedCleanup: async (input) => {
+      calls.push("targeted")
+      return {
+        payload: {
+          ...input.payload,
+          input: [
+            input.payload.input[0],
+            { ...input.payload.input[1], id: undefined },
+            input.payload.input[2],
+          ],
+        },
+        changed: true,
+      }
+    },
+  })
+
+  assert.deepEqual(calls, ["bulk", "targeted"])
+  assert.equal(result.strategy, "targeted-fallback")
+  assert.equal(result.payload.input[1].id, undefined)
+  assert.equal(result.payload.input[2].id.length, 280)
+})
+
 test("repairs multiple too-long input ids one at a time", async () => {
   const calls = []
   const patchedIds = []

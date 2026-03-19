@@ -105,6 +105,23 @@ export function buildCandidateAccountLoads(input: {
   return loads
 }
 
+export function getAccountLastRateLimitedAt(snapshot: RoutingSnapshot, accountName: string): number | undefined {
+  const value = snapshot.accounts[accountName]?.lastRateLimitedAt
+  if (typeof value !== "number" || Number.isFinite(value) === false) return undefined
+  return value
+}
+
+export function isAccountRateLimitCooledDown(input: {
+  snapshot: RoutingSnapshot
+  accountName: string
+  now: number
+  cooldownMs: number
+}) {
+  const lastRateLimitedAt = getAccountLastRateLimitedAt(input.snapshot, input.accountName)
+  if (lastRateLimitedAt === undefined) return true
+  return input.now - lastRateLimitedAt >= input.cooldownMs
+}
+
 function cloneSnapshot(input: RoutingSnapshot): RoutingSnapshot {
   const accounts: Record<string, RoutingAccountState> = {}
   for (const [accountName, account] of Object.entries(input.accounts ?? {})) {

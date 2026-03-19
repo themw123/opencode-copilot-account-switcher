@@ -33,6 +33,24 @@ type RetryableSystemError = Error & {
 
 type JsonRecord = Record<string, unknown>
 
+export type AccountSwitchCleanupResult = {
+  payload: JsonRecord
+  changed: boolean
+  strategy: "bulk" | "targeted-fallback" | "none"
+}
+
+type AccountSwitchCleanupPhaseResult = {
+  payload: JsonRecord
+  changed: boolean
+  patchedSessionState?: boolean
+}
+
+export type AccountSwitchCleanupInput = {
+  payload: JsonRecord
+  bulkCleanup?: (input: { payload: JsonRecord }) => Promise<AccountSwitchCleanupPhaseResult>
+  targetedCleanup?: (input: { payload: JsonRecord }) => Promise<AccountSwitchCleanupPhaseResult>
+}
+
 export type RateLimitEvidence = {
   matched: boolean
   retryAfterMs?: number
@@ -290,6 +308,89 @@ function parseJsonBody(init?: RequestInit) {
     return parsed as JsonRecord
   } catch {
     return undefined
+  }
+}
+
+function bulkStripLongInputIds(payload: JsonRecord): AccountSwitchCleanupPhaseResult {
+  const input = payload.input
+  if (!Array.isArray(input)) {
+    return {
+      payload,
+      changed: false,
+      patchedSessionState: true,
+    }
+  }
+
+  let changed = false
+  const nextInput = input.map((item) => {
+    const id = (item as { id?: unknown } | undefined)?.id
+    if (typeof id !== "string" || id.length <= 64) return item
+    changed = true
+    const clone = { ...(item as JsonRecord) }
+    delete (clone as { id?: unknown }).id
+    return clone
+  })
+
+  if (!changed) {
+    return {
+      payload,
+      changed: false,
+      patchedSessionState: true,
+    }
+  }
+
+  return {
+    payload: {
+      ...payload,
+      input: nextInput,
+    },
+    changed: true,
+    patchedSessionState: true,
+  }
+}
+
+function stripSingleLongInputId(payload: JsonRecord): AccountSwitchCleanupPhaseResult {
+  const input = payload.input
+  if (!Array.isArray(input)) {
+    return {
+      payload,
+      changed: false,
+    }
+  }
+
+  const nextPayload = stripTargetedLongInputId(payload)
+  return {
+    payload: nextPayload,
+    changed: nextPayload !== payload,
+  }
+}
+
+export async function cleanupLongIdsForAccountSwitch(input: AccountSwitchCleanupInput): Promise<AccountSwitchCleanupResult> {
+  const bulkCleanup = input.bulkCleanup ?? (async ({ payload }) => bulkStripLongInputIds(payload))
+  const targetedCleanup = input.targetedCleanup ?? (async ({ payload }) => stripSingleLongInputId(payload))
+
+  const bulkResult = await bulkCleanup({ payload: input.payload })
+  if (bulkResult.changed && bulkResult.patchedSessionState !== false) {
+    return {
+      payload: bulkResult.payload,
+      changed: true,
+      strategy: "bulk",
+    }
+  }
+
+  const targetedResult = await targetedCleanup({ payload: bulkResult.payload })
+  if (targetedResult.changed) {
+    return {
+      payload: targetedResult.payload,
+      changed: true,
+      strategy: "targeted-fallback",
+    }
+  }
+
+  return {
+    payload: bulkResult.payload,
+    changed: false,
+    strategy: "none",
   }
 }
 

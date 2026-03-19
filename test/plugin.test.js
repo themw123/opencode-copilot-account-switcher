@@ -1005,10 +1005,13 @@ function createSessionBindingHarness(input = {}) {
     },
     appendSessionTouchEventImpl: input.appendSessionTouchEventImpl,
     appendRoutingEventImpl: input.appendRoutingEventImpl,
+    readRoutingStateImpl: input.readRoutingStateImpl,
+    triggerBillingCompensation: input.triggerBillingCompensation,
     routingStateDirectory: input.routingStateDirectory,
     touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
     touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
     now: input.now,
+    client: input.client,
     loadOfficialConfig: async ({ getAuth }) => ({
       apiKey: "",
       fetch: async (request, init) => {
@@ -2571,6 +2574,194 @@ test("plugin auth loader uses response-observed time for rate-limit window and f
   assert.equal(events.length, 1)
   assert.equal(events[0]?.type, "rate-limit-flagged")
   assert.equal(events[0]?.at, currentNow)
+})
+
+test("switches to a lower-load account whose lastRateLimitedAt is older than ten minutes", async () => {
+  let currentNow = 1_000_000
+  const toasts = []
+  const compensationCalls = []
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    loadCandidateAccountLoads: async () => ({
+      main: 0,
+      alt: 2,
+    }),
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: {
+          sessions: {
+            s1: currentNow - 20_000,
+            s2: currentNow - 30_000,
+            s3: currentNow - 40_000,
+          },
+        },
+        alt: {
+          sessions: {
+            s9: currentNow - 10_000,
+          },
+          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    triggerBillingCompensation: async (input) => {
+      compensationCalls.push(input)
+    },
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+    fetchImpl: async ({ auth }) => {
+      if (auth?.refresh === "main-refresh") {
+        return new Response(
+          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "switch-1", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "switch-1", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  const thirdResponse = await harness.sendRequest({ sessionID: "switch-1", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(thirdResponse?.status, 200)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
+  assert.equal(compensationCalls.length, 1)
+  assert.equal(compensationCalls[0]?.toAccountName, "alt")
+  assert.match(String(toasts.at(-1)?.body?.message ?? ""), /切换到 alt/)
+})
+
+test("keeps current account when no better candidate exists", async () => {
+  let currentNow = 2_000_000
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    loadCandidateAccountLoads: async () => ({
+      main: 0,
+      alt: 2,
+    }),
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: {
+          sessions: {
+            s1: currentNow - 20_000,
+          },
+        },
+        alt: {
+          sessions: {
+            s9: currentNow - 10_000,
+          },
+          lastRateLimitedAt: currentNow - 5 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    fetchImpl: async ({ auth }) => {
+      if (auth?.refresh === "main-refresh") {
+        return new Response(
+          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "switch-2", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "switch-2", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  const thirdResponse = await harness.sendRequest({ sessionID: "switch-2", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(thirdResponse?.status, 429)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
+})
+
+test("fails open when routing-state read fails during candidate selection", async () => {
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async () => {
+      throw new Error("routing-state broken")
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "fail-open-routing-state",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+})
+
+test("surfaces a clear error when an explicit model group has no usable accounts", async () => {
+  const harness = createSessionBindingHarness({
+    store: {
+      active: "main",
+      activeAccountNames: ["main"],
+      modelAccountAssignments: {
+        "gpt-5": ["alt"],
+      },
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+        alt: {
+          name: "alt",
+          refresh: "alt-refresh",
+          access: "alt-access",
+          expires: 0,
+          models: {
+            available: ["o3"],
+            disabled: ["gpt-5"],
+          },
+        },
+      },
+    },
+  })
+
+  await assert.rejects(
+    harness.sendRequest({
+      sessionID: "explicit-empty",
+      initiator: "agent",
+      model: "gpt-5",
+    }),
+    /No usable account for model gpt-5/i,
+  )
 })
 
 test("plugin auth loader selection path can consume routing-state-derived loads", async () => {
