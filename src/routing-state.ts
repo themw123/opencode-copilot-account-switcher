@@ -90,7 +90,20 @@ export type RateLimitFlaggedEvent = {
   retryAfterMs?: number
 }
 
+export type RouteDecisionEvent = {
+  type: "route-decision"
+  at: number
+  chosenAccount: string
+  sessionIDPresent: boolean
+}
+
 export type RoutingEvent = SessionTouchEvent | RateLimitFlaggedEvent
+
+export async function appendRouteDecisionEvent(input: { directory: string; event: RouteDecisionEvent }) {
+  const file = path.join(input.directory, "decisions.log")
+  await defaultRoutingStateIO.mkdir(input.directory, { recursive: true })
+  await defaultRoutingStateIO.appendFile(file, `${JSON.stringify(input.event)}\n`, "utf8")
+}
 
 export type AppendSessionTouchEventInput = {
   directory: string

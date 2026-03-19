@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 
 import {
   appendRoutingEvent,
+  appendRouteDecisionEvent,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
   compactRoutingState,
@@ -191,6 +192,26 @@ test("compactRoutingSnapshot removes expired touch buckets and keeps rate-limit 
   assert.equal(state.accounts.main.touchBuckets[String(now - (30 * 60 * 1000) + 60_000)], 3)
   assert.equal(state.accounts.main.lastRateLimitedAt, 123)
   assert.deepEqual(state.appliedSegments, ["sealed-1.log"])
+})
+
+test("appendRouteDecisionEvent writes to decisions.log and readRoutingState ignores decisions log entries", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await appendRouteDecisionEvent({
+      directory: dir,
+      event: {
+        type: "route-decision",
+        at: 100,
+        chosenAccount: "main",
+        sessionIDPresent: false,
+      },
+    })
+
+    const decisions = await readFile(path.join(dir, "decisions.log"), "utf8")
+    assert.match(decisions, /route-decision/)
+
+    const state = await readRoutingState(dir)
+    assert.deepEqual(state.accounts, {})
+  })
 })
 
 test("session-touch writes are throttled to once per minute per account-session pair", async () => {
@@ -397,6 +418,18 @@ test("compaction does not double-apply a sealed segment already recorded in appl
 
     const reread = await readRoutingState(dir)
     assert.deepEqual(reread.accounts.main.touchBuckets, { "0": 1 })
+  })
+})
+
+test("compactRoutingState does not rotate, fold, or delete decisions log", async () => {
+  await withRoutingStateDir(async (dir) => {
+    const decisionsFile = path.join(dir, "decisions.log")
+    await writeFile(decisionsFile, `${JSON.stringify({ type: "route-decision", at: 100, chosenAccount: "main", sessionIDPresent: true })}\n`, "utf8")
+
+    await compactRoutingState({ directory: dir, now: 200_000 })
+
+    const decisions = await readFile(decisionsFile, "utf8")
+    assert.match(decisions, /route-decision/)
   })
 })
 
