@@ -186,8 +186,12 @@ function areExperimentalSlashCommandsEnabled(store: StoreFile | undefined) {
 }
 
 async function readRequestBody(request: Request | URL | string, init?: RequestInit) {
-  if (typeof init?.body === "string") return init.body
-  if (request instanceof Request) return request.clone().text().catch(() => undefined)
+  try {
+    if (typeof init?.body === "string") return init.body
+    if (request instanceof Request) return request.clone().text().catch(() => undefined)
+  } catch {
+    return undefined
+  }
   return undefined
 }
 
@@ -628,16 +632,18 @@ export function buildPluginHooks(input: {
         queue.push(observedAt)
         rateLimitQueues.set(resolved.name, queue)
 
-        if (queue.length === RATE_LIMIT_HIT_THRESHOLD) {
-          await appendRoutingEventImpl({
-            directory: routingDirectory,
-            event: {
-              type: "rate-limit-flagged",
-              accountName: resolved.name,
-              at: observedAt,
-              retryAfterMs: rateLimitEvidence.retryAfterMs,
-            },
-          }).catch(() => undefined)
+        if (queue.length >= RATE_LIMIT_HIT_THRESHOLD) {
+          if (queue.length === RATE_LIMIT_HIT_THRESHOLD) {
+            await appendRoutingEventImpl({
+              directory: routingDirectory,
+              event: {
+                type: "rate-limit-flagged",
+                accountName: resolved.name,
+                at: observedAt,
+                retryAfterMs: rateLimitEvidence.retryAfterMs,
+              },
+            }).catch(() => undefined)
+          }
 
           let routingSnapshot: RoutingSnapshot | undefined
           try {
@@ -696,6 +702,14 @@ export function buildPluginHooks(input: {
                   accountName: replacement.name,
                   lastUsedAt: observedAt,
                 })
+
+                await appendSessionTouchEventImpl({
+                  directory: routingDirectory,
+                  accountName: replacement.name,
+                  sessionID,
+                  at: observedAt,
+                  lastTouchWrites,
+                }).catch(() => undefined)
               }
 
               modelAccountFirstUse.add(replacement.name)

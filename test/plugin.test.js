@@ -1073,6 +1073,10 @@ function createSessionBindingHarness(input = {}) {
         }),
       })
     },
+    async sendRawRequest(request, init) {
+      const authOptions = await authOptionsPromise
+      return authOptions?.fetch?.(request, init)
+    },
   }
 }
 
@@ -2646,6 +2650,193 @@ test("switches to a lower-load account whose lastRateLimitedAt is older than ten
   assert.equal(compensationCalls.length, 1)
   assert.equal(compensationCalls[0]?.toAccountName, "alt")
   assert.match(String(toasts.at(-1)?.body?.message ?? ""), /切换到 alt/)
+})
+
+test("appends replacement account touch event after successful switch", async () => {
+  let currentNow = 1_500_000
+  const touches = []
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    appendSessionTouchEventImpl: async (input) => {
+      touches.push({
+        accountName: input.accountName,
+        sessionID: input.sessionID,
+        at: input.at,
+      })
+      return true
+    },
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: {
+          sessions: {
+            s1: currentNow - 20_000,
+            s2: currentNow - 30_000,
+            s3: currentNow - 40_000,
+          },
+        },
+        alt: {
+          sessions: {
+            s9: currentNow - 10_000,
+          },
+          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    fetchImpl: async ({ auth }) => {
+      if (auth?.refresh === "main-refresh") {
+        return new Response(
+          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "switch-touch", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "switch-touch", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  const thirdResponse = await harness.sendRequest({ sessionID: "switch-touch", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(thirdResponse?.status, 200)
+  assert.equal(touches.some((item) => item.accountName === "alt" && item.sessionID === "switch-touch"), true)
+})
+
+test("switch evaluation continues after threshold and can switch on fourth hit", async () => {
+  let currentNow = 2_500_000
+  let routingReadCount = 0
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    readRoutingStateImpl: async () => {
+      routingReadCount += 1
+      const cooldownMinutes = routingReadCount >= 2 ? 11 : 9
+      return {
+        accounts: {
+          main: {
+            sessions: {
+              s1: currentNow - 10_000,
+              s2: currentNow - 20_000,
+              s3: currentNow - 30_000,
+            },
+          },
+          alt: {
+            sessions: {
+              s9: currentNow - 5_000,
+            },
+            lastRateLimitedAt: currentNow - cooldownMinutes * 60 * 1000,
+          },
+        },
+        appliedSegments: [],
+      }
+    },
+    fetchImpl: async ({ auth }) => {
+      if (auth?.refresh === "main-refresh") {
+        return new Response(
+          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "switch-fourth", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "switch-fourth", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  const thirdResponse = await harness.sendRequest({ sessionID: "switch-fourth", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  const fourthResponse = await harness.sendRequest({ sessionID: "switch-fourth", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(thirdResponse?.status, 429)
+  assert.equal(fourthResponse?.status, 200)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
+})
+
+test("replacement cleanup fails open when request body is already consumed", async () => {
+  let currentNow = 3_000_000
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: {
+          sessions: {
+            s1: currentNow - 20_000,
+            s2: currentNow - 30_000,
+            s3: currentNow - 40_000,
+          },
+        },
+        alt: {
+          sessions: {
+            s9: currentNow - 10_000,
+          },
+          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    fetchImpl: async ({ auth }) => {
+      if (auth?.refresh === "main-refresh") {
+        return new Response(
+          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "switch-consumed", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "switch-consumed", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+
+  const consumedRequest = new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "switch-consumed",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({ model: "gpt-5" }),
+  })
+  await consumedRequest.text()
+
+  const thirdResponse = await harness.sendRawRequest(consumedRequest)
+  assert.equal(thirdResponse?.status, 200)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
 })
 
 test("keeps current account when no better candidate exists", async () => {
