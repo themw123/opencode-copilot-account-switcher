@@ -7,9 +7,20 @@ import { basename, join } from "node:path"
 
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
-import { buildPluginHooks } from "../dist/plugin-hooks.js"
+import { buildPluginHooks as buildPluginHooksRaw } from "../dist/plugin-hooks.js"
 import { buildCandidateAccountLoads } from "../dist/routing-state.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
+
+function createTempRoutingStateDirectory() {
+  return join(tmpdir(), `routing-state-${randomUUID()}`)
+}
+
+function buildPluginHooks(input = {}) {
+  return buildPluginHooksRaw({
+    ...input,
+    routingStateDirectory: input.routingStateDirectory ?? createTempRoutingStateDirectory(),
+  })
+}
 
 async function armInject(plugin, args = "") {
   await assert.rejects(
@@ -847,6 +858,7 @@ function createChatHeadersInput(input = {}) {
 function createFirstUseInitiatorHarness(input = {}) {
   const outgoing = []
   const officialInitiators = new Map()
+  const routingStateDirectory = input.routingStateDirectory ?? createTempRoutingStateDirectory()
   const store = {
     active: input.active ?? "main",
     accounts: {
@@ -921,6 +933,7 @@ function createFirstUseInitiatorHarness(input = {}) {
         output.headers["x-initiator"] = initiator
       }
     },
+    routingStateDirectory,
   })
 
   const authOptionsPromise = plugin.auth?.loader?.(
@@ -939,6 +952,7 @@ function createFirstUseInitiatorHarness(input = {}) {
 
   return {
     outgoing,
+    routingStateDirectory,
     store,
     async sendRequest(options = {}) {
       const messageID = options.messageID ?? `message-${outgoing.length + 1}`
@@ -971,10 +985,23 @@ function createFirstUseInitiatorHarness(input = {}) {
   }
 }
 
+function createPluginHooksTestHarness(input = {}) {
+  const routingStateDirectory = input.routingStateDirectory ?? createTempRoutingStateDirectory()
+  const plugin = buildPluginHooks({
+    ...input,
+    routingStateDirectory,
+  })
+
+  return {
+    plugin,
+    routingStateDirectory,
+  }
+}
+
 function createSessionBindingHarness(input = {}) {
   const outgoing = []
   let loadCall = 0
-  const routingStateDirectory = input.routingStateDirectory ?? join(tmpdir(), `routing-state-${randomUUID()}`)
+  const routingStateDirectory = input.routingStateDirectory ?? createTempRoutingStateDirectory()
   const store = {
     active: "main",
     activeAccountNames: ["main", "alt"],
@@ -3560,6 +3587,146 @@ test("createSessionBindingHarness defaults routing-state to isolated temporary d
 
   const decisionsLog = await fs.stat(join(harness.routingStateDirectory, "decisions.log"))
   assert.equal(decisionsLog.isFile(), true)
+})
+
+test("createFirstUseInitiatorHarness defaults routing-state to isolated temporary directory", async () => {
+  const harness = createFirstUseInitiatorHarness()
+
+  await harness.sendRequest({
+    sessionID: "first-use-isolated",
+    model: "o3",
+  })
+
+  assert.equal(typeof harness.routingStateDirectory, "string")
+  assert.match(basename(harness.routingStateDirectory), /^routing-state-/)
+  assert.doesNotMatch(harness.routingStateDirectory.replaceAll("\\", "/"), /\/\.local\/share\/opencode\/copilot-routing-state\/?$/)
+
+  const decisionsLog = await fs.stat(join(harness.routingStateDirectory, "decisions.log"))
+  assert.equal(decisionsLog.isFile(), true)
+})
+
+test("direct plugin fetch tests default routing-state to isolated temporary directory", async () => {
+  const calls = []
+  const { plugin, routingStateDirectory } = createPluginHooksTestHarness({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (_request, init) => {
+        const info = await getAuth()
+        calls.push({ info, init })
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const options = await plugin.auth?.loader?.(
+    async () => ({
+      type: "oauth",
+      refresh: "main-refresh",
+      access: "main-access",
+      expires: 0,
+    }),
+    { models: {} },
+  )
+
+  await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "x-opencode-session-id": "direct-isolated",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({ model: "o3" }),
+  })
+
+  assert.equal(calls.length, 1)
+  assert.match(basename(routingStateDirectory), /^routing-state-/)
+  assert.doesNotMatch(routingStateDirectory.replaceAll("\\", "/"), /\/\.local\/share\/opencode\/copilot-routing-state\/?$/)
+
+  const decisionsLog = await fs.stat(join(routingStateDirectory, "decisions.log"))
+  assert.equal(decisionsLog.isFile(), true)
+})
+
+test("plain buildPluginHooks test instances default routing-state to isolated temporary directory", async () => {
+  const directories = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    appendSessionTouchEventImpl: async (input) => {
+      directories.push(input.directory)
+      return true
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      directories.push(input.directory)
+    },
+    loadOfficialConfig: async () => ({
+      apiKey: "",
+      fetch: async () => new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    }),
+  })
+
+  const options = await plugin.auth?.loader?.(
+    async () => ({
+      type: "oauth",
+      refresh: "main-refresh",
+      access: "main-access",
+      expires: 0,
+    }),
+    { models: {} },
+  )
+
+  await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "x-opencode-session-id": "plain-build-plugin-hooks-test",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({ model: "o3" }),
+  })
+
+  assert.equal(directories.length >= 1, true)
+  assert.match(basename(directories[0]), /^routing-state-/)
+  assert.doesNotMatch(directories[0].replaceAll("\\", "/"), /\/\.local\/share\/opencode\/copilot-routing-state\/?$/)
 })
 
 test("session binding harness keeps tie selection deterministic without explicit random", async () => {
