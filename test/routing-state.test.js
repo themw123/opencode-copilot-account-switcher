@@ -5,11 +5,14 @@ import path from "node:path"
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
 
 import {
+  appendRoutingEvent,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
+  compactRoutingState,
   compactRoutingSnapshot,
   foldRoutingEvents,
   readRoutingState,
+  rotateActiveLog,
 } from "../dist/routing-state.js"
 
 async function withRoutingStateDir(run) {
@@ -288,4 +291,187 @@ test("load comparison counts distinct sessions used within 30 minutes", () => {
   assert.equal(loads.get("main"), 2)
   assert.equal(loads.get("alt"), 1)
   assert.equal(loads.get("missing"), 0)
+})
+
+test("append and rotate racing together do not drop a session-touch event", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "active.log"), "", "utf8")
+
+    const rotate = rotateActiveLog({
+      directory: dir,
+      now: 1_000,
+      pid: 42,
+      beforeCreateActiveLog: async () => {
+        await appendRoutingEvent({
+          directory: dir,
+          event: {
+            type: "session-touch",
+            accountName: "main",
+            sessionID: "s1",
+            at: 100,
+          },
+        })
+      },
+    })
+
+    await rotate
+
+    const state = await readRoutingState(dir)
+    assert.equal(state.accounts.main.sessions.s1, 100)
+  })
+})
+
+test("compaction does not double-apply a sealed segment already recorded in appliedSegments", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
+      accounts: {
+        main: {
+          sessions: {
+            s1: 100,
+          },
+        },
+      },
+      appliedSegments: ["sealed-1.log"],
+    }), "utf8")
+
+    await writeFile(path.join(dir, "sealed-1.log"), `${JSON.stringify({
+      type: "session-touch",
+      accountName: "main",
+      sessionID: "s2",
+      at: 200,
+    })}\n`, "utf8")
+
+    const compacted = await compactRoutingState({ directory: dir, now: 1_000_000 })
+    assert.deepEqual(compacted.accounts.main.sessions, { s1: 100 })
+
+    const reread = await readRoutingState(dir)
+    assert.deepEqual(reread.accounts.main.sessions, { s1: 100 })
+  })
+})
+
+test("rotate gracefully retries or skips when rename fails on Windows-like handle contention", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "active.log"), "", "utf8")
+
+    let renameCalls = 0
+    const result = await rotateActiveLog({
+      directory: dir,
+      now: 2_000,
+      pid: 42,
+      io: {
+        mkdir: async (...args) => import("node:fs/promises").then((m) => m.mkdir(...args)),
+        appendFile: async (...args) => import("node:fs/promises").then((m) => m.appendFile(...args)),
+        readFile: async (...args) => import("node:fs/promises").then((m) => m.readFile(...args)),
+        readdir: async (...args) => import("node:fs/promises").then((m) => m.readdir(...args)),
+        rename: async (from, to) => {
+          renameCalls += 1
+          if (renameCalls <= 2) {
+            const error = new Error("busy")
+            error.code = "EBUSY"
+            throw error
+          }
+          const mod = await import("node:fs/promises")
+          await mod.rename(from, to)
+        },
+        writeFile: async (...args) => import("node:fs/promises").then((m) => m.writeFile(...args)),
+        unlink: async (...args) => import("node:fs/promises").then((m) => m.unlink(...args)),
+        open: async (...args) => import("node:fs/promises").then((m) => m.open(...args)),
+      },
+      maxRetries: 3,
+      retryDelayMs: 0,
+    })
+
+    assert.equal(result.rotated, true)
+    assert.equal(result.skipped, false)
+    assert.equal(renameCalls, 3)
+  })
+})
+
+test("append retries by reopening active.log after transient write failure", async () => {
+  await withRoutingStateDir(async (dir) => {
+    let openCalls = 0
+    const io = {
+      mkdir: async (...args) => import("node:fs/promises").then((m) => m.mkdir(...args)),
+      appendFile: async (...args) => import("node:fs/promises").then((m) => m.appendFile(...args)),
+      readFile: async (...args) => import("node:fs/promises").then((m) => m.readFile(...args)),
+      readdir: async (...args) => import("node:fs/promises").then((m) => m.readdir(...args)),
+      rename: async (...args) => import("node:fs/promises").then((m) => m.rename(...args)),
+      writeFile: async (...args) => import("node:fs/promises").then((m) => m.writeFile(...args)),
+      unlink: async (...args) => import("node:fs/promises").then((m) => m.unlink(...args)),
+      open: async (filePath, flags) => {
+        openCalls += 1
+        const fileModule = await import("node:fs/promises")
+        const handle = await fileModule.open(filePath, flags)
+        if (openCalls === 1) {
+          return {
+            appendFile: async () => {
+              const error = new Error("transient")
+              error.code = "EIO"
+              throw error
+            },
+            close: async () => {
+              await handle.close()
+            },
+          }
+        }
+        return handle
+      },
+    }
+
+    await appendRoutingEvent({
+      directory: dir,
+      event: {
+        type: "session-touch",
+        accountName: "main",
+        sessionID: "s1",
+        at: 100,
+      },
+      io,
+      maxRetries: 3,
+      retryDelayMs: 0,
+    })
+
+    const state = await readRoutingState(dir)
+    assert.equal(state.accounts.main.sessions.s1, 100)
+    assert.equal(openCalls >= 2, true)
+  })
+})
+
+test("snapshot.tmp residue is ignored during reads and cleaned on next compaction", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
+      accounts: {},
+      appliedSegments: [],
+    }), "utf8")
+
+    await writeFile(path.join(dir, "snapshot.tmp"), JSON.stringify({
+      accounts: {
+        ghost: {
+          sessions: {
+            shouldNotRead: 999,
+          },
+        },
+      },
+    }), "utf8")
+
+    await writeFile(path.join(dir, "active.log"), `${JSON.stringify({
+      type: "rate-limit-flagged",
+      accountName: "main",
+      at: 200,
+    })}\n`, "utf8")
+
+    const before = await readRoutingState(dir)
+    assert.equal(before.accounts.ghost, undefined)
+    assert.equal(before.accounts.main.lastRateLimitedAt, 200)
+
+    await compactRoutingState({ directory: dir, now: 2_000_000 })
+
+    await assert.rejects(
+      () => readFile(path.join(dir, "snapshot.tmp"), "utf8"),
+      (error) => error?.code === "ENOENT",
+    )
+
+    const after = await readRoutingState(dir)
+    assert.equal(after.accounts.main.lastRateLimitedAt, 200)
+  })
 })

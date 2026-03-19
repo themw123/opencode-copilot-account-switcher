@@ -5,6 +5,65 @@ import { xdgData } from "xdg-basedir"
 
 const SESSION_WINDOW_MS = 30 * 60 * 1000
 const TOUCH_THROTTLE_MS = 60 * 1000
+const APPEND_MAX_RETRIES = 3
+const ROTATE_MAX_RETRIES = 3
+
+type OpenFileHandle = {
+  appendFile(data: string, options?: BufferEncoding): Promise<void>
+  close(): Promise<void>
+}
+
+type RoutingStateIO = {
+  mkdir: typeof fs.mkdir
+  appendFile: typeof fs.appendFile
+  readFile: typeof fs.readFile
+  readdir: typeof fs.readdir
+  rename: typeof fs.rename
+  writeFile: typeof fs.writeFile
+  unlink: typeof fs.unlink
+  open: (path: string, flags: string) => Promise<OpenFileHandle>
+}
+
+const defaultRoutingStateIO: RoutingStateIO = {
+  mkdir: fs.mkdir.bind(fs),
+  appendFile: fs.appendFile.bind(fs),
+  readFile: fs.readFile.bind(fs),
+  readdir: fs.readdir.bind(fs),
+  rename: fs.rename.bind(fs),
+  writeFile: fs.writeFile.bind(fs),
+  unlink: fs.unlink.bind(fs),
+  open: fs.open.bind(fs) as unknown as RoutingStateIO["open"],
+}
+
+type AppendRoutingEventInput = {
+  directory: string
+  event: RoutingEvent
+  maxRetries?: number
+  retryDelayMs?: number
+  io?: RoutingStateIO
+}
+
+export type RotateActiveLogInput = {
+  directory: string
+  now?: number
+  pid?: number
+  maxRetries?: number
+  retryDelayMs?: number
+  io?: RoutingStateIO
+  beforeCreateActiveLog?: () => Promise<void>
+}
+
+export type RotateActiveLogResult = {
+  rotated: boolean
+  skipped: boolean
+  segmentName?: string
+}
+
+type CompactRoutingStateInput = {
+  directory: string
+  now: number
+  io?: RoutingStateIO
+}
 
 export type RoutingAccountState = {
   sessions?: Record<string, number>
@@ -49,12 +108,63 @@ export function routingStatePath(): string {
   return path.join(dataDir, "opencode", "copilot-routing-state")
 }
 
-export async function appendRoutingEvent(input: {
-  directory: string
-  event: RoutingEvent
-}) {
-  await fs.mkdir(input.directory, { recursive: true })
-  await fs.appendFile(path.join(input.directory, "active.log"), `${JSON.stringify(input.event)}\n`, "utf8")
+function isRetryableAppendError(error: unknown): boolean {
+  const issue = error as NodeJS.ErrnoException
+  return issue?.code === "ENOENT" || issue?.code === "EBUSY" || issue?.code === "EACCES" || issue?.code === "EPERM" || issue?.code === "EIO"
+}
+
+function isRetryableRenameError(error: unknown): boolean {
+  const issue = error as NodeJS.ErrnoException
+  return issue?.code === "EBUSY" || issue?.code === "EACCES" || issue?.code === "EPERM"
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function ensureActiveLogExists(filePath: string, io: RoutingStateIO): Promise<void> {
+  const handle = await io.open(filePath, "a")
+  await handle.close()
+}
+
+export async function appendRoutingEvent(input: AppendRoutingEventInput) {
+  const io = input.io ?? defaultRoutingStateIO
+  await io.mkdir(input.directory, { recursive: true })
+
+  const activeFile = path.join(input.directory, "active.log")
+  const line = `${JSON.stringify(input.event)}\n`
+  const maxRetries = Math.max(1, input.maxRetries ?? APPEND_MAX_RETRIES)
+  const retryDelayMs = Math.max(0, input.retryDelayMs ?? 5)
+
+  let lastError: unknown = undefined
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    let handle: OpenFileHandle | undefined
+    try {
+      handle = await io.open(activeFile, "a")
+      await handle.appendFile(line, "utf8")
+      await handle.close()
+      return
+    } catch (error) {
+      lastError = error
+      if (handle) {
+        try {
+          await handle.close()
+        } catch {
+          // ignore close errors after append failure
+        }
+      }
+
+      if (attempt === maxRetries - 1 || !isRetryableAppendError(error)) {
+        throw error
+      }
+
+      await io.mkdir(input.directory, { recursive: true })
+      await delay(retryDelayMs)
+    }
+  }
+
+  if (lastError) throw lastError
 }
 
 export async function appendSessionTouchEvent(input: AppendSessionTouchEventInput) {
@@ -192,7 +302,7 @@ function emptySnapshot(): RoutingSnapshot {
 async function readSnapshot(filePath: string): Promise<RoutingSnapshot> {
   let raw = ""
   try {
-    raw = await fs.readFile(filePath, "utf8")
+    raw = await defaultRoutingStateIO.readFile(filePath, "utf8")
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code === "ENOENT") return emptySnapshot()
@@ -244,7 +354,7 @@ function parseRoutingEvent(value: unknown): RoutingEvent | undefined {
 async function readEventsFromLog(filePath: string): Promise<RoutingEvent[]> {
   let raw = ""
   try {
-    raw = await fs.readFile(filePath, "utf8")
+    raw = await defaultRoutingStateIO.readFile(filePath, "utf8")
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code === "ENOENT") return []
@@ -317,7 +427,7 @@ export async function readRoutingState(directory: string): Promise<RoutingSnapsh
 
   let entries: string[] = []
   try {
-    entries = await fs.readdir(directory)
+    entries = await defaultRoutingStateIO.readdir(directory)
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code === "ENOENT") {
@@ -345,4 +455,176 @@ export async function readRoutingState(directory: string): Promise<RoutingSnapsh
   state = foldRoutingEvents(state, activeEvents)
   state.appliedSegments = [...new Set([...(snapshot.appliedSegments ?? []), ...sealedSegments])]
   return state
+}
+
+export async function rotateActiveLog(input: RotateActiveLogInput): Promise<RotateActiveLogResult> {
+  const io = input.io ?? defaultRoutingStateIO
+  const now = input.now ?? Date.now()
+  const pid = input.pid ?? process.pid
+  const maxRetries = Math.max(1, input.maxRetries ?? ROTATE_MAX_RETRIES)
+  const retryDelayMs = Math.max(0, input.retryDelayMs ?? 5)
+  const activeFile = path.join(input.directory, "active.log")
+  const segmentName = `sealed-${now}-${pid}.log`
+  const sealedFile = path.join(input.directory, segmentName)
+
+  await io.mkdir(input.directory, { recursive: true })
+
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    try {
+      await io.rename(activeFile, sealedFile)
+      if (input.beforeCreateActiveLog) {
+        await input.beforeCreateActiveLog()
+      }
+      await ensureActiveLogExists(activeFile, io)
+      return { rotated: true, skipped: false, segmentName }
+    } catch (error) {
+      const issue = error as NodeJS.ErrnoException
+      if (issue.code === "ENOENT") {
+        await ensureActiveLogExists(activeFile, io)
+        return { rotated: false, skipped: true }
+      }
+
+      if (attempt === maxRetries - 1 || !isRetryableRenameError(error)) {
+        if (isRetryableRenameError(error)) {
+          return { rotated: false, skipped: true }
+        }
+        throw error
+      }
+
+      await delay(retryDelayMs)
+    }
+  }
+
+  return { rotated: false, skipped: true }
+}
+
+async function readSnapshotWithIO(filePath: string, io: RoutingStateIO): Promise<RoutingSnapshot> {
+  let raw = ""
+  try {
+    raw = await io.readFile(filePath, "utf8")
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") return emptySnapshot()
+    throw error
+  }
+
+  try {
+    return normalizeSnapshot(JSON.parse(raw))
+  } catch {
+    return emptySnapshot()
+  }
+}
+
+async function readEventsFromLogWithIO(filePath: string, io: RoutingStateIO): Promise<RoutingEvent[]> {
+  let raw = ""
+  try {
+    raw = await io.readFile(filePath, "utf8")
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") return []
+    throw error
+  }
+
+  const events: RoutingEvent[] = []
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const parsed = JSON.parse(trimmed)
+      const event = parseRoutingEvent(parsed)
+      if (event) events.push(event)
+    } catch {
+      continue
+    }
+  }
+  return events
+}
+
+async function readRoutingStateWithIO(directory: string, io: RoutingStateIO): Promise<RoutingSnapshot> {
+  const snapshotFile = path.join(directory, "snapshot.json")
+  const activeFile = path.join(directory, "active.log")
+
+  const snapshot = await readSnapshotWithIO(snapshotFile, io)
+  const applied = new Set(snapshot.appliedSegments ?? [])
+  const activeEventsPromise = readEventsFromLogWithIO(activeFile, io)
+
+  let entries: string[] = []
+  try {
+    entries = await io.readdir(directory)
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") {
+      entries = []
+    } else {
+      throw error
+    }
+  }
+
+  const sealedSegments = entries
+    .filter((name) => /^sealed-.*\.log$/.test(name))
+    .filter((name) => !applied.has(name))
+    .sort((a, b) => a.localeCompare(b))
+
+  const sealedEvents = await Promise.all(
+    sealedSegments.map((segment) => readEventsFromLogWithIO(path.join(directory, segment), io)),
+  )
+
+  let state = cloneSnapshot(snapshot)
+  for (const segmentEvents of sealedEvents) {
+    state = foldRoutingEvents(state, segmentEvents)
+  }
+
+  const activeEvents = await activeEventsPromise
+  state = foldRoutingEvents(state, activeEvents)
+  state.appliedSegments = [...new Set([...(snapshot.appliedSegments ?? []), ...sealedSegments])]
+  return state
+}
+
+export async function compactRoutingState(input: CompactRoutingStateInput): Promise<RoutingSnapshot> {
+  const io = input.io ?? defaultRoutingStateIO
+  const snapshotFile = path.join(input.directory, "snapshot.json")
+  const snapshotTmpFile = path.join(input.directory, "snapshot.tmp")
+
+  await io.mkdir(input.directory, { recursive: true })
+  try {
+    await io.unlink(snapshotTmpFile)
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code !== "ENOENT") throw error
+  }
+
+  const merged = await readRoutingStateWithIO(input.directory, io)
+  const compacted = compactRoutingSnapshot(merged, input.now)
+  const sealedToDelete = [...(merged.appliedSegments ?? [])]
+
+  await io.writeFile(snapshotTmpFile, JSON.stringify(compacted, null, 2), "utf8")
+  await io.rename(snapshotTmpFile, snapshotFile)
+
+  for (const segmentName of sealedToDelete) {
+    try {
+      await io.unlink(path.join(input.directory, segmentName))
+    } catch (error) {
+      const issue = error as NodeJS.ErrnoException
+      if (issue.code !== "ENOENT") throw error
+    }
+  }
+
+  let entries: string[] = []
+  try {
+    entries = await io.readdir(input.directory)
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code !== "ENOENT") throw error
+  }
+
+  const remainingSealed = new Set(entries.filter((name) => /^sealed-.*\.log$/.test(name)))
+  const finalSnapshot: RoutingSnapshot = {
+    ...compacted,
+    appliedSegments: (compacted.appliedSegments ?? []).filter((name) => remainingSealed.has(name)),
+  }
+
+  await io.writeFile(snapshotTmpFile, JSON.stringify(finalSnapshot, null, 2), "utf8")
+  await io.rename(snapshotTmpFile, snapshotFile)
+
+  return finalSnapshot
 }
