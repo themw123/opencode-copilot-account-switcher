@@ -67,7 +67,7 @@ type CompactRoutingStateInput = {
 }
 
 export type RoutingAccountState = {
-  sessions?: Record<string, number>
+  touchBuckets?: Record<string, number>
   lastRateLimitedAt?: number
 }
 
@@ -203,19 +203,20 @@ export function buildCandidateAccountLoads(input: {
   const cutoff = input.now - SESSION_WINDOW_MS
 
   for (const accountName of input.candidateAccountNames) {
-    const sessions = input.snapshot.accounts[accountName]?.sessions
-    if (!sessions) {
+    const touchBuckets = input.snapshot.accounts[accountName]?.touchBuckets
+    if (!touchBuckets) {
       loads.set(accountName, 0)
       continue
     }
 
-    let count = 0
-    for (const at of Object.values(sessions)) {
-      if (typeof at === "number" && Number.isFinite(at) && at >= cutoff) {
-        count += 1
+    let total = 0
+    for (const [bucket, count] of Object.entries(touchBuckets)) {
+      const at = Number(bucket)
+      if (Number.isFinite(at) && at >= cutoff && typeof count === "number" && Number.isFinite(count)) {
+        total += count
       }
     }
-    loads.set(accountName, count)
+    loads.set(accountName, total)
   }
 
   return loads
@@ -242,8 +243,8 @@ function cloneSnapshot(input: RoutingSnapshot): RoutingSnapshot {
   const accounts: Record<string, RoutingAccountState> = {}
   for (const [accountName, account] of Object.entries(input.accounts ?? {})) {
     const cloned: RoutingAccountState = {}
-    if (account.sessions && typeof account.sessions === "object") {
-      cloned.sessions = { ...account.sessions }
+    if (account.touchBuckets && typeof account.touchBuckets === "object") {
+      cloned.touchBuckets = { ...account.touchBuckets }
     }
     if (typeof account.lastRateLimitedAt === "number" && Number.isFinite(account.lastRateLimitedAt)) {
       cloned.lastRateLimitedAt = account.lastRateLimitedAt
@@ -255,6 +256,16 @@ function cloneSnapshot(input: RoutingSnapshot): RoutingSnapshot {
     accounts,
     appliedSegments: Array.isArray(input.appliedSegments) ? [...input.appliedSegments] : [],
   }
+}
+
+function bucketStart(at: number) {
+  return Math.floor(at / 60_000) * 60_000
+}
+
+function addTouchBucket(account: RoutingAccountState, at: number) {
+  account.touchBuckets ??= {}
+  const key = String(bucketStart(at))
+  account.touchBuckets[key] = (account.touchBuckets[key] ?? 0) + 1
 }
 
 function normalizeSnapshot(raw: unknown): RoutingSnapshot {
@@ -271,16 +282,24 @@ function normalizeSnapshot(raw: unknown): RoutingSnapshot {
   if (parsed.accounts && typeof parsed.accounts === "object" && !Array.isArray(parsed.accounts)) {
     for (const [accountName, accountValue] of Object.entries(parsed.accounts)) {
       if (!accountValue || typeof accountValue !== "object" || Array.isArray(accountValue)) continue
-      const account = accountValue as { sessions?: unknown; lastRateLimitedAt?: unknown }
+      const account = accountValue as { touchBuckets?: unknown; sessions?: unknown; lastRateLimitedAt?: unknown }
       const next: RoutingAccountState = {}
 
-      if (account.sessions && typeof account.sessions === "object" && !Array.isArray(account.sessions)) {
-        const sessions: Record<string, number> = {}
-        for (const [sessionID, at] of Object.entries(account.sessions)) {
-          if (typeof at !== "number" || !Number.isFinite(at)) continue
-          sessions[sessionID] = at
+      if (account.touchBuckets && typeof account.touchBuckets === "object" && !Array.isArray(account.touchBuckets)) {
+        const touchBuckets: Record<string, number> = {}
+        for (const [bucket, count] of Object.entries(account.touchBuckets)) {
+          const at = Number(bucket)
+          if (!Number.isFinite(at) || typeof count !== "number" || !Number.isFinite(count)) continue
+          touchBuckets[String(bucketStart(at))] = (touchBuckets[String(bucketStart(at))] ?? 0) + count
         }
-        if (Object.keys(sessions).length > 0) next.sessions = sessions
+        if (Object.keys(touchBuckets).length > 0) next.touchBuckets = touchBuckets
+      }
+
+      if (account.sessions && typeof account.sessions === "object" && !Array.isArray(account.sessions)) {
+        for (const at of Object.values(account.sessions)) {
+          if (typeof at !== "number" || !Number.isFinite(at)) continue
+          addTouchBucket(next, at)
+        }
       }
 
       if (typeof account.lastRateLimitedAt === "number" && Number.isFinite(account.lastRateLimitedAt)) {
@@ -388,10 +407,7 @@ export function foldRoutingEvents(base: RoutingSnapshot, events: RoutingEvent[])
   for (const event of events) {
     if (event.type === "session-touch") {
       next.accounts[event.accountName] ??= {}
-      next.accounts[event.accountName].sessions ??= {}
-
-      const current = next.accounts[event.accountName].sessions?.[event.sessionID] ?? 0
-      next.accounts[event.accountName].sessions![event.sessionID] = Math.max(current, event.at)
+      addTouchBucket(next.accounts[event.accountName], event.at)
       continue
     }
 
@@ -408,14 +424,19 @@ export function compactRoutingSnapshot(snapshot: RoutingSnapshot, now: number): 
   const cutoff = now - SESSION_WINDOW_MS
 
   for (const [accountName, account] of Object.entries(next.accounts)) {
-    if (account.sessions) {
-      for (const [sessionID, at] of Object.entries(account.sessions)) {
-        if (at < cutoff) delete account.sessions[sessionID]
+    if (account.touchBuckets) {
+      for (const [bucket, count] of Object.entries(account.touchBuckets)) {
+        const at = Number(bucket)
+        if (!Number.isFinite(at) || typeof count !== "number" || !Number.isFinite(count)) {
+          delete account.touchBuckets[bucket]
+        } else if (at < cutoff) {
+          delete account.touchBuckets[bucket]
+        }
       }
-      if (Object.keys(account.sessions).length === 0) delete account.sessions
+      if (Object.keys(account.touchBuckets).length === 0) delete account.touchBuckets
     }
 
-    if (!account.sessions && account.lastRateLimitedAt === undefined) {
+    if (!account.touchBuckets && account.lastRateLimitedAt === undefined) {
       delete next.accounts[accountName]
     }
   }

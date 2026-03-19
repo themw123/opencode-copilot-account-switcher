@@ -293,6 +293,39 @@ test("load comparison counts distinct sessions used within 30 minutes", () => {
   assert.equal(loads.get("missing"), 0)
 })
 
+test("buildCandidateAccountLoads sums touch buckets within the rolling window", async () => {
+  const { buildCandidateAccountLoads } = await import("../dist/routing-state.js")
+
+  const loads = buildCandidateAccountLoads({
+    snapshot: {
+      accounts: {
+        main: { touchBuckets: { "1000": 2, "61000": 3 } },
+        alt: { touchBuckets: { "1000": 1 } },
+      },
+      appliedSegments: [],
+    },
+    candidateAccountNames: ["main", "alt"],
+    now: 61_000,
+  })
+
+  assert.equal(loads.get("main"), 5)
+  assert.equal(loads.get("alt"), 1)
+})
+
+test("readRoutingState converts legacy sessions into touch buckets", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
+      accounts: {
+        main: { sessions: { s1: 60_000, s2: 61_000 } },
+      },
+      appliedSegments: [],
+    }), "utf8")
+
+    const state = await readRoutingState(dir)
+    assert.equal(state.accounts.main.touchBuckets[60_000], 2)
+  })
+})
+
 test("append and rotate racing together do not drop a session-touch event", async () => {
   await withRoutingStateDir(async (dir) => {
     await writeFile(path.join(dir, "active.log"), "", "utf8")
