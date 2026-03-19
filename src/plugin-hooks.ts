@@ -83,10 +83,6 @@ type SessionBinding = {
   lastUsedAt: number
 }
 
-type RoutingSessionContext = {
-  sessionID?: string
-}
-
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const RATE_LIMIT_HIT_THRESHOLD = 3
@@ -256,18 +252,40 @@ function mergeAndRewriteRequestHeaders(
   }
   rewriteHeaders?.(headers)
 
-  const normalizedInit = init == null ? undefined : { ...init, headers }
+  const rewriteRequestHeaders = (current: Request) => {
+    try {
+      return new Request(current, { headers })
+    } catch {
+      try {
+        for (const name of [...current.headers.keys()]) {
+          current.headers.delete(name)
+        }
+        for (const [name, value] of headers.entries()) {
+          current.headers.set(name, value)
+        }
+      } catch {
+        // keep fail-open when an already-consumed request cannot be cloned
+      }
+      return current
+    }
+  }
+
+  const normalizedHeaders = Object.fromEntries(headers.entries())
+  const normalizedInit = {
+    ...(init ?? {}),
+    headers: normalizedHeaders,
+  }
 
   if (request instanceof Request) {
     return {
-      request: new Request(request, { headers }),
+      request: rewriteRequestHeaders(request),
       init: normalizedInit,
     }
   }
 
   return {
     request,
-    init: normalizedInit ?? { headers },
+    init: normalizedInit,
   }
 }
 
@@ -287,6 +305,12 @@ function getInternalSessionID(request: Request | URL | string, init: RequestInit
   if (typeof contextValue === "string" && contextValue.length > 0) return contextValue
 
   return ""
+}
+
+function stripInternalSessionHeader(request: Request | URL | string, init?: RequestInit) {
+  return mergeAndRewriteRequestHeaders(request, init, (headers) => {
+    headers.delete("x-opencode-session-id")
+  })
 }
 
 function toLoadMap(value: CandidateAccountLoads | undefined) {
@@ -518,7 +542,6 @@ export function buildPluginHooks(input: {
   const sessionAccountBindings = new Map<string, SessionBinding>()
   const rateLimitQueues = new Map<string, number[]>()
   const lastTouchWrites = new Map<string, number>()
-  const routingSessionContext = new AsyncLocalStorage<RoutingSessionContext>()
   const routingDirectory = input.routingStateDirectory ?? routingStatePath()
   const touchWriteCacheIdleTtlMs = input.touchWriteCacheIdleTtlMs ?? TOUCH_WRITE_CACHE_IDLE_TTL_MS
   const touchWriteCacheMaxEntries = input.touchWriteCacheMaxEntries ?? MAX_TOUCH_WRITE_CACHE_ENTRIES
@@ -624,7 +647,7 @@ export function buildPluginHooks(input: {
         idleTtlMs: touchWriteCacheIdleTtlMs,
         maxEntries: touchWriteCacheMaxEntries,
       })
-      const sessionID = routingSessionContext.getStore()?.sessionID ?? getInternalSessionID(request, init)
+      const sessionID = getInternalSessionID(request, init)
       const initiator = getMergedRequestHeader(request, init, "x-initiator")
       const allowReselect = initiator === "user"
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
@@ -657,7 +680,10 @@ export function buildPluginHooks(input: {
           random,
         })
         : undefined
-      if (!resolved) return config.fetch(request, init)
+      if (!resolved) {
+        const outbound = stripInternalSessionHeader(request, init)
+        return config.fetch(outbound.request, outbound.init)
+      }
 
       const candidateNames = candidates.map((item) => item.name)
       let decisionLoads = loadMapToRecord(loads, candidateNames)
@@ -747,9 +773,10 @@ export function buildPluginHooks(input: {
           expires: candidate.entry.expires,
           enterpriseUrl: candidate.entry.enterpriseUrl,
         }
+        const outbound = stripInternalSessionHeader(requestValue, initValue)
         return authOverride.run(candidateAuth, () => config.fetch(
-          rewriteRequestForAccount(requestValue, candidate.entry.enterpriseUrl),
-          initValue,
+          rewriteRequestForAccount(outbound.request, candidate.entry.enterpriseUrl),
+          outbound.init,
         ))
       }
 
@@ -1106,7 +1133,7 @@ export function buildPluginHooks(input: {
         },
       })
     }
-    routingSessionContext.enterWith({ sessionID: hookInput.sessionID })
+    output.headers["x-opencode-session-id"] = hookInput.sessionID
   }
 
   return {

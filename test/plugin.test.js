@@ -715,7 +715,7 @@ test("plugin source does not preload upstream hook bundle for untouched hooks", 
   assert.doesNotMatch(pluginSource, /loadOfficialCopilotHooks/)
 })
 
-test("plugin chat headers do not append internal session id", async () => {
+test("plugin chat headers append internal session id for plugin-local routing", async () => {
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -793,8 +793,8 @@ test("plugin chat headers do not append internal session id", async () => {
   )
 
   assert.equal(copilotOutput.headers.existing, "value")
-  assert.equal(Object.hasOwn(copilotOutput.headers, "x-opencode-session-id"), false)
-  assert.equal(Object.hasOwn(enterpriseOutput.headers, "x-opencode-session-id"), false)
+  assert.equal(copilotOutput.headers["x-opencode-session-id"], "session-123")
+  assert.equal(enterpriseOutput.headers["x-opencode-session-id"], "session-ent-123")
   assert.equal(googleOutput.headers.existing, "value")
   assert.equal(Object.hasOwn(googleOutput.headers, "x-opencode-session-id"), false)
 })
@@ -1142,6 +1142,7 @@ test("plugin chat headers synthetic stays disabled by default", async () => {
 
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
+    "x-opencode-session-id": "session-123",
   })
 })
 
@@ -1165,6 +1166,7 @@ test("plugin chat headers synthetic text overrides x-initiator when enabled", as
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
     "x-initiator": "agent",
+    "x-opencode-session-id": "session-123",
   })
   assert.deepEqual(calls, [
     {
@@ -1476,6 +1478,57 @@ test("plugin auth loader keeps official fetch when network retry is disabled", a
     body: JSON.stringify({ model: "o3" }),
   })
   assert.equal(calls.length, 1)
+})
+
+test("plugin auth loader strips internal session header even without a resolved routing candidate", async () => {
+  const outgoing = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: async (request, init) => {
+        const headers = new Headers(request instanceof Request ? request.headers : undefined)
+        for (const [name, value] of new Headers(init?.headers).entries()) {
+          headers.set(name, value)
+        }
+        outgoing.push({
+          url: request instanceof URL ? request.href : String(request),
+          headers: Object.fromEntries(headers.entries()),
+        })
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
+      },
+    }),
+    loadOfficialChatHeaders: async () => async (_hookInput, output) => {
+      output.headers.existing = "value"
+    },
+  })
+
+  const headers = {}
+  await plugin["chat.headers"]?.(createChatHeadersInput(), { headers })
+  assert.equal(headers["x-opencode-session-id"], "session-123")
+
+  const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "o3" }),
+  })
+
+  assert.equal(outgoing.length, 1)
+  assert.equal(outgoing[0]?.headers["x-opencode-session-id"], undefined)
+  assert.equal(outgoing[0]?.headers.existing, "value")
 })
 
 test("plugin auth loader wraps official fetch when network retry is enabled", async () => {
@@ -2656,6 +2709,46 @@ test("network retry keeps session visible to routing while stripping it from ext
     {
       accountName: "main",
       sessionID: "retry-session-visible",
+    },
+  ])
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(harness.outgoing[0]?.headers["x-opencode-session-id"], undefined)
+})
+
+test("non-retry requests keep session visible to routing while stripping it from external fetch", async () => {
+  const decisions = []
+  const touches = []
+  const harness = createSessionBindingHarness({
+    store: {
+      networkRetryEnabled: false,
+    },
+    appendSessionTouchEventImpl: async (input) => {
+      touches.push({
+        accountName: input.accountName,
+        sessionID: input.sessionID,
+      })
+      return true
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "non-retry-session-visible",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.sessionIDPresent, true)
+  assert.equal(decisions[0]?.sessionID, "non-retry-session-visible")
+  assert.equal(decisions[0]?.touchWriteOutcome, "written")
+  assert.deepEqual(touches, [
+    {
+      accountName: "main",
+      sessionID: "non-retry-session-visible",
     },
   ])
   assert.equal(harness.outgoing.length, 1)
