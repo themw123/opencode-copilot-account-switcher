@@ -203,22 +203,24 @@ test("appendRouteDecisionEvent writes to decisions.log and readRoutingState igno
       at: 120_000,
     })}\n`, "utf8")
 
-    await appendRouteDecisionEvent({
-      directory: dir,
-      event: {
-        type: "route-decision",
-        at: 100,
-        chosenAccount: "main",
-        sessionIDPresent: false,
-      },
-    })
+    await writeFile(path.join(dir, "decisions.log"), `${JSON.stringify({
+      type: "session-touch",
+      accountName: "alt",
+      sessionID: "from-decisions",
+      at: 180_000,
+    })}\n${JSON.stringify({
+      type: "rate-limit-flagged",
+      accountName: "alt",
+      at: 181_000,
+    })}\n`, "utf8")
 
     const decisions = await readFile(path.join(dir, "decisions.log"), "utf8")
-    assert.match(decisions, /route-decision/)
+    assert.match(decisions, /from-decisions/)
 
     const state = await readRoutingState(dir)
     assert.deepEqual(state.accounts.main?.touchBuckets, { "120000": 1 })
     assert.equal(state.accounts.main?.lastRateLimitedAt, undefined)
+    assert.equal(state.accounts.alt, undefined)
   })
 })
 
@@ -431,31 +433,46 @@ test("compaction does not double-apply a sealed segment already recorded in appl
 
 test("compactRoutingState does not rotate, fold, or delete decisions log", async () => {
   await withRoutingStateDir(async (dir) => {
-    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
+    const baseline = {
       accounts: {
         main: {
           touchBuckets: {
             "0": 1,
           },
+          lastRateLimitedAt: 50,
         },
       },
       appliedSegments: [],
-    }), "utf8")
+    }
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify(baseline), "utf8")
 
     const decisionsFile = path.join(dir, "decisions.log")
-    await writeFile(decisionsFile, `${JSON.stringify({ type: "route-decision", at: 100, chosenAccount: "main", sessionIDPresent: true })}\n`, "utf8")
+    await writeFile(decisionsFile, `${JSON.stringify({
+      type: "session-touch",
+      accountName: "alt",
+      sessionID: "from-decisions-compaction",
+      at: 100,
+    })}\n${JSON.stringify({
+      type: "rate-limit-flagged",
+      accountName: "alt",
+      at: 101,
+    })}\n`, "utf8")
 
     const compacted = await compactRoutingState({ directory: dir, now: 200_000 })
 
     assert.deepEqual(compacted.accounts.main?.touchBuckets, { "0": 1 })
+    assert.equal(compacted.accounts.main?.lastRateLimitedAt, 50)
+    assert.equal(compacted.accounts.alt, undefined)
     assert.deepEqual(compacted.appliedSegments, [])
 
     const reread = await readRoutingState(dir)
     assert.deepEqual(reread.accounts.main?.touchBuckets, { "0": 1 })
+    assert.equal(reread.accounts.main?.lastRateLimitedAt, 50)
+    assert.equal(reread.accounts.alt, undefined)
     assert.deepEqual(reread.appliedSegments, [])
 
     const decisions = await readFile(decisionsFile, "utf8")
-    assert.match(decisions, /route-decision/)
+    assert.match(decisions, /from-decisions-compaction/)
 
     const entries = await readdir(dir)
     const sealedSegments = entries.filter((name) => /^sealed-.*\.log$/.test(name))
