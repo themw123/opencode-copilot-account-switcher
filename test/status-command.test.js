@@ -270,8 +270,14 @@ test("status command refreshes quota, persists store, and ends with controlled i
       },
       loadStore: async () => ({
         active: "alice",
+        activeAccountNames: ["alice", "bob"],
+        modelAccountAssignments: {
+          "gpt-4.1": ["bob", "alice"],
+          "claude-3.7": ["alice"],
+        },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+          bob: { name: "bob", refresh: "ghu_y", access: "ghu_y", expires: 0 },
         },
       }),
       writeStore: async (store, meta) => writes.push({ store, meta }),
@@ -297,13 +303,147 @@ test("status command refreshes quota, persists store, and ends with controlled i
   assert.equal(refreshCount, 1)
   assert.equal(calls.length, 2)
   assert.equal(calls[1]?.body?.variant, "success")
-  assert.match(calls[1]?.body?.message ?? "", /alice/i)
-  assert.match(calls[1]?.body?.message ?? "", /10\/50/)
-  assert.match(calls[1]?.body?.message ?? "", /20\/100/)
-  assert.match(calls[1]?.body?.message ?? "", /30\/200/)
-  assert.match(calls[1]?.body?.message ?? "", /updated at|更新时间|更新于/i)
+  const successMessage = calls[1]?.body?.message ?? ""
+  const messageLines = successMessage.split("\n")
+  assert.equal(messageLines.length, 3)
+  assert.match(messageLines[0] ?? "", /^current active: alice \|/i)
+  assert.match(messageLines[0] ?? "", /premium 10\/50/i)
+  assert.match(messageLines[0] ?? "", /chat 20\/100/i)
+  assert.match(messageLines[0] ?? "", /completions 30\/200/i)
+  assert.match(messageLines[0] ?? "", /updated at|更新时间|更新于/i)
+  assert.match(messageLines[1] ?? "", /^活跃组: alice, bob$/)
+  assert.match(messageLines[2] ?? "", /^路由组: claude-3\.7 -> alice; gpt-4\.1 -> bob, alice$/)
   assert.equal(writes.length, 1)
   assert.equal(writes[0]?.store?.accounts?.alice?.quota?.snapshots?.premium?.remaining, 10)
+})
+
+test("status command success shows none when routing group is not configured", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        activeAccountNames: ["alice"],
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: {
+            updatedAt: 123,
+            snapshots: {
+              premium: { remaining: 10, entitlement: 50 },
+            },
+          },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  assert.equal(calls.length, 2)
+  const successMessage = calls[1]?.body?.message ?? ""
+  const messageLines = successMessage.split("\n")
+  assert.equal(messageLines.length, 3)
+  assert.match(messageLines[1] ?? "", /^活跃组: alice$/)
+  assert.match(messageLines[2] ?? "", /^路由组: none$/)
+})
+
+test("status command success shows active group none when activeAccountNames is absent", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: {
+            updatedAt: 123,
+            snapshots: {
+              premium: { remaining: 10, entitlement: 50 },
+            },
+          },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  assert.equal(calls.length, 2)
+  const successMessage = calls[1]?.body?.message ?? ""
+  const messageLines = successMessage.split("\n")
+  assert.equal(messageLines.length, 3)
+  assert.match(messageLines[1] ?? "", /^活跃组: none$/)
+})
+
+test("status command success renders routing assignment names directly from modelAccountAssignments", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        activeAccountNames: ["alice"],
+        modelAccountAssignments: {
+          "gpt-4.1": ["ghost", "alice"],
+        },
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: {
+            updatedAt: 123,
+            snapshots: {
+              premium: { remaining: 10, entitlement: 50 },
+            },
+          },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  assert.equal(calls.length, 2)
+  const successMessage = calls[1]?.body?.message ?? ""
+  const messageLines = successMessage.split("\n")
+  assert.equal(messageLines.length, 3)
+  assert.match(messageLines[2] ?? "", /^路由组: gpt-4\.1 -> ghost, alice$/)
 })
 
 test("status command continues refresh and persistence when showToast rejects", async () => {

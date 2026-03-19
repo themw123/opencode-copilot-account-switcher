@@ -93,8 +93,21 @@ export type RateLimitFlaggedEvent = {
 export type RouteDecisionEvent = {
   type: "route-decision"
   at: number
+  modelID?: string
   chosenAccount: string
+  sessionID?: string
   sessionIDPresent: boolean
+  groupSource: "model" | "active"
+  candidateNames: string[]
+  loads: Record<string, number>
+  reason: "regular" | "subagent" | "user-reselect" | "rate-limit-switch"
+  switched: boolean
+  switchFrom?: string
+  switchBlockedBy?: "no-cooled-down-candidate" | "replacement-load-higher" | "routing-state-read-failed" | "no-replacement-candidate"
+  touchWriteOutcome: "written" | "throttled" | "skipped-missing-session" | "failed"
+  touchWriteError?: string
+  rateLimitMatched: boolean
+  retryAfterMs?: number
 }
 
 export type RoutingEvent = SessionTouchEvent | RateLimitFlaggedEvent

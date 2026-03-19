@@ -34,10 +34,12 @@ import { handleStatusCommand, showStatusToast } from "./status-command.js"
 import {
   type AppendSessionTouchEventInput,
   appendRoutingEvent,
+  appendRouteDecisionEvent,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
   isAccountRateLimitCooledDown,
   readRoutingState,
+  type RouteDecisionEvent,
   routingStatePath,
   type RoutingSnapshot,
   type RoutingEvent,
@@ -284,6 +286,49 @@ function toLoadMap(value: CandidateAccountLoads | undefined) {
   return loads
 }
 
+function loadMapToRecord(loads: Map<string, number>, candidateNames: string[]) {
+  const result: Record<string, number> = {}
+  for (const name of candidateNames) {
+    result[name] = loads.get(name) ?? 0
+  }
+  return result
+}
+
+function toReasonByInitiator(initiator: string | null): RouteDecisionEvent["reason"] {
+  if (initiator === "agent") return "subagent"
+  if (initiator === "user") return "user-reselect"
+  return "regular"
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+function toConsumptionReasonText(reason: RouteDecisionEvent["reason"]) {
+  if (reason === "subagent") return "子代理请求"
+  if (reason === "user-reselect") return "用户回合重选"
+  return "常规请求"
+}
+
+function buildConsumptionToast(input: {
+  accountName: string
+  reason: RouteDecisionEvent["reason"]
+  switchFrom?: string
+}) {
+  if (input.reason === "rate-limit-switch") {
+    return {
+      message: `已切换到 ${input.accountName}（${input.switchFrom ?? "原账号"} 限流后切换）`,
+      variant: "warning" as const,
+    }
+  }
+
+  return {
+    message: `已使用 ${input.accountName}（${toConsumptionReasonText(input.reason)}）`,
+    variant: "info" as const,
+  }
+}
+
 function chooseCandidateAccount(input: {
   candidates: ResolvedModelAccountCandidate[]
   sessionID: string
@@ -431,6 +476,7 @@ export function buildPluginHooks(input: {
   routingStateDirectory?: string
   appendSessionTouchEventImpl?: (input: AppendSessionTouchEventInput) => Promise<boolean>
   appendRoutingEventImpl?: (input: { directory: string; event: RoutingEvent }) => Promise<void>
+  appendRouteDecisionEventImpl?: (input: { directory: string; event: RouteDecisionEvent }) => Promise<void>
   readRoutingStateImpl?: (directory: string) => Promise<RoutingSnapshot>
   triggerBillingCompensation?: (input: TriggerBillingCompensationInput) => Promise<void>
   touchWriteCacheIdleTtlMs?: number
@@ -462,6 +508,7 @@ export function buildPluginHooks(input: {
   const touchWriteCacheMaxEntries = input.touchWriteCacheMaxEntries ?? MAX_TOUCH_WRITE_CACHE_ENTRIES
   const appendSessionTouchEventImpl = input.appendSessionTouchEventImpl ?? appendSessionTouchEvent
   const appendRoutingEventImpl = input.appendRoutingEventImpl ?? appendRoutingEvent
+  const appendRouteDecisionEventImpl = input.appendRouteDecisionEventImpl ?? appendRouteDecisionEvent
   const readRoutingStateImpl = input.readRoutingStateImpl ?? readRoutingState
   const triggerBillingCompensation = input.triggerBillingCompensation ?? (async () => {})
 
@@ -596,19 +643,37 @@ export function buildPluginHooks(input: {
         : undefined
       if (!resolved) return config.fetch(request, init)
 
+      const candidateNames = candidates.map((item) => item.name)
+      let decisionLoads = loadMapToRecord(loads, candidateNames)
+      let decisionReason: RouteDecisionEvent["reason"] = toReasonByInitiator(initiator)
+      let decisionSwitched = false
+      let decisionSwitchFrom: string | undefined
+      let decisionSwitchBlockedBy: RouteDecisionEvent["switchBlockedBy"]
+      let decisionRateLimitMatched = false
+      let decisionRetryAfterMs: number | undefined
+      let decisionTouchWriteOutcome: RouteDecisionEvent["touchWriteOutcome"] = "skipped-missing-session"
+      let decisionTouchWriteError: string | undefined
+      let finalChosenAccount = resolved.name
+
       if (sessionID.length > 0) {
         sessionAccountBindings.set(sessionID, {
           accountName: resolved.name,
           lastUsedAt: requestAt,
         })
 
-        await appendSessionTouchEventImpl({
-          directory: routingDirectory,
-          accountName: resolved.name,
-          sessionID,
-          at: requestAt,
-          lastTouchWrites,
-        }).catch(() => undefined)
+        try {
+          const wrote = await appendSessionTouchEventImpl({
+            directory: routingDirectory,
+            accountName: resolved.name,
+            sessionID,
+            at: requestAt,
+            lastTouchWrites,
+          })
+          decisionTouchWriteOutcome = wrote ? "written" : "throttled"
+        } catch (error) {
+          decisionTouchWriteOutcome = "failed"
+          decisionTouchWriteError = toErrorMessage(error)
+        }
       }
 
       const isFirstUse = modelAccountFirstUse.has(resolved.name) === false
@@ -661,6 +726,8 @@ export function buildPluginHooks(input: {
         rateLimitEvidence = { matched: false }
       }
       if (rateLimitEvidence.matched) {
+        decisionRateLimitMatched = true
+        decisionRetryAfterMs = rateLimitEvidence.retryAfterMs
         const existingQueue = rateLimitQueues.get(resolved.name) ?? []
         const cutoff = observedAt - RATE_LIMIT_WINDOW_MS
         const queue = existingQueue.filter((at) => at >= cutoff)
@@ -685,6 +752,7 @@ export function buildPluginHooks(input: {
             routingSnapshot = await readRoutingStateImpl(routingDirectory)
           } catch {
             routingSnapshot = undefined
+            decisionSwitchBlockedBy = "routing-state-read-failed"
           }
 
           if (routingSnapshot) {
@@ -693,8 +761,10 @@ export function buildPluginHooks(input: {
               candidateAccountNames: candidates.map((item) => item.name),
               now: observedAt,
             })
+            decisionLoads = loadMapToRecord(nextLoads, candidateNames)
             const currentLoad = nextLoads.get(resolved.name) ?? (loads.get(resolved.name) ?? 0)
-            const replacements = [...candidates]
+            const replacementCandidates = [...candidates].filter((item) => item.name !== resolved.name)
+            const cooledCandidates = replacementCandidates
               .filter((item) => item.name !== resolved.name)
               .filter((item) => isAccountRateLimitCooledDown({
                 snapshot: routingSnapshot!,
@@ -702,8 +772,20 @@ export function buildPluginHooks(input: {
                 now: observedAt,
                 cooldownMs: RATE_LIMIT_COOLDOWN_MS,
               }))
-              .filter((item) => (nextLoads.get(item.name) ?? 0) <= currentLoad)
+            const replacements = cooledCandidates.filter((item) => (nextLoads.get(item.name) ?? 0) <= currentLoad)
             const replacement = pickLowestReplacementWithHardenedRandom(replacements, nextLoads, random)
+
+            if (!replacement) {
+              if (replacementCandidates.length === 0) {
+                decisionSwitchBlockedBy = "no-replacement-candidate"
+              } else if (cooledCandidates.length === 0) {
+                decisionSwitchBlockedBy = "no-cooled-down-candidate"
+              } else if (replacements.length === 0) {
+                decisionSwitchBlockedBy = "replacement-load-higher"
+              } else {
+                decisionSwitchBlockedBy = "no-replacement-candidate"
+              }
+            }
 
             if (replacement) {
               let retriedRequest = nextRequest
@@ -734,20 +816,38 @@ export function buildPluginHooks(input: {
                   lastUsedAt: observedAt,
                 })
 
-                await appendSessionTouchEventImpl({
-                  directory: routingDirectory,
-                  accountName: replacement.name,
-                  sessionID,
-                  at: observedAt,
-                  lastTouchWrites,
-                }).catch(() => undefined)
+                try {
+                  const wrote = await appendSessionTouchEventImpl({
+                    directory: routingDirectory,
+                    accountName: replacement.name,
+                    sessionID,
+                    at: observedAt,
+                    lastTouchWrites,
+                  })
+                  decisionTouchWriteOutcome = wrote ? "written" : "throttled"
+                  decisionTouchWriteError = undefined
+                } catch (error) {
+                  decisionTouchWriteOutcome = "failed"
+                  decisionTouchWriteError = toErrorMessage(error)
+                }
               }
 
+              decisionReason = "rate-limit-switch"
+              decisionSwitched = true
+              decisionSwitchFrom = resolved.name
+              decisionSwitchBlockedBy = undefined
+              finalChosenAccount = replacement.name
+
               modelAccountFirstUse.add(replacement.name)
+              const switchToast = buildConsumptionToast({
+                accountName: replacement.name,
+                reason: "rate-limit-switch",
+                switchFrom: resolved.name,
+              })
               await showStatusToast({
                 client: input.client,
-                message: `已切换到 ${replacement.name}`,
-                variant: "warning",
+                message: switchToast.message,
+                variant: switchToast.variant,
                 warn: (scope, error) => {
                   console.warn(`[${scope}] failed to show toast`, error)
                 },
@@ -762,11 +862,71 @@ export function buildPluginHooks(input: {
                 retryAfterMs: rateLimitEvidence.retryAfterMs,
               }).catch(() => undefined)
 
+              await appendRouteDecisionEventImpl({
+                directory: routingDirectory,
+                event: {
+                  type: "route-decision",
+                  at: observedAt,
+                  modelID,
+                  sessionID: sessionID.length > 0 ? sessionID : undefined,
+                  sessionIDPresent: sessionID.length > 0,
+                  groupSource: resolved.source,
+                  candidateNames,
+                  loads: decisionLoads,
+                  chosenAccount: finalChosenAccount,
+                  reason: decisionReason,
+                  switched: decisionSwitched,
+                  switchFrom: decisionSwitchFrom,
+                  switchBlockedBy: decisionSwitchBlockedBy,
+                  touchWriteOutcome: decisionTouchWriteOutcome,
+                  touchWriteError: decisionTouchWriteError,
+                  rateLimitMatched: decisionRateLimitMatched,
+                  retryAfterMs: decisionRetryAfterMs,
+                },
+              }).catch(() => undefined)
+
               return sendWithAccount(replacement, retriedRequest, retriedInit)
             }
           }
         }
       }
+
+      await appendRouteDecisionEventImpl({
+        directory: routingDirectory,
+        event: {
+          type: "route-decision",
+          at: observedAt,
+          modelID,
+          sessionID: sessionID.length > 0 ? sessionID : undefined,
+          sessionIDPresent: sessionID.length > 0,
+          groupSource: resolved.source,
+          candidateNames,
+          loads: decisionLoads,
+          chosenAccount: finalChosenAccount,
+          reason: decisionReason,
+          switched: decisionSwitched,
+          switchFrom: decisionSwitchFrom,
+          switchBlockedBy: decisionSwitchBlockedBy,
+          touchWriteOutcome: decisionTouchWriteOutcome,
+          touchWriteError: decisionTouchWriteError,
+          rateLimitMatched: decisionRateLimitMatched,
+          retryAfterMs: decisionRetryAfterMs,
+        },
+      }).catch(() => undefined)
+
+      const consumptionToast = buildConsumptionToast({
+        accountName: finalChosenAccount,
+        reason: decisionReason,
+        switchFrom: decisionSwitchFrom,
+      })
+      await showStatusToast({
+        client: input.client,
+        message: consumptionToast.message,
+        variant: consumptionToast.variant,
+        warn: (scope, error) => {
+          console.warn(`[${scope}] failed to show toast`, error)
+        },
+      }).catch(() => undefined)
 
       return response
     }

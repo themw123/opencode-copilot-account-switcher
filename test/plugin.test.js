@@ -1,6 +1,9 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { promises as fs } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
@@ -971,6 +974,7 @@ function createFirstUseInitiatorHarness(input = {}) {
 function createSessionBindingHarness(input = {}) {
   const outgoing = []
   let loadCall = 0
+  const routingStateDirectory = input.routingStateDirectory ?? join(tmpdir(), `routing-state-${randomUUID()}`)
   const store = {
     active: "main",
     activeAccountNames: ["main", "alt"],
@@ -1005,9 +1009,10 @@ function createSessionBindingHarness(input = {}) {
     },
     appendSessionTouchEventImpl: input.appendSessionTouchEventImpl,
     appendRoutingEventImpl: input.appendRoutingEventImpl,
+    appendRouteDecisionEventImpl: input.appendRouteDecisionEventImpl,
     readRoutingStateImpl: input.readRoutingStateImpl,
     triggerBillingCompensation: input.triggerBillingCompensation,
-    routingStateDirectory: input.routingStateDirectory,
+    routingStateDirectory,
     touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
     touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
     now: input.now,
@@ -1060,6 +1065,7 @@ function createSessionBindingHarness(input = {}) {
 
   return {
     outgoing,
+    routingStateDirectory,
     async sendRequest(options = {}) {
       const authOptions = await authOptionsPromise
       return authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
@@ -2508,6 +2514,269 @@ test("plugin auth loader does not flag account as rate-limited before the third 
   assert.deepEqual(events, [])
 })
 
+test("records route decision evidence for regular request with successful touch write", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    appendSessionTouchEventImpl: async () => true,
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "decision-regular",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.type, "route-decision")
+  assert.equal(decisions[0]?.modelID, "gpt-5")
+  assert.equal(decisions[0]?.sessionID, "decision-regular")
+  assert.equal(decisions[0]?.sessionIDPresent, true)
+  assert.equal(decisions[0]?.groupSource, "active")
+  assert.deepEqual(decisions[0]?.candidateNames, ["main", "alt"])
+  assert.deepEqual(decisions[0]?.loads, { main: 0, alt: 0 })
+  assert.equal(decisions[0]?.chosenAccount, "main")
+  assert.equal(decisions[0]?.reason, "subagent")
+  assert.equal(decisions[0]?.switched, false)
+  assert.equal(decisions[0]?.switchFrom, undefined)
+  assert.equal(decisions[0]?.switchBlockedBy, undefined)
+  assert.equal(decisions[0]?.touchWriteOutcome, "written")
+  assert.equal(decisions[0]?.touchWriteError, undefined)
+  assert.equal(decisions[0]?.rateLimitMatched, false)
+  assert.equal(decisions[0]?.retryAfterMs, undefined)
+  assert.equal(typeof decisions[0]?.at, "number")
+})
+
+test("records route decision evidence when session touch write is skipped", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRawRequest("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "gpt-5" }),
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.sessionIDPresent, false)
+  assert.equal(decisions[0]?.sessionID, undefined)
+  assert.equal(decisions[0]?.touchWriteOutcome, "skipped-missing-session")
+  assert.equal(decisions[0]?.reason, "regular")
+})
+
+test("records route decision evidence when session touch write fails", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    appendSessionTouchEventImpl: async () => {
+      throw new Error("touch-write-down")
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "decision-touch-failed",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.touchWriteOutcome, "failed")
+  assert.match(String(decisions[0]?.touchWriteError ?? ""), /touch-write-down/)
+})
+
+test("toasts actual consumption for regular and subagent requests", async () => {
+  const toasts = []
+  const harness = createSessionBindingHarness({
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+  })
+
+  await harness.sendRawRequest("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ model: "gpt-5" }),
+  })
+  await harness.sendRequest({
+    sessionID: "toast-subagent",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(toasts.length, 2)
+  assert.equal(toasts[0]?.body?.variant, "info")
+  assert.equal(toasts[0]?.body?.message, "已使用 main（常规请求）")
+  assert.equal(toasts[1]?.body?.variant, "info")
+  assert.equal(toasts[1]?.body?.message, "已使用 main（子代理请求）")
+})
+
+test("toasts actual consumption with user-reselect reason", async () => {
+  const toasts = []
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "toast-user-reselect",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  toasts.length = 0
+
+  await harness.sendRequest({
+    sessionID: "toast-user-reselect",
+    initiator: "user",
+    model: "gpt-5",
+  })
+
+  assert.equal(toasts.length, 1)
+  assert.equal(toasts[0]?.body?.variant, "info")
+  assert.equal(toasts[0]?.body?.message, "已使用 main（用户回合重选）")
+})
+
+test("keeps request fail-open when route decision append fails", async () => {
+  const harness = createSessionBindingHarness({
+    appendRouteDecisionEventImpl: async () => {
+      throw new Error("decision-log-down")
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "decision-fail-open",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
+})
+
+test("records rate-limit switch decision evidence with switchFrom", async () => {
+  let now = 8_000_000
+  const decisions = []
+  const selectionLoads = [
+    { main: 0, alt: 0 },
+    { main: 9, alt: 2 },
+    { main: 9, alt: 2 },
+  ]
+  const harness = createSessionBindingHarness({
+    now: () => now,
+    loadCandidateAccountLoads: async ({ call }) => selectionLoads[call] ?? selectionLoads.at(-1),
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
+        alt: {
+          touchBuckets: { [String(now - 60_000)]: 1 },
+          lastRateLimitedAt: now - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
+      ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after-ms": "5000",
+          },
+        })
+      : new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+  })
+
+  await harness.sendRequest({ sessionID: "decision-switch", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  await harness.sendRequest({ sessionID: "decision-switch", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  const response = await harness.sendRequest({ sessionID: "decision-switch", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 3)
+  const event = decisions[2]
+  assert.equal(event?.reason, "rate-limit-switch")
+  assert.equal(event?.switched, true)
+  assert.equal(event?.switchFrom, "main")
+  assert.equal(event?.switchBlockedBy, undefined)
+  assert.equal(event?.chosenAccount, "alt")
+  assert.deepEqual(event?.loads, { main: 1, alt: 1 })
+  assert.equal(event?.rateLimitMatched, true)
+  assert.equal(event?.retryAfterMs, 5_000)
+})
+
+test("records route decision evidence when switch is blocked by routing-state read failure", async () => {
+  let now = 9_000_000
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    now: () => now,
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+    readRoutingStateImpl: async () => {
+      throw new Error("routing-state-read-failed")
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+      status: 429,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+  })
+
+  await harness.sendRequest({ sessionID: "decision-blocked", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  await harness.sendRequest({ sessionID: "decision-blocked", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  const response = await harness.sendRequest({ sessionID: "decision-blocked", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(response?.status, 429)
+  assert.equal(decisions.length, 3)
+  const event = decisions[2]
+  assert.equal(event?.reason, "subagent")
+  assert.equal(event?.switched, false)
+  assert.equal(event?.switchFrom, undefined)
+  assert.equal(event?.switchBlockedBy, "routing-state-read-failed")
+  assert.equal(event?.chosenAccount, "main")
+  assert.equal(event?.rateLimitMatched, true)
+})
+
 test("plugin auth loader flags account as rate-limited only after three hits within five minutes", async () => {
   let currentNow = 20_000
   const events = []
@@ -2551,6 +2820,18 @@ test("plugin auth loader uses response-observed time for rate-limit window and f
   let call = 0
   const harness = createSessionBindingHarness({
     now: () => currentNow,
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: {
+          touchBuckets: {},
+        },
+        alt: {
+          touchBuckets: {},
+          lastRateLimitedAt: currentNow - 60_000,
+        },
+      },
+      appliedSegments: [],
+    }),
     appendRoutingEventImpl: async (input) => {
       events.push(input.event)
     },
@@ -2791,6 +3072,69 @@ test("switches to a lower-load account whose lastRateLimitedAt is older than ten
   assert.equal(compensationCalls.length, 1)
   assert.equal(compensationCalls[0]?.toAccountName, "alt")
   assert.match(String(toasts.at(-1)?.body?.message ?? ""), /切换到 alt/)
+})
+
+test("rate-limit switch emits exactly one warning toast without extra consumption toast", async () => {
+  let currentNow = 1_050_000
+  const toasts = []
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: {
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 3,
+          },
+        },
+        alt: {
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 1,
+          },
+          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    client: {
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+    fetchImpl: async ({ auth }) => {
+      if (auth?.refresh === "main-refresh") {
+        return new Response(
+          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+            },
+          },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      })
+    },
+  })
+
+  await harness.sendRequest({ sessionID: "toast-rate-switch", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "toast-rate-switch", initiator: "agent", model: "gpt-5" })
+
+  toasts.length = 0
+  currentNow += 60_000
+  const thirdResponse = await harness.sendRequest({ sessionID: "toast-rate-switch", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(thirdResponse?.status, 200)
+  assert.equal(toasts.length, 1)
+  assert.equal(toasts[0]?.body?.variant, "warning")
+  assert.equal(toasts[0]?.body?.message, "已切换到 alt（main 限流后切换）")
 })
 
 test("appends replacement account touch event after successful switch", async () => {
@@ -3199,6 +3543,23 @@ test("plugin auth loader breaks equal-load ties with injected random", async () 
 
   assert.equal(harness.outgoing.length, 1)
   assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+})
+
+test("createSessionBindingHarness defaults routing-state to isolated temporary directory", async () => {
+  const harness = createSessionBindingHarness()
+
+  await harness.sendRequest({
+    sessionID: "isolated-routing-state",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(typeof harness.routingStateDirectory, "string")
+  assert.match(basename(harness.routingStateDirectory), /^routing-state-/)
+  assert.doesNotMatch(harness.routingStateDirectory.replaceAll("\\", "/"), /\/\.local\/share\/opencode\/copilot-routing-state\/?$/)
+
+  const decisionsLog = await fs.stat(join(harness.routingStateDirectory, "decisions.log"))
+  assert.equal(decisionsLog.isFile(), true)
 })
 
 test("session binding harness keeps tie selection deterministic without explicit random", async () => {
