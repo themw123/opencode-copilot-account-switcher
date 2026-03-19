@@ -238,7 +238,7 @@ test("Copilot network retry toggle is placed after guided loop safety and before
   assert.equal(retryIndex < separatorIndex, true)
 })
 
-test("assign models action is placed after Check models", () => {
+test("assign models action is placed after default account group", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -250,9 +250,11 @@ test("assign models action is placed after Check models", () => {
 
   const labels = items.map((item) => item.label)
   const modelsIndex = labels.indexOf("Sync available models")
-  const assignIndex = labels.indexOf("Assign accounts per model")
+  const defaultGroupIndex = labels.indexOf("Default account group")
+  const assignIndex = labels.indexOf("Assign account groups per model")
 
-  assert.equal(assignIndex, modelsIndex + 1)
+  assert.equal(defaultGroupIndex, modelsIndex + 1)
+  assert.equal(assignIndex, defaultGroupIndex + 1)
 })
 
 test("buildMenuItems uses the updated action copy for sync-oriented items", () => {
@@ -269,7 +271,7 @@ test("buildMenuItems uses the updated action copy for sync-oriented items", () =
   assert.ok(labels.includes("Refresh quota info"))
   assert.ok(labels.includes("Sync account identity"))
   assert.ok(labels.includes("Sync available models"))
-  assert.ok(labels.includes("Assign accounts per model"))
+  assert.ok(labels.includes("Assign account groups per model"))
 })
 
 test("buildMenuItems shows default account group action with coherent hint", () => {
