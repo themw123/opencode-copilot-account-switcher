@@ -1011,7 +1011,7 @@ function createSessionBindingHarness(input = {}) {
     touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
     touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
     now: input.now,
-    random: input.random,
+    random: input.random ?? (() => 0),
     client: input.client,
     loadOfficialConfig: async ({ getAuth }) => ({
       apiKey: "",
@@ -2594,15 +2594,13 @@ test("switches to a lower-load account whose lastRateLimitedAt is older than ten
     readRoutingStateImpl: async () => ({
       accounts: {
         main: {
-          sessions: {
-            s1: currentNow - 20_000,
-            s2: currentNow - 30_000,
-            s3: currentNow - 40_000,
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 3,
           },
         },
         alt: {
-          sessions: {
-            s9: currentNow - 10_000,
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 1,
           },
           lastRateLimitedAt: currentNow - 11 * 60 * 1000,
         },
@@ -2669,15 +2667,13 @@ test("appends replacement account touch event after successful switch", async ()
     readRoutingStateImpl: async () => ({
       accounts: {
         main: {
-          sessions: {
-            s1: currentNow - 20_000,
-            s2: currentNow - 30_000,
-            s3: currentNow - 40_000,
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 3,
           },
         },
         alt: {
-          sessions: {
-            s9: currentNow - 10_000,
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 1,
           },
           lastRateLimitedAt: currentNow - 11 * 60 * 1000,
         },
@@ -2726,15 +2722,13 @@ test("switch evaluation continues after threshold and can switch on fourth hit",
       return {
         accounts: {
           main: {
-            sessions: {
-              s1: currentNow - 10_000,
-              s2: currentNow - 20_000,
-              s3: currentNow - 30_000,
+            touchBuckets: {
+              [String(currentNow - 60_000)]: 3,
             },
           },
           alt: {
-            sessions: {
-              s9: currentNow - 5_000,
+            touchBuckets: {
+              [String(currentNow - 60_000)]: 1,
             },
             lastRateLimitedAt: currentNow - cooldownMinutes * 60 * 1000,
           },
@@ -2783,15 +2777,13 @@ test("replacement cleanup fails open when request body is already consumed", asy
     readRoutingStateImpl: async () => ({
       accounts: {
         main: {
-          sessions: {
-            s1: currentNow - 20_000,
-            s2: currentNow - 30_000,
-            s3: currentNow - 40_000,
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 3,
           },
         },
         alt: {
-          sessions: {
-            s9: currentNow - 10_000,
+          touchBuckets: {
+            [String(currentNow - 60_000)]: 1,
           },
           lastRateLimitedAt: currentNow - 11 * 60 * 1000,
         },
@@ -2963,15 +2955,13 @@ test("plugin auth loader selection path can consume routing-state-derived loads"
       snapshot: {
         accounts: {
           main: {
-            sessions: {
-              s1: now - 20_000,
-              s2: now - 30_000,
-              s3: now - 40_000,
+            touchBuckets: {
+              [String(now - 60_000)]: 3,
             },
           },
           alt: {
-            sessions: {
-              s9: now - 10_000,
+            touchBuckets: {
+              [String(now - 60_000)]: 1,
             },
           },
         },
@@ -3067,6 +3057,31 @@ test("plugin auth loader breaks equal-load ties with injected random", async () 
 
   assert.equal(harness.outgoing.length, 1)
   assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+})
+
+test("session binding harness keeps tie selection deterministic without explicit random", async () => {
+  const originalRandom = Math.random
+  Math.random = () => 0.9
+
+  try {
+    const harness = createSessionBindingHarness({
+      loadCandidateAccountLoads: async () => ({
+        main: 2,
+        alt: 2,
+      }),
+    })
+
+    await harness.sendRequest({
+      sessionID: "child-tie-default-random",
+      initiator: "agent",
+      model: "gpt-5",
+    })
+
+    assert.equal(harness.outgoing.length, 1)
+    assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
+  } finally {
+    Math.random = originalRandom
+  }
 })
 
 test("plugin auth loader evicts stale session bindings when binding cache grows too large", async () => {
