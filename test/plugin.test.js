@@ -1011,6 +1011,7 @@ function createSessionBindingHarness(input = {}) {
     touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
     touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
     now: input.now,
+    random: input.random,
     client: input.client,
     loadOfficialConfig: async ({ getAuth }) => ({
       apiKey: "",
@@ -3049,11 +3050,9 @@ test("plugin auth loader prunes touch cache by ttl and max entries", async () =>
   assert.deepEqual(touched[4]?.cacheKeys, [])
 })
 
-test("plugin auth loader keeps candidate order as tie-breaker when loads are equal", async () => {
+test("plugin auth loader breaks equal-load ties with injected random", async () => {
   const harness = createSessionBindingHarness({
-    store: {
-      activeAccountNames: ["main", "alt"],
-    },
+    random: () => 0.9,
     loadCandidateAccountLoads: async () => ({
       main: 2,
       alt: 2,
@@ -3067,7 +3066,7 @@ test("plugin auth loader keeps candidate order as tie-breaker when loads are equ
   })
 
   assert.equal(harness.outgoing.length, 1)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
 })
 
 test("plugin auth loader evicts stale session bindings when binding cache grows too large", async () => {

@@ -290,9 +290,9 @@ function chooseCandidateAccount(input: {
   allowReselect: boolean
   sessionBindings: Map<string, SessionBinding>
   loads: Map<string, number>
+  random: () => number
 }) {
-  const ranked = [...input.candidates].sort((a, b) => (input.loads.get(a.name) ?? 0) - (input.loads.get(b.name) ?? 0))
-  const lowest = ranked[0]
+  const lowest = pickLowestWithRandom(input.candidates, input.loads, input.random)
   const boundName = input.sessionBindings.get(input.sessionID)?.accountName
   const bound = typeof boundName === "string" ? input.candidates.find((item) => item.name === boundName) : undefined
 
@@ -305,6 +305,17 @@ function chooseCandidateAccount(input: {
     return lowest
   }
   return bound
+}
+
+function pickLowestWithRandom(
+  candidates: ResolvedModelAccountCandidate[],
+  loads: Map<string, number>,
+  random: () => number,
+) {
+  const ranked = [...candidates].sort((a, b) => (loads.get(a.name) ?? 0) - (loads.get(b.name) ?? 0))
+  const minimum = loads.get(ranked[0].name) ?? 0
+  const tied = ranked.filter((item) => (loads.get(item.name) ?? 0) === minimum)
+  return tied[Math.min(tied.length - 1, Math.floor(random() * tied.length))]
 }
 
 function normalizeStoreForRouting(store: StoreFile) {
@@ -403,6 +414,7 @@ export function buildPluginHooks(input: {
   triggerBillingCompensation?: (input: TriggerBillingCompensationInput) => Promise<void>
   touchWriteCacheIdleTtlMs?: number
   touchWriteCacheMaxEntries?: number
+  random?: () => number
 }): CopilotPluginHooksWithChatHeaders {
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
@@ -417,6 +429,7 @@ export function buildPluginHooks(input: {
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
   const now = input.now ?? (() => Date.now())
+  const random = input.random ?? Math.random
   let injectArmed = false
   let policyScopeOverride: LoopSafetyProviderScope | undefined
   const modelAccountFirstUse = new Set<string>()
@@ -557,6 +570,7 @@ export function buildPluginHooks(input: {
           allowReselect,
           sessionBindings: sessionAccountBindings,
           loads,
+          random,
         })
         : undefined
       if (!resolved) return config.fetch(request, init)
