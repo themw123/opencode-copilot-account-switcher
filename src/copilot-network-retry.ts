@@ -93,8 +93,13 @@ export type CopilotRetryContext = {
   notifier?: CopilotRetryNotifier
 }
 
+type InternalRequestInit = RequestInit & {
+  [INTERNAL_SESSION_CONTEXT_KEY]?: string
+}
+
 const INTERNAL_SESSION_HEADER = "x-opencode-session-id"
 const INTERNAL_DEBUG_LINK_HEADER = "x-opencode-debug-link-id"
+export const INTERNAL_SESSION_CONTEXT_KEY = "__opencodeInternalSessionID"
 
 const defaultDebugLogFile = (() => {
   const tmp = process.env.TEMP || process.env.TMP || "/tmp"
@@ -1078,10 +1083,11 @@ export function createCopilotRetryingFetch(
     const safeRequest = stripInternalSessionHeaderFromRequest(request)
     const strippedHeaders = stripInternalHeaders(init?.headers)
     const initHeaders = strippedHeaders.headers
-    const effectiveInit: RequestInit | undefined = init
+    const effectiveInit: InternalRequestInit | undefined = init || sessionID
       ? {
-          ...init,
+          ...(init ?? {}),
           headers: initHeaders,
+          [INTERNAL_SESSION_CONTEXT_KEY]: sessionID,
         }
       : undefined
     debugLog("fetch headers after wrapper", {

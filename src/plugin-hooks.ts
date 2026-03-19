@@ -12,6 +12,7 @@ import {
   createCopilotRetryingFetch,
   cleanupLongIdsForAccountSwitch,
   detectRateLimitEvidence,
+  INTERNAL_SESSION_CONTEXT_KEY,
   type CopilotRetryContext,
   type FetchLike,
 } from "./copilot-network-retry.js"
@@ -80,6 +81,10 @@ type CandidateAccountLoads = Record<string, number> | Map<string, number>
 type SessionBinding = {
   accountName: string
   lastUsedAt: number
+}
+
+type RoutingSessionContext = {
+  sessionID?: string
 }
 
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
@@ -272,6 +277,16 @@ function getMergedRequestHeader(request: Request | URL | string, init: RequestIn
     headers.set(headerName, value)
   }
   return headers.get(name)
+}
+
+function getInternalSessionID(request: Request | URL | string, init: RequestInit | undefined) {
+  const headerValue = getMergedRequestHeader(request, init, "x-opencode-session-id")
+  if (typeof headerValue === "string" && headerValue.length > 0) return headerValue
+
+  const contextValue = (init as RequestInit & { [INTERNAL_SESSION_CONTEXT_KEY]?: unknown } | undefined)?.[INTERNAL_SESSION_CONTEXT_KEY]
+  if (typeof contextValue === "string" && contextValue.length > 0) return contextValue
+
+  return ""
 }
 
 function toLoadMap(value: CandidateAccountLoads | undefined) {
@@ -503,6 +518,7 @@ export function buildPluginHooks(input: {
   const sessionAccountBindings = new Map<string, SessionBinding>()
   const rateLimitQueues = new Map<string, number[]>()
   const lastTouchWrites = new Map<string, number>()
+  const routingSessionContext = new AsyncLocalStorage<RoutingSessionContext>()
   const routingDirectory = input.routingStateDirectory ?? routingStatePath()
   const touchWriteCacheIdleTtlMs = input.touchWriteCacheIdleTtlMs ?? TOUCH_WRITE_CACHE_IDLE_TTL_MS
   const touchWriteCacheMaxEntries = input.touchWriteCacheMaxEntries ?? MAX_TOUCH_WRITE_CACHE_ENTRIES
@@ -608,7 +624,7 @@ export function buildPluginHooks(input: {
         idleTtlMs: touchWriteCacheIdleTtlMs,
         maxEntries: touchWriteCacheMaxEntries,
       })
-      const sessionID = getMergedRequestHeader(request, init, "x-opencode-session-id") ?? ""
+      const sessionID = routingSessionContext.getStore()?.sessionID ?? getInternalSessionID(request, init)
       const initiator = getMergedRequestHeader(request, init, "x-initiator")
       const allowReselect = initiator === "user"
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
@@ -655,6 +671,8 @@ export function buildPluginHooks(input: {
       let decisionTouchWriteError: string | undefined
       let finalChosenAccount = resolved.name
 
+      const previousBindingAccount = sessionID.length > 0 ? sessionAccountBindings.get(sessionID)?.accountName : undefined
+
       if (sessionID.length > 0) {
         sessionAccountBindings.set(sessionID, {
           accountName: resolved.name,
@@ -700,6 +718,25 @@ export function buildPluginHooks(input: {
         access: resolved.entry.access,
         expires: resolved.entry.expires,
         enterpriseUrl: resolved.entry.enterpriseUrl,
+      }
+
+      const sendBillingCompensationIfNeeded = async (input: {
+        nextAccountName: string
+        at: number
+        retryAfterMs?: number
+      }) => {
+        if (sessionID.length === 0) return
+        if (typeof previousBindingAccount !== "string" || previousBindingAccount.length === 0) return
+        if (previousBindingAccount === input.nextAccountName) return
+
+        await triggerBillingCompensation({
+          fromAccountName: previousBindingAccount,
+          toAccountName: input.nextAccountName,
+          sessionID,
+          modelID,
+          at: input.at,
+          retryAfterMs: input.retryAfterMs,
+        }).catch(() => undefined)
       }
 
       const sendWithAccount = async (candidate: ResolvedModelAccountCandidate, requestValue: Request | URL | string, initValue: RequestInit | undefined) => {
@@ -853,14 +890,11 @@ export function buildPluginHooks(input: {
                 },
               }).catch(() => undefined)
 
-              await triggerBillingCompensation({
-                fromAccountName: resolved.name,
-                toAccountName: replacement.name,
-                sessionID,
-                modelID,
+              await sendBillingCompensationIfNeeded({
+                nextAccountName: replacement.name,
                 at: observedAt,
                 retryAfterMs: rateLimitEvidence.retryAfterMs,
-              }).catch(() => undefined)
+              })
 
               await appendRouteDecisionEventImpl({
                 directory: routingDirectory,
@@ -890,6 +924,11 @@ export function buildPluginHooks(input: {
           }
         }
       }
+
+      await sendBillingCompensationIfNeeded({
+        nextAccountName: finalChosenAccount,
+        at: observedAt,
+      })
 
       await appendRouteDecisionEventImpl({
         directory: routingDirectory,
@@ -1067,7 +1106,7 @@ export function buildPluginHooks(input: {
         },
       })
     }
-    output.headers["x-opencode-session-id"] = hookInput.sessionID
+    routingSessionContext.enterWith({ sessionID: hookInput.sessionID })
   }
 
   return {

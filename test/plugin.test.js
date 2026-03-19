@@ -715,7 +715,7 @@ test("plugin source does not preload upstream hook bundle for untouched hooks", 
   assert.doesNotMatch(pluginSource, /loadOfficialCopilotHooks/)
 })
 
-test("plugin chat headers only append internal session id locally", async () => {
+test("plugin chat headers do not append internal session id", async () => {
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -793,8 +793,8 @@ test("plugin chat headers only append internal session id locally", async () => 
   )
 
   assert.equal(copilotOutput.headers.existing, "value")
-  assert.equal(copilotOutput.headers["x-opencode-session-id"], "session-123")
-  assert.equal(enterpriseOutput.headers["x-opencode-session-id"], "session-ent-123")
+  assert.equal(Object.hasOwn(copilotOutput.headers, "x-opencode-session-id"), false)
+  assert.equal(Object.hasOwn(enterpriseOutput.headers, "x-opencode-session-id"), false)
   assert.equal(googleOutput.headers.existing, "value")
   assert.equal(Object.hasOwn(googleOutput.headers, "x-opencode-session-id"), false)
 })
@@ -1142,7 +1142,6 @@ test("plugin chat headers synthetic stays disabled by default", async () => {
 
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
-    "x-opencode-session-id": "session-123",
   })
 })
 
@@ -1166,7 +1165,6 @@ test("plugin chat headers synthetic text overrides x-initiator when enabled", as
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
     "x-initiator": "agent",
-    "x-opencode-session-id": "session-123",
   })
   assert.deepEqual(calls, [
     {
@@ -2624,6 +2622,46 @@ test("records route decision evidence when session touch write fails", async () 
   assert.match(String(decisions[0]?.touchWriteError ?? ""), /touch-write-down/)
 })
 
+test("network retry keeps session visible to routing while stripping it from external fetch", async () => {
+  const decisions = []
+  const touches = []
+  const harness = createSessionBindingHarness({
+    store: {
+      networkRetryEnabled: true,
+    },
+    appendSessionTouchEventImpl: async (input) => {
+      touches.push({
+        accountName: input.accountName,
+        sessionID: input.sessionID,
+      })
+      return true
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "retry-session-visible",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.sessionIDPresent, true)
+  assert.equal(decisions[0]?.sessionID, "retry-session-visible")
+  assert.equal(decisions[0]?.touchWriteOutcome, "written")
+  assert.deepEqual(touches, [
+    {
+      accountName: "main",
+      sessionID: "retry-session-visible",
+    },
+  ])
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(harness.outgoing[0]?.headers["x-opencode-session-id"], undefined)
+})
+
 test("toasts actual consumption for regular and subagent requests", async () => {
   const toasts = []
   const harness = createSessionBindingHarness({
@@ -3099,6 +3137,40 @@ test("switches to a lower-load account whose lastRateLimitedAt is older than ten
   assert.equal(compensationCalls.length, 1)
   assert.equal(compensationCalls[0]?.toAccountName, "alt")
   assert.match(String(toasts.at(-1)?.body?.message ?? ""), /切换到 alt/)
+})
+
+test("same-session user reselect switch triggers billing compensation", async () => {
+  const compensationCalls = []
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+    triggerBillingCompensation: async (input) => {
+      compensationCalls.push(input)
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "user-reselect-compensation",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "user-reselect-compensation",
+    initiator: "user",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
+  assert.equal(compensationCalls.length, 1)
+  assert.equal(compensationCalls[0]?.fromAccountName, "alt")
+  assert.equal(compensationCalls[0]?.toAccountName, "main")
+  assert.equal(compensationCalls[0]?.sessionID, "user-reselect-compensation")
+  assert.equal(compensationCalls[0]?.modelID, "gpt-5")
 })
 
 test("rate-limit switch emits exactly one warning toast without extra consumption toast", async () => {
