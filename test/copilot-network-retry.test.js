@@ -1037,6 +1037,48 @@ test("bulk strips all input ids for connection mismatch even when session repair
   assert.equal(calls[1].input[2].id, undefined)
 })
 
+test("bulk strips all input ids when connection mismatch message says item with ID", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?connection-mismatch-wording-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    calls.push(body)
+
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({
+        error: {
+          message: "Input item with ID 'item_a' does not belong to this connection.",
+        },
+      }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      })
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "a" }], id: "item_a" },
+        { role: "assistant", content: [{ type: "output_text", text: "b" }], id: "item_b" },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+  assert.equal(calls[1].input[2].id, undefined)
+})
+
 test("repairs the uniquely matched session part through client part.update when no patchPart is provided", async () => {
   const calls = []
   const sessionReads = []
@@ -2762,6 +2804,46 @@ test("retries Request-body cleanup after the first provider call consumes the or
   assert.equal(calls[0].input[2].id.length, 408)
   assert.equal(calls[1].input[1].id.length, 200)
   assert.equal(calls[1].input[2].id, undefined)
+})
+
+test("fails open for connection mismatch when the original Request body was already consumed before wrapper entry", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?connection-mismatch-consumed-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async (request, init) => {
+    if (request instanceof Request) {
+      await request.text()
+    }
+    calls.push(typeof init?.body)
+
+    return new Response(JSON.stringify({
+      error: {
+        message: "Input item ID does not belong to this connection.",
+      },
+    }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  const request = new Request("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "a" }], id: "item_a" },
+        { role: "assistant", content: [{ type: "output_text", text: "b" }], id: "item_b" },
+      ],
+      previous_response_id: "resp_123",
+    }),
+  })
+  await request.text()
+
+  const response = await wrapped(request)
+
+  assert.equal(response.status, 400)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0], "undefined")
 })
 
 test("retry notifier sends toast through client.tui.showToast", async () => {

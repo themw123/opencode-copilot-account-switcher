@@ -156,7 +156,7 @@ function isInputIdTooLongMessage(text: string) {
 
 function isConnectionMismatchInputIdMessage(text: string) {
   const message = text.toLowerCase()
-  return message.includes("does not belong to this connection") && message.includes("item id")
+  return message.includes("does not belong to this connection") && /item(?:\s+with)?\s+id/.test(message)
 }
 
 function parseInputIdTooLongDetails(text: string) {
