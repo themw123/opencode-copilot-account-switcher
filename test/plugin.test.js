@@ -2299,6 +2299,67 @@ test("plugin auth loader uses mapped account for matching Copilot model requests
   assert.match(String(calls[1]?.url), /api\.githubcopilot\.com/)
 })
 
+test("configureModelAccountAssignments stores multiple selected accounts", async () => {
+  const { configureModelAccountAssignments } = await import("../dist/plugin.js")
+
+  const store = {
+    active: "main",
+    activeAccountNames: ["main"],
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "main-refresh",
+        access: "main-access",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      alt: {
+        name: "alt",
+        refresh: "alt-refresh",
+        access: "alt-access",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      org: {
+        name: "org",
+        refresh: "org-refresh",
+        access: "org-access",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+    },
+  }
+
+  const changed = await configureModelAccountAssignments(store, {
+    selectModel: async () => "gpt-5",
+    selectAccounts: async () => ["alt", "org"],
+  })
+
+  assert.equal(changed, true)
+  assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt", "org"])
+})
+
+test("default account group can include multiple accounts", async () => {
+  const { configureDefaultAccountGroup } = await import("../dist/plugin.js")
+
+  const store = {
+    active: "main",
+    activeAccountNames: ["main"],
+    accounts: {
+      main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+      "student-2": { name: "student-2", refresh: "s2-refresh", access: "s2-access", expires: 0 },
+    },
+  }
+
+  const changed = await configureDefaultAccountGroup(store, {
+    selectAccounts: async () => ["main", "student-2"],
+  })
+
+  assert.equal(changed, true)
+  assert.deepEqual(store.activeAccountNames, ["main", "student-2"])
+  assert.equal(store.active, "main")
+})
+
 test("plugin menu toggle path persists loopSafetyEnabled", async () => {
   const writes = []
   const store = {

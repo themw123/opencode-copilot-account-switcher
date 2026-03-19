@@ -32,6 +32,7 @@ export type MenuAction =
   | { type: "quota" }
   | { type: "refresh-identity" }
   | { type: "check-models" }
+  | { type: "configure-default-group" }
   | { type: "assign-models" }
   | { type: "toggle-refresh" }
   | { type: "set-interval" }
@@ -61,7 +62,8 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
       checkQuotas: "Refresh quota info",
       refreshIdentity: "Sync account identity",
       checkModels: "Sync available models",
-      assignModels: "Assign accounts per model",
+      defaultAccountGroup: "Default account group",
+      assignModels: "Assign account groups per model",
       autoRefreshOn: "Auto refresh: On",
       autoRefreshOff: "Auto refresh: Off",
       setRefresh: "Set refresh interval",
@@ -98,7 +100,8 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
     checkQuotas: "刷新配额信息",
     refreshIdentity: "同步账号身份信息",
     checkModels: "同步可用模型列表",
-    assignModels: "为指定模型绑定账号",
+    defaultAccountGroup: "配置默认账号组",
+    assignModels: "为模型配置账号组",
     autoRefreshOn: "自动刷新：已开启",
     autoRefreshOff: "自动刷新：已关闭",
     setRefresh: "设置刷新间隔",
@@ -148,6 +151,7 @@ export function buildMenuItems(input: {
   refresh?: { enabled: boolean; minutes: number }
   lastQuotaRefresh?: number
   modelAccountAssignmentCount?: number
+  defaultAccountGroupCount?: number
   loopSafetyEnabled: boolean
   loopSafetyProviderScope?: "copilot-only" | "all-models"
   networkRetryEnabled: boolean
@@ -169,10 +173,16 @@ export function buildMenuItems(input: {
     { label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" },
     { label: copy.checkModels, value: { type: "check-models" }, color: "cyan" },
     {
+      label: copy.defaultAccountGroup,
+      value: { type: "configure-default-group" },
+      color: "cyan",
+      hint: input.defaultAccountGroupCount !== undefined ? `${input.defaultAccountGroupCount} selected` : undefined,
+    },
+    {
       label: copy.assignModels,
       value: { type: "assign-models" },
       color: "cyan",
-      hint: input.modelAccountAssignmentCount ? `${input.modelAccountAssignmentCount} mapped` : undefined,
+      hint: input.modelAccountAssignmentCount ? `${input.modelAccountAssignmentCount} groups` : undefined,
     },
     {
       label: input.refresh?.enabled ? copy.autoRefreshOn : copy.autoRefreshOff,
@@ -248,6 +258,7 @@ export async function showMenu(
     refresh?: { enabled: boolean; minutes: number }
     lastQuotaRefresh?: number
     modelAccountAssignmentCount?: number
+    defaultAccountGroupCount?: number
     loopSafetyEnabled?: boolean
     loopSafetyProviderScope?: "copilot-only" | "all-models"
     networkRetryEnabled?: boolean
@@ -265,6 +276,7 @@ export async function showMenu(
       refresh: input.refresh,
       lastQuotaRefresh: input.lastQuotaRefresh,
       modelAccountAssignmentCount: input.modelAccountAssignmentCount,
+      defaultAccountGroupCount: input.defaultAccountGroupCount,
       loopSafetyEnabled: input.loopSafetyEnabled === true,
       loopSafetyProviderScope: input.loopSafetyProviderScope,
       networkRetryEnabled: input.networkRetryEnabled === true,

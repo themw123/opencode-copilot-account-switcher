@@ -12,7 +12,7 @@ import { applyMenuAction, persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
 import { isTTY } from "./ui/ansi.js"
 import { showAccountActions, showMenu, type AccountInfo } from "./ui/menu.js"
-import { select } from "./ui/select.js"
+import { select, selectMany } from "./ui/select.js"
 import { authPath, readAuth, readStore, writeStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 
 function now() {
@@ -277,7 +277,74 @@ function renameAccounts(store: StoreFile, items: Array<{ oldName: string; base: 
   if (active) store.active = active.name
 }
 
-async function configureModelAccountAssignments(store: StoreFile) {
+export async function configureDefaultAccountGroup(
+  store: StoreFile,
+  selectors?: {
+    selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
+  },
+) {
+  const accountEntries = Object.entries(store.accounts)
+  if (accountEntries.length === 0) {
+    console.log("No accounts available yet.")
+    return false
+  }
+
+  const options = accountEntries
+    .map(([name, entry]) => ({
+      label: name,
+      value: name,
+      hint: entry.enterpriseUrl ? normalizeDomain(entry.enterpriseUrl) : "github.com",
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+
+  const defaultSelectedNames = new Set(store.activeAccountNames ?? (store.active ? [store.active] : []))
+  const selected = selectors?.selectAccounts
+    ? await selectors.selectAccounts(options)
+    : await selectMany(
+        options.map((item) => ({ label: item.label, value: item.value, hint: item.hint })),
+        {
+          message: "Default account group",
+          subtitle: "Pick accounts for model fallback routing",
+          clearScreen: true,
+          autoSelectSingle: false,
+          minSelected: 1,
+          initialSelected: options
+            .map((item, index) => (defaultSelectedNames.has(item.value) ? index : -1))
+            .filter((index) => index >= 0),
+        },
+      )
+
+  if (!selected || selected.length === 0) return false
+
+  const next = [...new Set(selected)]
+    .filter((name) => Boolean(store.accounts[name]))
+    .sort((a, b) => a.localeCompare(b))
+  if (next.length === 0) return false
+
+  store.activeAccountNames = next
+  if (!store.active || !next.includes(store.active)) {
+    store.active = next[0]
+  }
+  return true
+}
+
+export async function configureModelAccountAssignments(
+  store: StoreFile,
+  selectors?: {
+    selectModel?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
+    selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
+  },
+) {
+  return configureModelAccountAssignmentsWithSelection(store, selectors)
+}
+
+async function configureModelAccountAssignmentsWithSelection(
+  store: StoreFile,
+  selectors?: {
+    selectModel?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
+    selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
+  },
+) {
   const models = listKnownCopilotModels(store)
   if (models.length === 0) {
     console.log("No Copilot models available yet. Run Check models first.")
@@ -285,24 +352,28 @@ async function configureModelAccountAssignments(store: StoreFile) {
   }
 
   const activeLabel = store.active ? store.accounts[store.active]?.name ?? store.active : "none"
-  const modelID = await select(
-    [
-      { label: "Back", value: "" },
-        ...models.map((model) => ({
-          label: model,
-          value: model,
-          hint: store.modelAccountAssignments?.[model]
-          ? `assigned to ${(store.modelAccountAssignments[model] ?? []).join(", ")}`
-          : `fallbacks to ${activeLabel}`,
-        })),
-    ],
-    {
-      message: "Choose a Copilot model",
-      subtitle: "Select which model should use a dedicated account",
-      clearScreen: true,
-      autoSelectSingle: false,
-    },
-  )
+  const modelOptions = models.map((model) => ({
+    label: model,
+    value: model,
+    hint: store.modelAccountAssignments?.[model]?.length
+      ? `group: ${(store.modelAccountAssignments[model] ?? []).join(", ")}`
+      : `fallbacks to ${activeLabel}`,
+  }))
+
+  const modelID = selectors?.selectModel
+    ? await selectors.selectModel(modelOptions)
+    : await select(
+        [
+          { label: "Back", value: "" },
+          ...modelOptions,
+        ],
+        {
+          message: "Choose a Copilot model",
+          subtitle: "Select which model should use a dedicated account group",
+          clearScreen: true,
+          autoSelectSingle: false,
+        },
+      )
   if (!modelID) return false
 
   const options = listAssignableAccountsForModel(store, modelID)
@@ -311,26 +382,27 @@ async function configureModelAccountAssignments(store: StoreFile) {
     return false
   }
 
-  const assigned = await select(
-    [
-      { label: "Back", value: "" },
-      { label: "Use main account fallback", value: "__default__", color: "yellow" },
-      ...options.map((item) => ({
-        label: item.name,
-        value: item.name,
-        hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
-      })),
-    ],
-    {
-      message: modelID,
-      subtitle: "Pick the account for this model",
-      clearScreen: true,
-      autoSelectSingle: false,
-    },
-  )
-  if (!assigned) return false
+  const accountOptions = options.map((item) => ({
+    label: item.name,
+    value: item.name,
+    hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
+  }))
 
-  if (assigned === "__default__") {
+  const selected = selectors?.selectAccounts
+    ? await selectors.selectAccounts(accountOptions)
+    : await selectMany(accountOptions, {
+        message: modelID,
+        subtitle: "Pick account group for this model (empty means fallback)",
+        clearScreen: true,
+        autoSelectSingle: false,
+        initialSelected: accountOptions
+          .map((item, index) => (store.modelAccountAssignments?.[modelID]?.includes(item.value) ? index : -1))
+          .filter((index) => index >= 0),
+      })
+
+  if (selected === null) return false
+
+  if (selected.length === 0) {
     delete store.modelAccountAssignments?.[modelID]
     if (store.modelAccountAssignments && Object.keys(store.modelAccountAssignments).length === 0) {
       delete store.modelAccountAssignments
@@ -338,9 +410,14 @@ async function configureModelAccountAssignments(store: StoreFile) {
     return true
   }
 
+  const assigned = [...new Set(selected)]
+    .filter((name) => Boolean(store.accounts[name]))
+    .sort((a, b) => a.localeCompare(b))
+  if (assigned.length === 0) return false
+
   store.modelAccountAssignments = {
     ...(store.modelAccountAssignments ?? {}),
-    [modelID]: [assigned],
+    [modelID]: assigned,
   }
   return true
 }
@@ -647,6 +724,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         refresh: { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 },
         lastQuotaRefresh: store.lastQuotaRefresh,
         modelAccountAssignmentCount: Object.keys(store.modelAccountAssignments ?? {}).length,
+        defaultAccountGroupCount: store.activeAccountNames?.length ?? (store.active ? 1 : 0),
         loopSafetyEnabled: store.loopSafetyEnabled === true,
         loopSafetyProviderScope: store.loopSafetyProviderScope,
         experimentalSlashCommandsEnabled: store.experimentalSlashCommandsEnabled,
@@ -814,6 +892,17 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         continue
       }
 
+      if (action.type === "configure-default-group") {
+        const changed = await configureDefaultAccountGroup(store)
+        if (!changed) continue
+        await persistStore(store, {
+          reason: "configure-default-account-group",
+          source: "plugin.runMenu",
+          actionType: "configure-default-account-group",
+        })
+        continue
+      }
+
       if (action.type === "assign-models") {
         const changed = await configureModelAccountAssignments(store)
         if (!changed) continue
@@ -846,6 +935,12 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         if (decision === "remove") {
           rewriteModelAccountAssignments(store, { [name]: undefined })
           delete store.accounts[name]
+          if (Array.isArray(store.activeAccountNames)) {
+            store.activeAccountNames = store.activeAccountNames.filter((item) => item !== name)
+            if (store.activeAccountNames.length === 0) {
+              delete store.activeAccountNames
+            }
+          }
           if (store.active === name) store.active = undefined
           await persistStore(store, {
             reason: "remove-account",
