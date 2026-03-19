@@ -196,6 +196,13 @@ test("compactRoutingSnapshot removes expired touch buckets and keeps rate-limit 
 
 test("appendRouteDecisionEvent writes to decisions.log and readRoutingState ignores decisions log entries", async () => {
   await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "active.log"), `${JSON.stringify({
+      type: "session-touch",
+      accountName: "main",
+      sessionID: "s1",
+      at: 120_000,
+    })}\n`, "utf8")
+
     await appendRouteDecisionEvent({
       directory: dir,
       event: {
@@ -210,7 +217,8 @@ test("appendRouteDecisionEvent writes to decisions.log and readRoutingState igno
     assert.match(decisions, /route-decision/)
 
     const state = await readRoutingState(dir)
-    assert.deepEqual(state.accounts, {})
+    assert.deepEqual(state.accounts.main?.touchBuckets, { "120000": 1 })
+    assert.equal(state.accounts.main?.lastRateLimitedAt, undefined)
   })
 })
 
@@ -423,13 +431,35 @@ test("compaction does not double-apply a sealed segment already recorded in appl
 
 test("compactRoutingState does not rotate, fold, or delete decisions log", async () => {
   await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
+      accounts: {
+        main: {
+          touchBuckets: {
+            "0": 1,
+          },
+        },
+      },
+      appliedSegments: [],
+    }), "utf8")
+
     const decisionsFile = path.join(dir, "decisions.log")
     await writeFile(decisionsFile, `${JSON.stringify({ type: "route-decision", at: 100, chosenAccount: "main", sessionIDPresent: true })}\n`, "utf8")
 
-    await compactRoutingState({ directory: dir, now: 200_000 })
+    const compacted = await compactRoutingState({ directory: dir, now: 200_000 })
+
+    assert.deepEqual(compacted.accounts.main?.touchBuckets, { "0": 1 })
+    assert.deepEqual(compacted.appliedSegments, [])
+
+    const reread = await readRoutingState(dir)
+    assert.deepEqual(reread.accounts.main?.touchBuckets, { "0": 1 })
+    assert.deepEqual(reread.appliedSegments, [])
 
     const decisions = await readFile(decisionsFile, "utf8")
     assert.match(decisions, /route-decision/)
+
+    const entries = await readdir(dir)
+    const sealedSegments = entries.filter((name) => /^sealed-.*\.log$/.test(name))
+    assert.deepEqual(sealedSegments, [])
   })
 })
 
