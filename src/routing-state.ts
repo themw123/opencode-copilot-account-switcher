@@ -212,7 +212,12 @@ export function buildCandidateAccountLoads(input: {
     let total = 0
     for (const [bucket, count] of Object.entries(touchBuckets)) {
       const at = Number(bucket)
-      if (Number.isFinite(at) && at >= cutoff && typeof count === "number" && Number.isFinite(count)) {
+      if (
+        Number.isFinite(at)
+        && bucketOverlapsWindow(at, cutoff)
+        && typeof count === "number"
+        && Number.isFinite(count)
+      ) {
         total += count
       }
     }
@@ -266,6 +271,10 @@ function addTouchBucket(account: RoutingAccountState, at: number) {
   account.touchBuckets ??= {}
   const key = String(bucketStart(at))
   account.touchBuckets[key] = (account.touchBuckets[key] ?? 0) + 1
+}
+
+function bucketOverlapsWindow(bucketAt: number, cutoff: number) {
+  return bucketAt + 60_000 > cutoff
 }
 
 function normalizeSnapshot(raw: unknown): RoutingSnapshot {
@@ -403,10 +412,14 @@ async function readEventsFromLog(filePath: string): Promise<RoutingEvent[]> {
 
 export function foldRoutingEvents(base: RoutingSnapshot, events: RoutingEvent[]): RoutingSnapshot {
   const next = cloneSnapshot(base)
+  const seenSessionTouches = new Set<string>()
 
   for (const event of events) {
     if (event.type === "session-touch") {
       next.accounts[event.accountName] ??= {}
+      const key = `${event.accountName}:${event.sessionID}:${bucketStart(event.at)}`
+      if (seenSessionTouches.has(key)) continue
+      seenSessionTouches.add(key)
       addTouchBucket(next.accounts[event.accountName], event.at)
       continue
     }
@@ -429,7 +442,7 @@ export function compactRoutingSnapshot(snapshot: RoutingSnapshot, now: number): 
         const at = Number(bucket)
         if (!Number.isFinite(at) || typeof count !== "number" || !Number.isFinite(count)) {
           delete account.touchBuckets[bucket]
-        } else if (at < cutoff) {
+        } else if (!bucketOverlapsWindow(at, cutoff)) {
           delete account.touchBuckets[bucket]
         }
       }
