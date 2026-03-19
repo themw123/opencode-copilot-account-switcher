@@ -55,6 +55,43 @@ test("normalizes sse read timeout errors for copilot urls", async () => {
   )
 })
 
+test("detects rate limit from 429 and too_many_requests payloads", async () => {
+  const { detectRateLimitEvidence } = await import("../dist/copilot-network-retry.js")
+
+  const fromStatus429 = await detectRateLimitEvidence(
+    new Response("too many", {
+      status: 429,
+      headers: {
+        "retry-after": "12",
+      },
+    }),
+  )
+  assert.equal(fromStatus429.matched, true)
+  assert.equal(fromStatus429.retryAfterMs, 12_000)
+
+  const fromTooManyRequestsPayload = await detectRateLimitEvidence(
+    new Response(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }), {
+      status: 400,
+      headers: {
+        "content-type": "application/json",
+        "retry-after-ms": "2500",
+      },
+    }),
+  )
+  assert.equal(fromTooManyRequestsPayload.matched, true)
+  assert.equal(fromTooManyRequestsPayload.retryAfterMs, 2_500)
+
+  const fromRateLimitCode = await detectRateLimitEvidence(
+    new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+      status: 400,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+  )
+  assert.equal(fromRateLimitCode.matched, true)
+})
+
 test("normalizes unable to connect errors for copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")

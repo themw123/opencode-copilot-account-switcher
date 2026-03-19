@@ -1004,6 +1004,7 @@ function createSessionBindingHarness(input = {}) {
       return input.loadCandidateAccountLoads({ ...ctx, call: loadCall++ })
     },
     appendSessionTouchEventImpl: input.appendSessionTouchEventImpl,
+    appendRoutingEventImpl: input.appendRoutingEventImpl,
     routingStateDirectory: input.routingStateDirectory,
     touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
     touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
@@ -1013,12 +1014,22 @@ function createSessionBindingHarness(input = {}) {
       fetch: async (request, init) => {
         const auth = await getAuth()
         const normalizedHeaders = Object.fromEntries(new Headers(init?.headers).entries())
-        outgoing.push({
+        const call = {
           auth,
           url: request instanceof URL ? request.href : String(request),
           headers: normalizedHeaders,
           body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
-        })
+        }
+        outgoing.push(call)
+        if (typeof input.fetchImpl === "function") {
+          return input.fetchImpl({
+            request,
+            init,
+            auth,
+            call,
+            attempt: outgoing.length,
+          })
+        }
         return new Response("{}", {
           status: 200,
           headers: {
@@ -2460,6 +2471,70 @@ test("plugin auth loader reselects on a new user turn when current account load 
   assert.equal(harness.outgoing.length, 2)
   assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
+})
+
+test("plugin auth loader does not flag account as rate-limited before the third hit", async () => {
+  let currentNow = 10_000
+  const events = []
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    appendRoutingEventImpl: async (input) => {
+      events.push(input.event)
+    },
+    fetchImpl: async () => new Response(
+      JSON.stringify({ type: "error", error: { type: "too_many_requests" } }),
+      {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": "5",
+        },
+      },
+    ),
+  })
+
+  await harness.sendRequest({ sessionID: "child-rate-0", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "child-rate-0", initiator: "agent", model: "gpt-5" })
+
+  assert.deepEqual(events, [])
+})
+
+test("plugin auth loader flags account as rate-limited only after three hits within five minutes", async () => {
+  let currentNow = 20_000
+  const events = []
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    appendRoutingEventImpl: async (input) => {
+      events.push(input.event)
+    },
+    fetchImpl: async () => new Response(
+      JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
+      {
+        status: 400,
+        headers: {
+          "content-type": "application/json",
+          "retry-after-ms": "2500",
+        },
+      },
+    ),
+  })
+
+  await harness.sendRequest({ sessionID: "child-rate-1", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "child-rate-1", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "child-rate-1", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(events.length, 1)
+  assert.equal(events[0]?.type, "rate-limit-flagged")
+  assert.equal(events[0]?.accountName, "main")
+  assert.equal(events[0]?.at, currentNow)
+  assert.equal(events[0]?.retryAfterMs, 2_500)
+
+  currentNow += 30_000
+  await harness.sendRequest({ sessionID: "child-rate-1", initiator: "agent", model: "gpt-5" })
+  assert.equal(events.length, 1)
 })
 
 test("plugin auth loader selection path can consume routing-state-derived loads", async () => {

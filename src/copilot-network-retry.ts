@@ -33,6 +33,11 @@ type RetryableSystemError = Error & {
 
 type JsonRecord = Record<string, unknown>
 
+export type RateLimitEvidence = {
+  matched: boolean
+  retryAfterMs?: number
+}
+
 export type CopilotRetryContext = {
   client?: {
     session?: {
@@ -285,6 +290,74 @@ function parseJsonBody(init?: RequestInit) {
     return parsed as JsonRecord
   } catch {
     return undefined
+  }
+}
+
+function parseRetryAfterMs(headers: Headers): number | undefined {
+  const retryAfterMsHeader = headers.get("retry-after-ms")
+  if (retryAfterMsHeader) {
+    const value = Number(retryAfterMsHeader)
+    if (Number.isFinite(value) && value >= 0) return value
+  }
+
+  const retryAfterHeader = headers.get("retry-after")
+  if (!retryAfterHeader) return undefined
+
+  const seconds = Number(retryAfterHeader)
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000
+  }
+
+  const at = Date.parse(retryAfterHeader)
+  if (Number.isFinite(at)) {
+    return Math.max(0, at - Date.now())
+  }
+
+  return undefined
+}
+
+async function readJsonResponseBody(response: Response): Promise<JsonRecord | undefined> {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? ""
+  if (!contentType.includes("application/json")) return undefined
+
+  const text = await response.clone().text().catch(() => "")
+  if (!text) return undefined
+
+  try {
+    const parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined
+    return parsed as JsonRecord
+  } catch {
+    return undefined
+  }
+}
+
+export async function detectRateLimitEvidence(response: Response): Promise<RateLimitEvidence> {
+  const retryAfterMs = parseRetryAfterMs(response.headers)
+  if (response.status === 429) {
+    return {
+      matched: true,
+      retryAfterMs,
+    }
+  }
+
+  const payload = await readJsonResponseBody(response)
+  const error = payload?.error
+  const errorRecord = error && typeof error === "object" && !Array.isArray(error)
+    ? (error as JsonRecord)
+    : undefined
+  const errorType = typeof errorRecord?.type === "string" ? errorRecord.type.toLowerCase() : ""
+  const errorCode = typeof errorRecord?.code === "string" ? errorRecord.code.toLowerCase() : ""
+
+  if (errorType === "too_many_requests" || errorCode.includes("rate_limit")) {
+    return {
+      matched: true,
+      retryAfterMs,
+    }
+  }
+
+  return {
+    matched: false,
   }
 }
 

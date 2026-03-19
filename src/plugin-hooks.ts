@@ -10,6 +10,7 @@ import {
 } from "./loop-safety-plugin.js"
 import {
   createCopilotRetryingFetch,
+  detectRateLimitEvidence,
   type CopilotRetryContext,
   type FetchLike,
 } from "./copilot-network-retry.js"
@@ -31,10 +32,12 @@ import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from 
 import { handleStatusCommand, showStatusToast } from "./status-command.js"
 import {
   type AppendSessionTouchEventInput,
+  appendRoutingEvent,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
   readRoutingState,
   routingStatePath,
+  type RoutingEvent,
 } from "./routing-state.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
@@ -75,6 +78,8 @@ type SessionBinding = {
 }
 
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
+const RATE_LIMIT_HIT_THRESHOLD = 3
 const MAX_SESSION_BINDINGS = 256
 const TOUCH_WRITE_CACHE_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_TOUCH_WRITE_CACHE_ENTRIES = 2048
@@ -376,6 +381,7 @@ export function buildPluginHooks(input: {
   }) => Promise<CandidateAccountLoads | undefined>
   routingStateDirectory?: string
   appendSessionTouchEventImpl?: (input: AppendSessionTouchEventInput) => Promise<boolean>
+  appendRoutingEventImpl?: (input: { directory: string; event: RoutingEvent }) => Promise<void>
   touchWriteCacheIdleTtlMs?: number
   touchWriteCacheMaxEntries?: number
 }): CopilotPluginHooksWithChatHeaders {
@@ -396,11 +402,13 @@ export function buildPluginHooks(input: {
   let policyScopeOverride: LoopSafetyProviderScope | undefined
   const modelAccountFirstUse = new Set<string>()
   const sessionAccountBindings = new Map<string, SessionBinding>()
+  const rateLimitQueues = new Map<string, number[]>()
   const lastTouchWrites = new Map<string, number>()
   const routingDirectory = input.routingStateDirectory ?? routingStatePath()
   const touchWriteCacheIdleTtlMs = input.touchWriteCacheIdleTtlMs ?? TOUCH_WRITE_CACHE_IDLE_TTL_MS
   const touchWriteCacheMaxEntries = input.touchWriteCacheMaxEntries ?? MAX_TOUCH_WRITE_CACHE_ENTRIES
   const appendSessionTouchEventImpl = input.appendSessionTouchEventImpl ?? appendSessionTouchEvent
+  const appendRoutingEventImpl = input.appendRoutingEventImpl ?? appendRoutingEvent
 
   const loadCandidateAccountLoads = input.loadCandidateAccountLoads ?? (async (ctx: {
     candidates: ResolvedModelAccountCandidate[]
@@ -562,10 +570,38 @@ export function buildPluginHooks(input: {
         enterpriseUrl: resolved.entry.enterpriseUrl,
       }
 
-      return authOverride.run(auth, () => config.fetch(
+      const response = await authOverride.run(auth, () => config.fetch(
         rewriteRequestForAccount(nextRequest, resolved.entry.enterpriseUrl),
         nextInit,
       ))
+
+      let rateLimitEvidence: { matched: boolean; retryAfterMs?: number } = { matched: false }
+      try {
+        rateLimitEvidence = await detectRateLimitEvidence(response)
+      } catch {
+        rateLimitEvidence = { matched: false }
+      }
+      if (rateLimitEvidence.matched) {
+        const existingQueue = rateLimitQueues.get(resolved.name) ?? []
+        const cutoff = requestAt - RATE_LIMIT_WINDOW_MS
+        const queue = existingQueue.filter((at) => at >= cutoff)
+        queue.push(requestAt)
+        rateLimitQueues.set(resolved.name, queue)
+
+        if (queue.length === RATE_LIMIT_HIT_THRESHOLD) {
+          await appendRoutingEventImpl({
+            directory: routingDirectory,
+            event: {
+              type: "rate-limit-flagged",
+              accountName: resolved.name,
+              at: requestAt,
+              retryAfterMs: rateLimitEvidence.retryAfterMs,
+            },
+          }).catch(() => undefined)
+        }
+      }
+
+      return response
     }
 
     if (retryStore?.networkRetryEnabled !== true) return {
