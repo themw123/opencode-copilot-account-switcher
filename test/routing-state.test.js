@@ -2,7 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import os from "node:os"
 import path from "node:path"
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 
 import {
   appendRoutingEvent,
@@ -473,5 +473,62 @@ test("snapshot.tmp residue is ignored during reads and cleaned on next compactio
 
     const after = await readRoutingState(dir)
     assert.equal(after.accounts.main.lastRateLimitedAt, 200)
+  })
+})
+
+test("rotate generates collision-resistant sealed segment names within same millisecond and pid", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "active.log"), "first\n", "utf8")
+    const first = await rotateActiveLog({
+      directory: dir,
+      now: 3_000,
+      pid: 99,
+    })
+
+    await writeFile(path.join(dir, "active.log"), "second\n", "utf8")
+    const second = await rotateActiveLog({
+      directory: dir,
+      now: 3_000,
+      pid: 99,
+    })
+
+    assert.equal(first.rotated, true)
+    assert.equal(second.rotated, true)
+    assert.notEqual(first.segmentName, second.segmentName)
+
+    const files = await readdir(dir)
+    assert.equal(files.includes(first.segmentName), true)
+    assert.equal(files.includes(second.segmentName), true)
+  })
+})
+
+test("rotate surfaces EACCES rename failures instead of silently skipping", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "active.log"), "", "utf8")
+
+    await assert.rejects(
+      () => rotateActiveLog({
+        directory: dir,
+        now: 4_000,
+        pid: 7,
+        maxRetries: 3,
+        retryDelayMs: 0,
+        io: {
+          mkdir: async (...args) => import("node:fs/promises").then((m) => m.mkdir(...args)),
+          appendFile: async (...args) => import("node:fs/promises").then((m) => m.appendFile(...args)),
+          readFile: async (...args) => import("node:fs/promises").then((m) => m.readFile(...args)),
+          readdir: async (...args) => import("node:fs/promises").then((m) => m.readdir(...args)),
+          rename: async () => {
+            const error = new Error("denied")
+            error.code = "EACCES"
+            throw error
+          },
+          writeFile: async (...args) => import("node:fs/promises").then((m) => m.writeFile(...args)),
+          unlink: async (...args) => import("node:fs/promises").then((m) => m.unlink(...args)),
+          open: async (...args) => import("node:fs/promises").then((m) => m.open(...args)),
+        },
+      }),
+      (error) => error?.code === "EACCES",
+    )
   })
 })

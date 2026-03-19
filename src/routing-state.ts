@@ -7,6 +7,7 @@ const SESSION_WINDOW_MS = 30 * 60 * 1000
 const TOUCH_THROTTLE_MS = 60 * 1000
 const APPEND_MAX_RETRIES = 3
 const ROTATE_MAX_RETRIES = 3
+let rotateSegmentCounter = 0
 
 type OpenFileHandle = {
   appendFile(data: string, options?: BufferEncoding): Promise<void>
@@ -115,7 +116,12 @@ function isRetryableAppendError(error: unknown): boolean {
 
 function isRetryableRenameError(error: unknown): boolean {
   const issue = error as NodeJS.ErrnoException
-  return issue?.code === "EBUSY" || issue?.code === "EACCES" || issue?.code === "EPERM"
+  return issue?.code === "EBUSY"
+}
+
+function nextRotateSegmentName(now: number, pid: number): string {
+  rotateSegmentCounter = (rotateSegmentCounter + 1) % Number.MAX_SAFE_INTEGER
+  return `sealed-${now}-${pid}-${rotateSegmentCounter.toString(36)}.log`
 }
 
 function delay(ms: number): Promise<void> {
@@ -464,7 +470,7 @@ export async function rotateActiveLog(input: RotateActiveLogInput): Promise<Rota
   const maxRetries = Math.max(1, input.maxRetries ?? ROTATE_MAX_RETRIES)
   const retryDelayMs = Math.max(0, input.retryDelayMs ?? 5)
   const activeFile = path.join(input.directory, "active.log")
-  const segmentName = `sealed-${now}-${pid}.log`
+  const segmentName = nextRotateSegmentName(now, pid)
   const sealedFile = path.join(input.directory, segmentName)
 
   await io.mkdir(input.directory, { recursive: true })
