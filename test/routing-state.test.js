@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 
 import {
   appendRoutingEvent,
+  appendRouteDecisionEvent,
   appendSessionTouchEvent,
   buildCandidateAccountLoads,
   compactRoutingState,
@@ -26,8 +27,8 @@ test("readRoutingState merges snapshot active and unapplied sealed segments", as
     await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
       accounts: {
         main: {
-          sessions: {
-            s0: 50,
+          touchBuckets: {
+            "0": 1,
           },
         },
       },
@@ -55,8 +56,7 @@ test("readRoutingState merges snapshot active and unapplied sealed segments", as
 
     const state = await readRoutingState(dir)
 
-    assert.equal(state.accounts.main.sessions.s0, 50)
-    assert.equal(state.accounts.main.sessions.s1, 100)
+    assert.equal(state.accounts.main.touchBuckets[0], 2)
     assert.equal(state.accounts.main.lastRateLimitedAt, 200)
     assert.deepEqual(state.appliedSegments, ["sealed-100.log", "sealed-200.log"])
   })
@@ -67,8 +67,8 @@ test("readRoutingState checkpoints newly consumed sealed segments and prevents r
     await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
       accounts: {
         main: {
-          sessions: {
-            s1: 100,
+          touchBuckets: {
+            "0": 1,
           },
         },
       },
@@ -83,7 +83,7 @@ test("readRoutingState checkpoints newly consumed sealed segments and prevents r
     })}\n`, "utf8")
 
     const first = await readRoutingState(dir)
-    assert.equal(first.accounts.main.sessions.s1, 200)
+    assert.equal(first.accounts.main.touchBuckets[0], 2)
     assert.deepEqual(first.appliedSegments, ["sealed-1.log"])
 
     await writeFile(path.join(dir, "snapshot.json"), JSON.stringify(first), "utf8")
@@ -95,7 +95,7 @@ test("readRoutingState checkpoints newly consumed sealed segments and prevents r
     })}\n`, "utf8")
 
     const second = await readRoutingState(dir)
-    assert.equal(second.accounts.main.sessions.s1, 200)
+    assert.equal(second.accounts.main.touchBuckets[0], 2)
     assert.deepEqual(second.appliedSegments, ["sealed-1.log"])
   })
 })
@@ -110,8 +110,7 @@ test("foldRoutingEvents is idempotent for duplicate session-touch events", () =>
     { type: "session-touch", accountName: "main", sessionID: "s1", at: 80 },
   ])
 
-  assert.deepEqual(Object.keys(next.accounts.main.sessions), ["s1"])
-  assert.equal(next.accounts.main.sessions.s1, 100)
+  assert.equal(next.accounts.main.touchBuckets[0], 1)
 })
 
 test("readRoutingState ignores sealed segments already listed in appliedSegments", async () => {
@@ -119,8 +118,8 @@ test("readRoutingState ignores sealed segments already listed in appliedSegments
     await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
       accounts: {
         main: {
-          sessions: {
-            s1: 100,
+          touchBuckets: {
+            "0": 1,
           },
         },
       },
@@ -136,7 +135,7 @@ test("readRoutingState ignores sealed segments already listed in appliedSegments
 
     const state = await readRoutingState(dir)
 
-    assert.equal(state.accounts.main.sessions.s1, 100)
+    assert.equal(state.accounts.main.touchBuckets[0], 1)
   })
 })
 
@@ -157,7 +156,7 @@ test("readRoutingState recovers from a broken snapshot by replaying logs", async
 
     const state = await readRoutingState(dir)
 
-    assert.equal(state.accounts.main.sessions.s1, 100)
+    assert.equal(state.accounts.main.touchBuckets[0], 1)
     assert.equal(state.accounts.main.lastRateLimitedAt, 200)
     assert.deepEqual(state.appliedSegments, ["sealed-1.log"])
   })
@@ -174,14 +173,14 @@ test("readRoutingState surfaces non-ENOENT filesystem read errors", async () => 
   })
 })
 
-test("compactRoutingSnapshot removes expired sessions and keeps rate-limit watermark", () => {
+test("compactRoutingSnapshot removes expired touch buckets and keeps rate-limit watermark", () => {
   const now = 1_000_000
   const state = compactRoutingSnapshot({
     accounts: {
       main: {
-        sessions: {
-          stale: now - (30 * 60 * 1000) - 1,
-          fresh: now - (30 * 60 * 1000) + 1,
+        touchBuckets: {
+          [String(now - (30 * 60 * 1000) - 60_000)]: 2,
+          [String(now - (30 * 60 * 1000) + 60_000)]: 3,
         },
         lastRateLimitedAt: 123,
       },
@@ -189,10 +188,80 @@ test("compactRoutingSnapshot removes expired sessions and keeps rate-limit water
     appliedSegments: ["sealed-1.log"],
   }, now)
 
-  assert.equal(state.accounts.main.sessions.stale, undefined)
-  assert.equal(state.accounts.main.sessions.fresh, now - (30 * 60 * 1000) + 1)
+  assert.equal(state.accounts.main.touchBuckets[String(now - (30 * 60 * 1000) - 60_000)], undefined)
+  assert.equal(state.accounts.main.touchBuckets[String(now - (30 * 60 * 1000) + 60_000)], 3)
   assert.equal(state.accounts.main.lastRateLimitedAt, 123)
   assert.deepEqual(state.appliedSegments, ["sealed-1.log"])
+})
+
+test("appendRouteDecisionEvent appends route decisions to decisions.log", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await appendRouteDecisionEvent({
+      directory: dir,
+      event: {
+        type: "route-decision",
+        at: 100,
+        chosenAccount: "main",
+        sessionIDPresent: true,
+      },
+    })
+    await appendRouteDecisionEvent({
+      directory: dir,
+      event: {
+        type: "route-decision",
+        at: 101,
+        chosenAccount: "alt",
+        sessionIDPresent: false,
+      },
+    })
+
+    const decisions = await readFile(path.join(dir, "decisions.log"), "utf8")
+    const lines = decisions.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+
+    assert.equal(lines.length, 2)
+    assert.deepEqual(lines[0], {
+      type: "route-decision",
+      at: 100,
+      chosenAccount: "main",
+      sessionIDPresent: true,
+    })
+    assert.deepEqual(lines[1], {
+      type: "route-decision",
+      at: 101,
+      chosenAccount: "alt",
+      sessionIDPresent: false,
+    })
+  })
+})
+
+test("readRoutingState ignores decisions.log even when it contains foldable routing-style lines", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "active.log"), `${JSON.stringify({
+      type: "session-touch",
+      accountName: "main",
+      sessionID: "s1",
+      at: 120_000,
+    })}\n`, "utf8")
+
+    await writeFile(path.join(dir, "decisions.log"), `${JSON.stringify({
+      type: "session-touch",
+      accountName: "alt",
+      sessionID: "from-decisions",
+      at: 180_000,
+    })}\n${JSON.stringify({
+      type: "rate-limit-flagged",
+      accountName: "alt",
+      at: 181_000,
+    })}\n`, "utf8")
+
+    const decisions = await readFile(path.join(dir, "decisions.log"), "utf8")
+    assert.match(decisions, /from-decisions/)
+
+    const state = await readRoutingState(dir)
+    assert.deepEqual(state.accounts.main?.touchBuckets, { "120000": 1 })
+    assert.equal(state.accounts.main?.lastRateLimitedAt, undefined)
+    assert.equal(state.accounts.alt, undefined)
+  })
 })
 
 test("session-touch writes are throttled to once per minute per account-session pair", async () => {
@@ -264,21 +333,20 @@ test("session-touch write path supports injected append handler", async () => {
   assert.equal(captured[0]?.event?.sessionID, "s1")
 })
 
-test("load comparison counts distinct sessions used within 30 minutes", () => {
+test("load comparison sums touch counts within 30 minutes", () => {
   const now = 2_000_000
   const loads = buildCandidateAccountLoads({
     snapshot: {
       accounts: {
         main: {
-          sessions: {
-            s1: now - 10_000,
-            s2: now - 20_000,
-            stale: now - (30 * 60 * 1000) - 1,
+          touchBuckets: {
+            [String(Math.floor((now - 10_000) / 60_000) * 60_000)]: 2,
+            [String(Math.floor((now - (30 * 60 * 1000) - 1) / 60_000) * 60_000)]: 1,
           },
         },
         alt: {
-          sessions: {
-            s9: now - 5_000,
+          touchBuckets: {
+            [String(Math.floor((now - 5_000) / 60_000) * 60_000)]: 1,
           },
         },
       },
@@ -288,9 +356,63 @@ test("load comparison counts distinct sessions used within 30 minutes", () => {
     now,
   })
 
-  assert.equal(loads.get("main"), 2)
+  assert.equal(loads.get("main"), 3)
   assert.equal(loads.get("alt"), 1)
   assert.equal(loads.get("missing"), 0)
+})
+
+test("buildCandidateAccountLoads sums touch buckets within the rolling window", async () => {
+  const { buildCandidateAccountLoads } = await import("../dist/routing-state.js")
+
+  const loads = buildCandidateAccountLoads({
+    snapshot: {
+      accounts: {
+        main: { touchBuckets: { "1000": 2, "61000": 3 } },
+        alt: { touchBuckets: { "1000": 1 } },
+      },
+      appliedSegments: [],
+    },
+    candidateAccountNames: ["main", "alt"],
+    now: 61_000,
+  })
+
+  assert.equal(loads.get("main"), 5)
+  assert.equal(loads.get("alt"), 1)
+})
+
+test("buildCandidateAccountLoads includes the bucket overlapping the rolling cutoff", () => {
+  const now = (30 * 60 * 1000) + 60_001
+  const loads = buildCandidateAccountLoads({
+    snapshot: {
+      accounts: {
+        main: {
+          touchBuckets: {
+            "0": 2,
+            "60000": 4,
+          },
+        },
+      },
+      appliedSegments: [],
+    },
+    candidateAccountNames: ["main"],
+    now,
+  })
+
+  assert.equal(loads.get("main"), 4)
+})
+
+test("readRoutingState converts legacy sessions into touch buckets", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
+      accounts: {
+        main: { sessions: { s1: 60_000, s2: 61_000 } },
+      },
+      appliedSegments: [],
+    }), "utf8")
+
+    const state = await readRoutingState(dir)
+    assert.equal(state.accounts.main.touchBuckets[60_000], 2)
+  })
 })
 
 test("append and rotate racing together do not drop a session-touch event", async () => {
@@ -317,7 +439,7 @@ test("append and rotate racing together do not drop a session-touch event", asyn
     await rotate
 
     const state = await readRoutingState(dir)
-    assert.equal(state.accounts.main.sessions.s1, 100)
+    assert.equal(state.accounts.main.touchBuckets[0], 1)
   })
 })
 
@@ -326,8 +448,8 @@ test("compaction does not double-apply a sealed segment already recorded in appl
     await writeFile(path.join(dir, "snapshot.json"), JSON.stringify({
       accounts: {
         main: {
-          sessions: {
-            s1: 100,
+          touchBuckets: {
+            "0": 1,
           },
         },
       },
@@ -342,10 +464,59 @@ test("compaction does not double-apply a sealed segment already recorded in appl
     })}\n`, "utf8")
 
     const compacted = await compactRoutingState({ directory: dir, now: 1_000_000 })
-    assert.deepEqual(compacted.accounts.main.sessions, { s1: 100 })
+    assert.deepEqual(compacted.accounts.main.touchBuckets, { "0": 1 })
 
     const reread = await readRoutingState(dir)
-    assert.deepEqual(reread.accounts.main.sessions, { s1: 100 })
+    assert.deepEqual(reread.accounts.main.touchBuckets, { "0": 1 })
+  })
+})
+
+test("compactRoutingState does not rotate, fold, or delete decisions log", async () => {
+  await withRoutingStateDir(async (dir) => {
+    const baseline = {
+      accounts: {
+        main: {
+          touchBuckets: {
+            "0": 1,
+          },
+          lastRateLimitedAt: 50,
+        },
+      },
+      appliedSegments: [],
+    }
+    await writeFile(path.join(dir, "snapshot.json"), JSON.stringify(baseline), "utf8")
+
+    const decisionsFile = path.join(dir, "decisions.log")
+    await writeFile(decisionsFile, `${JSON.stringify({
+      type: "session-touch",
+      accountName: "alt",
+      sessionID: "from-decisions-compaction",
+      at: 100,
+    })}\n${JSON.stringify({
+      type: "rate-limit-flagged",
+      accountName: "alt",
+      at: 101,
+    })}\n`, "utf8")
+
+    const compacted = await compactRoutingState({ directory: dir, now: 200_000 })
+
+    assert.deepEqual(compacted.accounts.main?.touchBuckets, { "0": 1 })
+    assert.equal(compacted.accounts.main?.lastRateLimitedAt, 50)
+    assert.equal(compacted.accounts.alt, undefined)
+    assert.deepEqual(compacted.appliedSegments, [])
+
+    const reread = await readRoutingState(dir)
+    assert.deepEqual(reread.accounts.main?.touchBuckets, { "0": 1 })
+    assert.equal(reread.accounts.main?.lastRateLimitedAt, 50)
+    assert.equal(reread.accounts.alt, undefined)
+    assert.deepEqual(reread.appliedSegments, [])
+
+    const decisions = await readFile(decisionsFile, "utf8")
+    assert.match(decisions, /from-decisions-compaction/)
+
+    const entries = await readdir(dir)
+    const sealedSegments = entries.filter((name) => /^sealed-.*\.log$/.test(name))
+    assert.deepEqual(sealedSegments, [])
   })
 })
 
@@ -432,9 +603,27 @@ test("append retries by reopening active.log after transient write failure", asy
     })
 
     const state = await readRoutingState(dir)
-    assert.equal(state.accounts.main.sessions.s1, 100)
+    assert.equal(state.accounts.main.touchBuckets[0], 1)
     assert.equal(openCalls >= 2, true)
   })
+})
+
+test("compactRoutingSnapshot keeps the bucket overlapping the rolling cutoff", () => {
+  const now = (30 * 60 * 1000) + 60_001
+  const state = compactRoutingSnapshot({
+    accounts: {
+      main: {
+        touchBuckets: {
+          "0": 2,
+          "60000": 3,
+        },
+      },
+    },
+    appliedSegments: [],
+  }, now)
+
+  assert.equal(state.accounts.main.touchBuckets[0], undefined)
+  assert.equal(state.accounts.main.touchBuckets[60000], 3)
 })
 
 test("snapshot.tmp residue is ignored during reads and cleaned on next compaction", async () => {

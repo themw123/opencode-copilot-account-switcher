@@ -38,12 +38,35 @@ function formatUpdatedAt(updatedAt?: number) {
   return `updated at ${new Date(updatedAt).toISOString()}`
 }
 
-function buildSuccessMessage(name: string, quota?: StoreFile["accounts"][string]["quota"]) {
-  return [
-    `${name} Copilot quota`,
-    `premium ${formatQuotaValue(quota?.snapshots?.premium)} chat ${formatQuotaValue(quota?.snapshots?.chat)} completions ${formatQuotaValue(quota?.snapshots?.completions)}`,
+function formatActiveGroup(store: StoreFile) {
+  const names = Array.isArray(store.activeAccountNames) ? store.activeAccountNames : []
+  if (names.length > 0) return names.join(", ")
+  return "none"
+}
+
+function formatRoutingGroup(store: StoreFile) {
+  const assignments = store.modelAccountAssignments ?? {}
+  const modelIDs = Object.keys(assignments).sort((a, b) => a.localeCompare(b))
+  const mapped = modelIDs
+    .map((modelID) => {
+      const names = assignments[modelID] ?? []
+      if (names.length === 0) return undefined
+      return `${modelID} -> ${names.join(", ")}`
+    })
+    .filter((line): line is string => Boolean(line))
+  return mapped.length > 0 ? mapped.join("; ") : "none"
+}
+
+function buildSuccessMessage(store: StoreFile, name: string, quota?: StoreFile["accounts"][string]["quota"]) {
+  const activeSummary = [
+    `current active: ${name}`,
+    `premium ${formatQuotaValue(quota?.snapshots?.premium)}`,
+    `chat ${formatQuotaValue(quota?.snapshots?.chat)}`,
+    `completions ${formatQuotaValue(quota?.snapshots?.completions)}`,
     formatUpdatedAt(quota?.updatedAt),
   ].join(" | ")
+
+  return [activeSummary, `活跃组: ${formatActiveGroup(store)}`, `路由组: ${formatRoutingGroup(store)}`].join("\n")
 }
 
 function buildMissingActiveMessage() {
@@ -56,8 +79,8 @@ function buildRefreshFailedMessage(result: { error: string; previousQuota?: Stor
   return `Copilot quota refresh failed: ${result.error}.${previousText}`
 }
 
-function buildPersistFailedMessage(entry: StoreFile["accounts"][string], error: unknown) {
-  return `Latest quota refreshed but store persistence failed: ${summarizeError(error)}. ${buildSuccessMessage(entry.name, entry.quota)}`
+function buildPersistFailedMessage(store: StoreFile, entry: StoreFile["accounts"][string], error: unknown) {
+  return `Latest quota refreshed but store persistence failed: ${summarizeError(error)}. ${buildSuccessMessage(store, entry.name, entry.quota)}`
 }
 
 export async function showStatusToast(input: {
@@ -172,7 +195,7 @@ export async function handleStatusCommand(input: {
   } catch (error) {
     await showStatusToast({
       client: input.client,
-      message: buildPersistFailedMessage(result.entry, error),
+      message: buildPersistFailedMessage(store, result.entry, error),
       variant: "error",
       warn,
     })
@@ -181,7 +204,7 @@ export async function handleStatusCommand(input: {
 
   await showStatusToast({
     client: input.client,
-    message: buildSuccessMessage(result.name, result.entry.quota),
+    message: buildSuccessMessage(store, result.name, result.entry.quota),
     variant: "success",
     warn,
   })
