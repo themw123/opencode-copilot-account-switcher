@@ -194,7 +194,47 @@ test("compactRoutingSnapshot removes expired touch buckets and keeps rate-limit 
   assert.deepEqual(state.appliedSegments, ["sealed-1.log"])
 })
 
-test("appendRouteDecisionEvent writes to decisions.log and readRoutingState ignores decisions log entries", async () => {
+test("appendRouteDecisionEvent appends route decisions to decisions.log", async () => {
+  await withRoutingStateDir(async (dir) => {
+    await appendRouteDecisionEvent({
+      directory: dir,
+      event: {
+        type: "route-decision",
+        at: 100,
+        chosenAccount: "main",
+        sessionIDPresent: true,
+      },
+    })
+    await appendRouteDecisionEvent({
+      directory: dir,
+      event: {
+        type: "route-decision",
+        at: 101,
+        chosenAccount: "alt",
+        sessionIDPresent: false,
+      },
+    })
+
+    const decisions = await readFile(path.join(dir, "decisions.log"), "utf8")
+    const lines = decisions.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+
+    assert.equal(lines.length, 2)
+    assert.deepEqual(lines[0], {
+      type: "route-decision",
+      at: 100,
+      chosenAccount: "main",
+      sessionIDPresent: true,
+    })
+    assert.deepEqual(lines[1], {
+      type: "route-decision",
+      at: 101,
+      chosenAccount: "alt",
+      sessionIDPresent: false,
+    })
+  })
+})
+
+test("readRoutingState ignores decisions.log even when it contains foldable routing-style lines", async () => {
   await withRoutingStateDir(async (dir) => {
     await writeFile(path.join(dir, "active.log"), `${JSON.stringify({
       type: "session-touch",
