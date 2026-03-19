@@ -2456,6 +2456,62 @@ test("plugin auth loader reselects on a new user turn when current account load 
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
+test("plugin auth loader keeps candidate order as tie-breaker when loads are equal", async () => {
+  const harness = createSessionBindingHarness({
+    store: {
+      activeAccountNames: ["main", "alt"],
+    },
+    loadCandidateAccountLoads: async () => ({
+      main: 2,
+      alt: 2,
+    }),
+  })
+
+  await harness.sendRequest({
+    sessionID: "child-tie",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
+})
+
+test("plugin auth loader evicts stale session bindings when binding cache grows too large", async () => {
+  let child0Hits = 0
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ sessionID }) => {
+      if (sessionID === "child-0") {
+        child0Hits += 1
+        if (child0Hits === 1) {
+          return { main: 10, alt: 0 }
+        }
+        return { main: 0, alt: 10 }
+      }
+      return { main: 5, alt: 1 }
+    },
+  })
+
+  for (let index = 0; index < 260; index += 1) {
+    await harness.sendRequest({
+      sessionID: `child-${index}`,
+      initiator: "agent",
+      model: "gpt-5",
+    })
+  }
+
+  await harness.sendRequest({
+    sessionID: "child-0",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  const firstCall = harness.outgoing[0]
+  const lastCall = harness.outgoing.at(-1)
+  assert.equal(firstCall?.auth?.refresh, "alt-refresh")
+  assert.equal(lastCall?.auth?.refresh, "main-refresh")
+})
+
 test("configureModelAccountAssignments stores multiple selected accounts", async () => {
   const { configureModelAccountAssignments } = await import("../dist/plugin.js")
 

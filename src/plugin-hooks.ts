@@ -62,6 +62,13 @@ type StatusCommandHandler = typeof handleStatusCommand
 type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
 
 type CandidateAccountLoads = Record<string, number> | Map<string, number>
+type SessionBinding = {
+  accountName: string
+  lastUsedAt: number
+}
+
+const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
+const MAX_SESSION_BINDINGS = 256
 
 export class InjectCommandHandledError extends Error {
   constructor() {
@@ -250,18 +257,13 @@ function chooseCandidateAccount(input: {
   candidates: ResolvedModelAccountCandidate[]
   sessionID: string
   allowReselect: boolean
-  sessionBindings: Map<string, string>
+  sessionBindings: Map<string, SessionBinding>
   loads: Map<string, number>
 }) {
-  const ranked = [...input.candidates].sort((a, b) => {
-    const loadA = input.loads.get(a.name) ?? 0
-    const loadB = input.loads.get(b.name) ?? 0
-    if (loadA !== loadB) return loadA - loadB
-    return a.name.localeCompare(b.name)
-  })
+  const ranked = [...input.candidates].sort((a, b) => (input.loads.get(a.name) ?? 0) - (input.loads.get(b.name) ?? 0))
   const lowest = ranked[0]
-  const boundName = input.sessionBindings.get(input.sessionID)
-  const bound = boundName ? input.candidates.find((item) => item.name === boundName) : undefined
+  const boundName = input.sessionBindings.get(input.sessionID)?.accountName
+  const bound = typeof boundName === "string" ? input.candidates.find((item) => item.name === boundName) : undefined
 
   if (!bound) return lowest
   if (!input.allowReselect) return bound
@@ -272,6 +274,50 @@ function chooseCandidateAccount(input: {
     return lowest
   }
   return bound
+}
+
+function normalizeStoreForRouting(store: StoreFile) {
+  const assignments = (store as StoreFile & {
+    modelAccountAssignments?: Record<string, unknown>
+  }).modelAccountAssignments
+  if (!assignments) return store
+
+  let changed = false
+  const normalized: Record<string, string[]> = {}
+  for (const [modelID, candidate] of Object.entries(assignments as Record<string, unknown>)) {
+    if (Array.isArray(candidate)) {
+      normalized[modelID] = candidate
+      continue
+    }
+    if (typeof candidate === "string" && candidate.length > 0) {
+      normalized[modelID] = [candidate]
+      changed = true
+      continue
+    }
+    changed = true
+  }
+
+  if (!changed) return store
+  return {
+    ...store,
+    modelAccountAssignments: normalized,
+  }
+}
+
+function pruneSessionBindings(bindings: Map<string, SessionBinding>, now: number) {
+  for (const [sessionID, binding] of bindings.entries()) {
+    if (now - binding.lastUsedAt > SESSION_BINDING_IDLE_TTL_MS) {
+      bindings.delete(sessionID)
+    }
+  }
+
+  if (bindings.size <= MAX_SESSION_BINDINGS) return
+
+  const oldest = [...bindings.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)
+  for (const [sessionID] of oldest) {
+    if (bindings.size <= MAX_SESSION_BINDINGS) break
+    bindings.delete(sessionID)
+  }
 }
 
 export function buildPluginHooks(input: {
@@ -311,10 +357,11 @@ export function buildPluginHooks(input: {
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
+  const now = input.now ?? (() => Date.now())
   let injectArmed = false
   let policyScopeOverride: LoopSafetyProviderScope | undefined
   const modelAccountFirstUse = new Set<string>()
-  const sessionAccountBindings = new Map<string, string>()
+  const sessionAccountBindings = new Map<string, SessionBinding>()
 
   const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
 
@@ -390,8 +437,11 @@ export function buildPluginHooks(input: {
     const store = await loadStore().catch(() => undefined)
     const retryStore = readRetryStoreContext(store)
     const fetchWithModelAccount = async (request: Request | URL | string, init?: RequestInit) => {
-      const latestStore = await loadStore().catch(() => undefined)
+      const latestStoreRaw = await loadStore().catch(() => undefined)
+      const latestStore = latestStoreRaw ? normalizeStoreForRouting(latestStoreRaw) : undefined
       const modelID = await readRequestModelID(request, init)
+      const requestAt = now()
+      pruneSessionBindings(sessionAccountBindings, requestAt)
       const sessionID = getMergedRequestHeader(request, init, "x-opencode-session-id") ?? ""
       const initiator = getMergedRequestHeader(request, init, "x-initiator")
       const allowReselect = initiator === "user"
@@ -416,7 +466,10 @@ export function buildPluginHooks(input: {
       if (!resolved) return config.fetch(request, init)
 
       if (sessionID.length > 0) {
-        sessionAccountBindings.set(sessionID, resolved.name)
+        sessionAccountBindings.set(sessionID, {
+          accountName: resolved.name,
+          lastUsedAt: requestAt,
+        })
       }
 
       const isFirstUse = modelAccountFirstUse.has(resolved.name) === false
