@@ -2360,6 +2360,124 @@ test("default account group can include multiple accounts", async () => {
   assert.equal(store.active, "main")
 })
 
+test("configureModelAccountAssignments fallback hint uses default account group when available", async () => {
+  const { configureModelAccountAssignments } = await import("../dist/plugin.js")
+
+  let capturedModelOptions = []
+  const store = {
+    active: "solo",
+    activeAccountNames: ["student-1", "student-2"],
+    accounts: {
+      solo: {
+        name: "solo",
+        refresh: "solo-refresh",
+        access: "solo-access",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      "student-1": {
+        name: "student-1",
+        refresh: "s1-refresh",
+        access: "s1-access",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+      "student-2": {
+        name: "student-2",
+        refresh: "s2-refresh",
+        access: "s2-access",
+        expires: 0,
+        models: { available: ["gpt-5"], disabled: [] },
+      },
+    },
+  }
+
+  const changed = await configureModelAccountAssignments(store, {
+    selectModel: async (options) => {
+      capturedModelOptions = options
+      return null
+    },
+  })
+
+  assert.equal(changed, false)
+  assert.match(capturedModelOptions[0]?.hint ?? "", /fallbacks to student-1, student-2/)
+})
+
+test("configureDefaultAccountGroup keeps active account unchanged when it is outside new default group", async () => {
+  const { configureDefaultAccountGroup } = await import("../dist/plugin.js")
+
+  const store = {
+    active: "manual-current",
+    activeAccountNames: ["manual-current"],
+    accounts: {
+      "manual-current": { name: "manual-current", refresh: "mc-refresh", access: "mc-access", expires: 0 },
+      "student-1": { name: "student-1", refresh: "s1-refresh", access: "s1-access", expires: 0 },
+      "student-2": { name: "student-2", refresh: "s2-refresh", access: "s2-access", expires: 0 },
+    },
+  }
+
+  const changed = await configureDefaultAccountGroup(store, {
+    selectAccounts: async () => ["student-1", "student-2"],
+  })
+
+  assert.equal(changed, true)
+  assert.equal(store.active, "manual-current")
+  assert.deepEqual(store.activeAccountNames, ["student-1", "student-2"])
+})
+
+test("clearAllAccounts also clears activeAccountNames", async () => {
+  const { clearAllAccounts } = await import("../dist/plugin.js")
+
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "alt"],
+    accounts: {
+      main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+      alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+    },
+    modelAccountAssignments: {
+      "gpt-5": ["alt"],
+    },
+  }
+
+  clearAllAccounts(store)
+
+  assert.equal(store.active, undefined)
+  assert.equal(store.activeAccountNames, undefined)
+  assert.deepEqual(store.accounts, {})
+  assert.equal(store.modelAccountAssignments, undefined)
+})
+
+test("removeAccountFromStore chooses deterministic active fallback", async () => {
+  const { removeAccountFromStore } = await import("../dist/plugin.js")
+
+  const preferGroupStore = {
+    active: "main",
+    activeAccountNames: ["alt"],
+    accounts: {
+      main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+      alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+      beta: { name: "beta", refresh: "beta-refresh", access: "beta-access", expires: 0 },
+    },
+  }
+
+  removeAccountFromStore(preferGroupStore, "main")
+  assert.equal(preferGroupStore.active, "alt")
+
+  const fallbackStore = {
+    active: "main",
+    activeAccountNames: ["missing"],
+    accounts: {
+      main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+      zeta: { name: "zeta", refresh: "zeta-refresh", access: "zeta-access", expires: 0 },
+      alpha: { name: "alpha", refresh: "alpha-refresh", access: "alpha-access", expires: 0 },
+    },
+  }
+
+  removeAccountFromStore(fallbackStore, "main")
+  assert.equal(fallbackStore.active, "alpha")
+})
+
 test("plugin menu toggle path persists loopSafetyEnabled", async () => {
   const writes = []
   const store = {

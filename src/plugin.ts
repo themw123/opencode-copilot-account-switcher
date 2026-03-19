@@ -322,10 +322,37 @@ export async function configureDefaultAccountGroup(
   if (next.length === 0) return false
 
   store.activeAccountNames = next
-  if (!store.active || !next.includes(store.active)) {
-    store.active = next[0]
-  }
   return true
+}
+
+export function clearAllAccounts(store: StoreFile) {
+  store.accounts = {}
+  store.active = undefined
+  delete store.activeAccountNames
+  delete store.modelAccountAssignments
+}
+
+export function removeAccountFromStore(store: StoreFile, name: string) {
+  rewriteModelAccountAssignments(store, { [name]: undefined })
+  delete store.accounts[name]
+
+  if (Array.isArray(store.activeAccountNames)) {
+    store.activeAccountNames = store.activeAccountNames.filter((item) => item !== name)
+    if (store.activeAccountNames.length === 0) {
+      delete store.activeAccountNames
+    }
+  }
+
+  if (store.active !== name) return
+
+  const fromDefaultGroup = (store.activeAccountNames ?? []).find((accountName) => Boolean(store.accounts[accountName]))
+  if (fromDefaultGroup) {
+    store.active = fromDefaultGroup
+    return
+  }
+
+  const remaining = Object.keys(store.accounts).sort((a, b) => a.localeCompare(b))
+  store.active = remaining[0]
 }
 
 export async function configureModelAccountAssignments(
@@ -351,13 +378,18 @@ async function configureModelAccountAssignmentsWithSelection(
     return false
   }
 
-  const activeLabel = store.active ? store.accounts[store.active]?.name ?? store.active : "none"
+  const fallbackGroupNames = (store.activeAccountNames ?? [])
+    .map((name) => store.accounts[name]?.name ?? name)
+    .filter((name) => typeof name === "string" && name.length > 0)
+  const fallbackLabel = fallbackGroupNames.length > 0
+    ? fallbackGroupNames.join(", ")
+    : (store.active ? store.accounts[store.active]?.name ?? store.active : "none")
   const modelOptions = models.map((model) => ({
     label: model,
     value: model,
     hint: store.modelAccountAssignments?.[model]?.length
       ? `group: ${(store.modelAccountAssignments[model] ?? []).join(", ")}`
-      : `fallbacks to ${activeLabel}`,
+      : `fallbacks to ${fallbackLabel}`,
   }))
 
   const modelID = selectors?.selectModel
@@ -915,9 +947,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
       }
 
       if (action.type === "remove-all") {
-        store.accounts = {}
-        store.active = undefined
-        delete store.modelAccountAssignments
+        clearAllAccounts(store)
         await persistStore(store, {
           reason: "remove-all",
           source: "plugin.runMenu",
@@ -933,15 +963,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         const decision = await showAccountActions(action.account)
         if (decision === "back") continue
         if (decision === "remove") {
-          rewriteModelAccountAssignments(store, { [name]: undefined })
-          delete store.accounts[name]
-          if (Array.isArray(store.activeAccountNames)) {
-            store.activeAccountNames = store.activeAccountNames.filter((item) => item !== name)
-            if (store.activeAccountNames.length === 0) {
-              delete store.activeAccountNames
-            }
-          }
-          if (store.active === name) store.active = undefined
+          removeAccountFromStore(store, name)
           await persistStore(store, {
             reason: "remove-account",
             source: "plugin.runMenu",
