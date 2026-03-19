@@ -855,6 +855,188 @@ test("repairs the uniquely matched session part after a too-long input id 400", 
   assert.equal(calls[1].input[1].id, undefined)
 })
 
+test("bulk strips all input ids and repairs matching session parts when connection mismatch error is returned", async () => {
+  const calls = []
+  const patchCalls = []
+  const messageParts = [
+    {
+      id: "part_1",
+      messageID: "msg_1",
+      sessionID: "sess-123",
+      type: "text",
+      text: "a",
+      metadata: { openai: { itemId: "item_a", keep: true }, custom: { keep: "one" } },
+    },
+    {
+      id: "part_2",
+      messageID: "msg_1",
+      sessionID: "sess-123",
+      type: "text",
+      text: "b",
+      metadata: { openai: { itemId: "item_b", keep: true }, custom: { keep: "two" } },
+    },
+    {
+      id: "part_3",
+      messageID: "msg_1",
+      sessionID: "sess-123",
+      type: "text",
+      text: "keep",
+      metadata: { openai: { itemId: "item_keep", keep: true }, custom: { keep: "three" } },
+    },
+  ]
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?connection-mismatch-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({
+          error: {
+            message: "Input item ID does not belong to this connection.",
+          },
+        }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        })
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async () => ({
+            data: [
+              {
+                info: { id: "msg_1", role: "assistant" },
+                parts: messageParts,
+              },
+            ],
+          }),
+          message: async () => ({
+            data: {
+              parts: messageParts,
+            },
+          }),
+        },
+      },
+      patchPart: async (request) => {
+        patchCalls.push(request)
+        return { ok: true }
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "a" }], id: "item_a" },
+        { role: "assistant", content: [{ type: "output_text", text: "b" }], id: "item_b" },
+      ],
+      previous_response_id: "resp_123",
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].input[1].id, "item_a")
+  assert.equal(calls[0].input[2].id, "item_b")
+  assert.equal(calls[1].input[1].id, undefined)
+  assert.equal(calls[1].input[2].id, undefined)
+  assert.equal(calls[1].previous_response_id, "resp_123")
+  assert.equal(patchCalls.length, 2)
+
+  const patchedParts = patchCalls
+    .map((request) => JSON.parse(String(request.init.body)))
+    .sort((a, b) => a.id.localeCompare(b.id))
+  assert.deepEqual(patchedParts.map((part) => part.id), ["part_1", "part_2"])
+  assert.equal(patchedParts[0].metadata.openai.itemId, undefined)
+  assert.equal(patchedParts[0].metadata.openai.keep, true)
+  assert.equal(patchedParts[0].metadata.custom.keep, "one")
+  assert.equal(patchedParts[1].metadata.openai.itemId, undefined)
+  assert.equal(patchedParts[1].metadata.openai.keep, true)
+  assert.equal(patchedParts[1].metadata.custom.keep, "two")
+})
+
+test("bulk strips all input ids for connection mismatch even when session repair fails", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?connection-mismatch-repair-fail-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response("Input item ID does not belong to this connection.", {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        })
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async () => ({
+            data: [
+              {
+                info: { id: "msg_1", role: "assistant" },
+                parts: [
+                  { id: "part_1", messageID: "msg_1", sessionID: "sess-123", type: "text", text: "a", metadata: { openai: { itemId: "item_a" } } },
+                  { id: "part_2", messageID: "msg_1", sessionID: "sess-123", type: "text", text: "b", metadata: { openai: { itemId: "item_b" } } },
+                ],
+              },
+            ],
+          }),
+          message: async () => ({
+            data: {
+              parts: [
+                { id: "part_1", messageID: "msg_1", sessionID: "sess-123", type: "text", text: "a", metadata: { openai: { itemId: "item_a" } } },
+                { id: "part_2", messageID: "msg_1", sessionID: "sess-123", type: "text", text: "b", metadata: { openai: { itemId: "item_b" } } },
+              ],
+            },
+          }),
+        },
+      },
+      patchPart: async () => {
+        throw new TypeError("network failed")
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "a" }], id: "item_a" },
+        { role: "assistant", content: [{ type: "output_text", text: "b" }], id: "item_b" },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+  assert.equal(calls[1].input[2].id, undefined)
+})
+
 test("repairs the uniquely matched session part through client part.update when no patchPart is provided", async () => {
   const calls = []
   const sessionReads = []

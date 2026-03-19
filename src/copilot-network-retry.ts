@@ -143,9 +143,20 @@ function isInputIdTooLongErrorBody(payload: unknown) {
   return message.includes("string too long") && (message.includes("input id") || message.includes(".id'"))
 }
 
+function isConnectionMismatchInputIdErrorBody(payload: unknown) {
+  if (!payload || typeof payload !== "object") return false
+  const error = (payload as { error?: { message?: unknown } }).error
+  return isConnectionMismatchInputIdMessage(String(error?.message ?? ""))
+}
+
 function isInputIdTooLongMessage(text: string) {
   const message = text.toLowerCase()
   return message.includes("string too long") && (message.includes("input id") || message.includes(".id'"))
+}
+
+function isConnectionMismatchInputIdMessage(text: string) {
+  const message = text.toLowerCase()
+  return message.includes("does not belong to this connection") && message.includes("item id")
 }
 
 function parseInputIdTooLongDetails(text: string) {
@@ -192,6 +203,39 @@ function countLongInputIdCandidates(payload: JsonRecord | undefined) {
   if (!Array.isArray(input)) return 0
   return input.filter((item) => typeof (item as { id?: unknown })?.id === "string" && ((item as { id?: string }).id?.length ?? 0) > 64)
     .length
+}
+
+function countInputIdCandidates(payload: JsonRecord | undefined) {
+  const input = payload?.input
+  if (!Array.isArray(input)) return 0
+  return input.filter((item) => typeof (item as { id?: unknown })?.id === "string" && ((item as { id?: string }).id?.length ?? 0) > 0)
+    .length
+}
+
+function collectInputItemIds(payload: JsonRecord | undefined) {
+  const input = payload?.input
+  if (!Array.isArray(input)) return []
+  return [...new Set(input.flatMap((item) => {
+    const id = (item as { id?: unknown } | undefined)?.id
+    return typeof id === "string" && id.length > 0 ? [id] : []
+  }))]
+}
+
+type SessionRepairMatch = {
+  messageID: string
+  partID: string
+  partType: string
+  itemId?: string
+}
+
+type SessionMessagesResponse = {
+  data?: Array<{
+    info?: {
+      id?: string
+      role?: string
+    }
+    parts?: Array<JsonRecord>
+  }>
 }
 
 type LongInputIdCandidate = {
@@ -292,6 +336,27 @@ function stripTargetedLongInputId(payload: JsonRecord, serverReportedIndex?: num
   let changed = false
   const nextInput = input.map((item) => {
     if (item !== target) return item
+    changed = true
+    const clone = { ...(item as JsonRecord) }
+    delete (clone as { id?: unknown }).id
+    return clone
+  })
+
+  if (!changed) return payload
+  return {
+    ...payload,
+    input: nextInput,
+  }
+}
+
+function stripAllInputIds(payload: JsonRecord) {
+  const input = payload.input
+  if (!Array.isArray(input)) return payload
+
+  let changed = false
+  const nextInput = input.map((item) => {
+    const id = (item as { id?: unknown } | undefined)?.id
+    if (typeof id !== "string" || id.length === 0) return item
     changed = true
     const clone = { ...(item as JsonRecord) }
     delete (clone as { id?: unknown }).id
@@ -607,27 +672,27 @@ function getInternalPatchClient(client: CopilotRetryContext["client"]) {
   return typeof patch === "function" ? patch : undefined
 }
 
-async function repairSessionPart(sessionID: string, failingId: string, ctx?: CopilotRetryContext) {
-  const messages = await ctx?.client?.session?.messages?.({
-    path: { id: sessionID },
-  })
-  const matches = (messages?.data ?? []).flatMap((message) => {
+function collectSessionRepairMatches(
+  messages: SessionMessagesResponse | undefined,
+  predicate: (itemId: string | undefined) => boolean,
+) {
+  return (messages?.data ?? []).flatMap((message) => {
     if (message.info?.role !== "assistant") return []
     return (message.parts ?? []).flatMap((part) => {
       const itemId = (part.metadata as { openai?: { itemId?: unknown } } | undefined)?.openai?.itemId
-      if (itemId !== failingId || typeof message.info?.id !== "string" || typeof part.id !== "string") return []
-      return [{ messageID: message.info.id, partID: part.id, partType: String(part.type ?? "unknown") }]
+      const normalizedItemId = typeof itemId === "string" ? itemId : undefined
+      if (!predicate(normalizedItemId) || typeof message.info?.id !== "string" || typeof part.id !== "string") return []
+      return [{
+        messageID: message.info.id,
+        partID: part.id,
+        partType: String(part.type ?? "unknown"),
+        itemId: normalizedItemId,
+      } satisfies SessionRepairMatch]
     })
   })
-  debugLog("input-id retry session candidates", {
-    sessionID,
-    count: matches.length,
-    candidates: matches,
-  })
-  if (matches.length !== 1) return false
+}
 
-  const match = matches[0]
-  debugLog("input-id retry session match", match)
+async function patchSessionPart(sessionID: string, match: SessionRepairMatch, ctx?: CopilotRetryContext) {
   const latest = await ctx?.client?.session?.message?.({
     path: {
       id: sessionID,
@@ -762,6 +827,174 @@ async function repairSessionPart(sessionID: string, failingId: string, ctx?: Cop
     if (isRetryableRepairError(error)) return false
     throw error
   }
+}
+
+async function repairSessionPart(sessionID: string, failingId: string, ctx?: CopilotRetryContext) {
+  const messages = await ctx?.client?.session?.messages?.({
+    path: { id: sessionID },
+  })
+  const matches = collectSessionRepairMatches(messages, (itemId) => itemId === failingId)
+  debugLog("input-id retry session candidates", {
+    sessionID,
+    count: matches.length,
+    candidates: matches.map(({ messageID, partID, partType }) => ({ messageID, partID, partType })),
+  })
+  if (matches.length !== 1) return false
+
+  const match = matches[0]
+  debugLog("input-id retry session match", {
+    messageID: match.messageID,
+    partID: match.partID,
+    partType: match.partType,
+  })
+  return patchSessionPart(sessionID, match, ctx)
+}
+
+async function repairSessionParts(sessionID: string, itemIds: string[], ctx?: CopilotRetryContext) {
+  const requestedIds = new Set(itemIds.filter((itemId) => typeof itemId === "string" && itemId.length > 0))
+  if (requestedIds.size === 0) return false
+
+  const messages = await ctx?.client?.session?.messages?.({
+    path: { id: sessionID },
+  })
+  const matches = collectSessionRepairMatches(messages, (itemId) => typeof itemId === "string" && requestedIds.has(itemId))
+  debugLog("input-id retry session candidates", {
+    sessionID,
+    count: matches.length,
+    candidates: matches.map(({ messageID, partID, partType, itemId }) => ({
+      messageID,
+      partID,
+      partType,
+      itemIdPreview: typeof itemId === "string" ? buildIdPreview(itemId) : undefined,
+    })),
+  })
+  if (matches.length === 0) return false
+
+  let patchedAll = true
+  for (const match of matches) {
+    debugLog("input-id retry session match", {
+      messageID: match.messageID,
+      partID: match.partID,
+      partType: match.partType,
+    })
+    const patched = await patchSessionPart(sessionID, match, ctx)
+    if (!patched) patchedAll = false
+  }
+  return patchedAll
+}
+
+async function maybeRetryConnectionMismatchItemIds(
+  request: Request | URL | string,
+  init: RequestInit | undefined,
+  response: Response,
+  baseFetch: FetchLike,
+  requestPayload: JsonRecord | undefined,
+  ctx?: CopilotRetryContext,
+  sessionID?: string,
+  startedNotified = false,
+) {
+  if (response.status !== 400) {
+    return {
+      response,
+      retried: false as const,
+      nextInit: init,
+      nextPayload: requestPayload,
+      retryState: undefined as InputIdRetryState | undefined,
+    }
+  }
+
+  const removableIds = collectInputItemIds(requestPayload)
+  if (!requestPayload || removableIds.length === 0) {
+    return {
+      response,
+      retried: false as const,
+      nextInit: init,
+      nextPayload: requestPayload,
+      retryState: undefined as InputIdRetryState | undefined,
+    }
+  }
+
+  const responseText = await response
+    .clone()
+    .text()
+    .catch(() => "")
+  if (!responseText) {
+    return {
+      response,
+      retried: false as const,
+      nextInit: init,
+      nextPayload: requestPayload,
+      retryState: undefined as InputIdRetryState | undefined,
+    }
+  }
+
+  let matched = isConnectionMismatchInputIdMessage(responseText)
+  if (!matched) {
+    try {
+      const bodyPayload = JSON.parse(responseText)
+      matched = isConnectionMismatchInputIdErrorBody(bodyPayload)
+    } catch {
+      matched = false
+    }
+  }
+  if (!matched) {
+    return {
+      response,
+      retried: false as const,
+      nextInit: init,
+      nextPayload: requestPayload,
+      retryState: undefined as InputIdRetryState | undefined,
+    }
+  }
+
+  const remainingBefore = countInputIdCandidates(requestPayload)
+  const notifiedStarted = startedNotified || remainingBefore > 0
+  let repairFailed = false
+  if (sessionID) {
+    repairFailed = !(await repairSessionParts(sessionID, removableIds, ctx).catch(() => false))
+  }
+
+  const sanitized = stripAllInputIds(requestPayload)
+  if (sanitized === requestPayload) {
+    return {
+      response,
+      retried: false as const,
+      nextInit: init,
+      nextPayload: requestPayload,
+      retryState: {
+        previousServerReportedIndex: undefined,
+        previousErrorMessagePreview: buildMessagePreview(responseText),
+        remainingLongIdCandidatesBefore: remainingBefore,
+        remainingLongIdCandidatesAfter: remainingBefore,
+        previousReportedLength: undefined,
+        notifiedStarted,
+        repairFailed,
+      } satisfies InputIdRetryState,
+    }
+  }
+
+  debugLog("input-id retry triggered", {
+    removedLongIds: true,
+    cleanupMode: "connection-mismatch-bulk",
+    hadPreviousResponseId: typeof requestPayload.previous_response_id === "string",
+  })
+
+  const nextInit = buildRetryInit(init, sanitized)
+  const retried = await baseFetch(request, nextInit)
+  const retryState: InputIdRetryState = {
+    previousServerReportedIndex: undefined,
+    previousErrorMessagePreview: buildMessagePreview(responseText),
+    remainingLongIdCandidatesBefore: remainingBefore,
+    remainingLongIdCandidatesAfter: countInputIdCandidates(parseJsonBody(nextInit)),
+    previousReportedLength: undefined,
+    notifiedStarted,
+    repairFailed,
+  }
+  debugLog("input-id retry response", {
+    status: retried.status,
+    contentType: retried.headers.get("content-type") ?? undefined,
+  })
+  return { response: retried, retried: true as const, nextInit, nextPayload: sanitized, retryState }
 }
 
 async function maybeRetryInputIdTooLong(
@@ -1116,12 +1349,129 @@ export function createCopilotRetryingFetch(
         let currentResponse = response
         let currentInit = effectiveInit
         let attempts = 0
-        let shouldContinueInputIdRepair = countLongInputIdCandidates(currentPayload) > 0
+        let shouldContinueInputIdRepair = countInputIdCandidates(currentPayload) > 0
         let startedNotified = false
         let finishedNotified = false
         let repairWarningNotified = false
+        const handleRetryResult = async (result: Awaited<ReturnType<typeof maybeRetryInputIdTooLong>>) => {
+          currentResponse = result.response
+          currentInit = result.nextInit
+          currentPayload = result.nextPayload
+
+          if (!result.retryState) {
+            return {
+              handled: false,
+              stop: false,
+              shouldContinue: false,
+            }
+          }
+
+          if (!startedNotified && result.retryState.notifiedStarted) {
+            startedNotified = true
+            await notify(notifier, "started", result.retryState.remainingLongIdCandidatesBefore)
+          }
+          if (result.retryState.repairFailed && !repairWarningNotified) {
+            await notify(notifier, "repairWarning", result.retryState.remainingLongIdCandidatesBefore)
+            repairWarningNotified = true
+          }
+          const currentError = await getInputIdRetryErrorDetails(currentResponse)
+          let stopReason: string | undefined = result.retryState.stopReason
+          const madeProgress =
+            result.retryState.remainingLongIdCandidatesAfter < result.retryState.remainingLongIdCandidatesBefore
+          if (!stopReason && result.retryState.remainingLongIdCandidatesAfter >= result.retryState.remainingLongIdCandidatesBefore) {
+            stopReason = "remaining-candidates-not-reduced"
+          }
+          if (
+            !stopReason &&
+            currentError &&
+            result.retryState.remainingLongIdCandidatesAfter > 0 &&
+            result.retryState.previousServerReportedIndex === currentError.serverReportedIndex &&
+            result.retryState.previousReportedLength === currentError.reportedLength
+          ) {
+            stopReason = "same-server-item-persists"
+          }
+          if (!stopReason && currentError && result.retryState.remainingLongIdCandidatesAfter === 0) {
+            stopReason = "local-candidates-exhausted"
+          }
+          if ((currentError || stopReason) && stopReason !== "evidence-insufficient") {
+            debugLog("input-id retry progress", {
+              attempt: attempts + 1,
+              previousServerReportedIndex: result.retryState.previousServerReportedIndex,
+              currentServerReportedIndex: currentError?.serverReportedIndex,
+              serverIndexChanged: result.retryState.previousServerReportedIndex !== currentError?.serverReportedIndex,
+              previousErrorMessagePreview: result.retryState.previousErrorMessagePreview,
+              currentErrorMessagePreview: currentError?.errorMessagePreview,
+              remainingLongIdCandidatesBefore: result.retryState.remainingLongIdCandidatesBefore,
+              remainingLongIdCandidatesAfter: result.retryState.remainingLongIdCandidatesAfter,
+              stopReason,
+            })
+          }
+          if (stopReason === "local-candidates-exhausted") {
+            logCleanupStopped("local-candidates-exhausted", {
+              attempt: attempts + 1,
+              previousServerReportedIndex: result.retryState.previousServerReportedIndex,
+              currentServerReportedIndex: currentError?.serverReportedIndex,
+            })
+          }
+          if (stopReason) {
+            await notify(notifier, "stopped", result.retryState.remainingLongIdCandidatesAfter)
+            finishedNotified = true
+            return {
+              handled: true,
+              stop: true,
+              shouldContinue: false,
+            }
+          }
+          if (result.retried && madeProgress && result.retryState.remainingLongIdCandidatesAfter > 0) {
+            await notify(notifier, "progress", result.retryState.remainingLongIdCandidatesAfter)
+          }
+          if (result.retried && result.retryState.remainingLongIdCandidatesAfter === 0 && currentResponse.ok) {
+            await notify(notifier, "completed", 0)
+            finishedNotified = true
+          }
+          if (result.retried && result.retryState.remainingLongIdCandidatesAfter === 0 && !currentResponse.ok) {
+            await notify(notifier, "stopped", 0)
+            finishedNotified = true
+          }
+          if (!result.retried) {
+            if (startedNotified && !finishedNotified) {
+              await notify(notifier, "stopped", result.retryState.remainingLongIdCandidatesAfter)
+              finishedNotified = true
+            }
+            return {
+              handled: true,
+              stop: true,
+              shouldContinue: false,
+            }
+          }
+
+          return {
+            handled: true,
+            stop: false,
+            shouldContinue: madeProgress && result.retryState.remainingLongIdCandidatesAfter > 0,
+          }
+        }
         while (shouldContinueInputIdRepair) {
           shouldContinueInputIdRepair = false
+
+          const connectionMismatchResult = await maybeRetryConnectionMismatchItemIds(
+            safeRequest,
+            currentInit,
+            currentResponse,
+            baseFetch,
+            currentPayload,
+            options,
+            sessionID,
+            startedNotified,
+          )
+
+          const handledConnectionMismatch = await handleRetryResult(connectionMismatchResult)
+          if (handledConnectionMismatch.stop) break
+          if (handledConnectionMismatch.handled) {
+            attempts += 1
+            shouldContinueInputIdRepair = handledConnectionMismatch.shouldContinue
+            continue
+          }
 
           const result = await maybeRetryInputIdTooLong(
             safeRequest,
@@ -1133,85 +1483,19 @@ export function createCopilotRetryingFetch(
             sessionID,
             startedNotified,
           )
-          currentResponse = result.response
-          currentInit = result.nextInit
-          currentPayload = result.nextPayload
-          if (result.retryState) {
-            if (!startedNotified && result.retryState.notifiedStarted) {
-              startedNotified = true
-              await notify(notifier, "started", result.retryState.remainingLongIdCandidatesBefore)
-            }
-            if (result.retryState.repairFailed && !repairWarningNotified) {
-              await notify(notifier, "repairWarning", result.retryState.remainingLongIdCandidatesBefore)
-              repairWarningNotified = true
-            }
-            const currentError = await getInputIdRetryErrorDetails(currentResponse)
-            let stopReason: string | undefined = result.retryState.stopReason
-            const madeProgress =
-              result.retryState.remainingLongIdCandidatesAfter < result.retryState.remainingLongIdCandidatesBefore
-            if (!stopReason && result.retryState.remainingLongIdCandidatesAfter >= result.retryState.remainingLongIdCandidatesBefore) {
-              stopReason = "remaining-candidates-not-reduced"
-            }
-            if (
-              !stopReason &&
-              currentError &&
-              result.retryState.remainingLongIdCandidatesAfter > 0 &&
-              result.retryState.previousServerReportedIndex === currentError.serverReportedIndex &&
-              result.retryState.previousReportedLength === currentError.reportedLength
-            ) {
-              stopReason = "same-server-item-persists"
-            }
-            if (!stopReason && currentError && result.retryState.remainingLongIdCandidatesAfter === 0) {
-              stopReason = "local-candidates-exhausted"
-            }
-            if ((currentError || stopReason) && stopReason !== "evidence-insufficient") {
-              debugLog("input-id retry progress", {
-                attempt: attempts + 1,
-                previousServerReportedIndex: result.retryState.previousServerReportedIndex,
-                currentServerReportedIndex: currentError?.serverReportedIndex,
-                serverIndexChanged: result.retryState.previousServerReportedIndex !== currentError?.serverReportedIndex,
-                previousErrorMessagePreview: result.retryState.previousErrorMessagePreview,
-                currentErrorMessagePreview: currentError?.errorMessagePreview,
-                remainingLongIdCandidatesBefore: result.retryState.remainingLongIdCandidatesBefore,
-                remainingLongIdCandidatesAfter: result.retryState.remainingLongIdCandidatesAfter,
-                stopReason,
-              })
-            }
-            if (stopReason === "local-candidates-exhausted") {
-              logCleanupStopped("local-candidates-exhausted", {
-                attempt: attempts + 1,
-                previousServerReportedIndex: result.retryState.previousServerReportedIndex,
-                currentServerReportedIndex: currentError?.serverReportedIndex,
-              })
-            }
-            if (stopReason) {
-              await notify(notifier, "stopped", result.retryState.remainingLongIdCandidatesAfter)
-              finishedNotified = true
-              break
-            }
-            if (result.retried && madeProgress && result.retryState.remainingLongIdCandidatesAfter > 0) {
-              await notify(notifier, "progress", result.retryState.remainingLongIdCandidatesAfter)
-            }
-            if (result.retried && result.retryState.remainingLongIdCandidatesAfter === 0 && currentResponse.ok) {
-              await notify(notifier, "completed", 0)
-              finishedNotified = true
-            }
-            if (result.retried && result.retryState.remainingLongIdCandidatesAfter === 0 && !currentResponse.ok) {
-              await notify(notifier, "stopped", 0)
-              finishedNotified = true
-            }
-            if (result.retried && madeProgress && result.retryState.remainingLongIdCandidatesAfter > 0) {
-              shouldContinueInputIdRepair = true
-            }
-          }
-          if (!result.retried) {
+
+          const handled = await handleRetryResult(result)
+          if (handled.stop) break
+          if (!handled.handled) {
             if (startedNotified && !finishedNotified) {
-              await notify(notifier, "stopped", countLongInputIdCandidates(currentPayload))
+              await notify(notifier, "stopped", countInputIdCandidates(currentPayload))
               finishedNotified = true
             }
             break
           }
+
           attempts += 1
+          shouldContinueInputIdRepair = handled.shouldContinue
         }
         return withStreamDebugLogs(currentResponse, safeRequest)
       }
