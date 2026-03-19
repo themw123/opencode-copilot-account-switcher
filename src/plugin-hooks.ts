@@ -29,6 +29,12 @@ import { createNotifyTool } from "./notify-tool.js"
 import { createWaitTool } from "./wait-tool.js"
 import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
 import { handleStatusCommand, showStatusToast } from "./status-command.js"
+import {
+  appendSessionTouchEvent,
+  buildCandidateAccountLoads,
+  readRoutingState,
+  routingStatePath,
+} from "./routing-state.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
 type AuthProvider = Parameters<NonNullable<AuthLoader>>[1]
@@ -362,6 +368,19 @@ export function buildPluginHooks(input: {
   let policyScopeOverride: LoopSafetyProviderScope | undefined
   const modelAccountFirstUse = new Set<string>()
   const sessionAccountBindings = new Map<string, SessionBinding>()
+  const lastTouchWrites = new Map<string, number>()
+  const routingDirectory = routingStatePath()
+
+  const loadCandidateAccountLoads = input.loadCandidateAccountLoads ?? (async (ctx: {
+    candidates: ResolvedModelAccountCandidate[]
+  }) => {
+    const snapshot = await readRoutingState(routingDirectory)
+    return buildCandidateAccountLoads({
+      snapshot,
+      candidateAccountNames: ctx.candidates.map((item) => item.name),
+      now: now(),
+    })
+  })
 
   const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
 
@@ -447,7 +466,7 @@ export function buildPluginHooks(input: {
       const allowReselect = initiator === "user"
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
       const loads = latestStore && candidates.length > 0
-        ? toLoadMap(await input.loadCandidateAccountLoads?.({
+        ? toLoadMap(await loadCandidateAccountLoads({
           sessionID,
           modelID,
           store: latestStore,
@@ -470,6 +489,14 @@ export function buildPluginHooks(input: {
           accountName: resolved.name,
           lastUsedAt: requestAt,
         })
+
+        await appendSessionTouchEvent({
+          directory: routingDirectory,
+          accountName: resolved.name,
+          sessionID,
+          at: requestAt,
+          lastTouchWrites,
+        }).catch(() => undefined)
       }
 
       const isFirstUse = modelAccountFirstUse.has(resolved.name) === false

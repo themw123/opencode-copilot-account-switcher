@@ -2,9 +2,11 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import os from "node:os"
 import path from "node:path"
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
 
 import {
+  appendSessionTouchEvent,
+  buildCandidateAccountLoads,
   compactRoutingSnapshot,
   foldRoutingEvents,
   readRoutingState,
@@ -188,4 +190,79 @@ test("compactRoutingSnapshot removes expired sessions and keeps rate-limit water
   assert.equal(state.accounts.main.sessions.fresh, now - (30 * 60 * 1000) + 1)
   assert.equal(state.accounts.main.lastRateLimitedAt, 123)
   assert.deepEqual(state.appliedSegments, ["sealed-1.log"])
+})
+
+test("session-touch writes are throttled to once per minute per account-session pair", async () => {
+  await withRoutingStateDir(async (dir) => {
+    const lastTouchWrites = new Map()
+
+    await appendSessionTouchEvent({
+      directory: dir,
+      accountName: "main",
+      sessionID: "s1",
+      at: 100_000,
+      lastTouchWrites,
+    })
+    await appendSessionTouchEvent({
+      directory: dir,
+      accountName: "main",
+      sessionID: "s1",
+      at: 120_000,
+      lastTouchWrites,
+    })
+    await appendSessionTouchEvent({
+      directory: dir,
+      accountName: "main",
+      sessionID: "s1",
+      at: 161_000,
+      lastTouchWrites,
+    })
+    await appendSessionTouchEvent({
+      directory: dir,
+      accountName: "main",
+      sessionID: "s2",
+      at: 120_000,
+      lastTouchWrites,
+    })
+
+    const activeLog = await readFile(path.join(dir, "active.log"), "utf8")
+    const events = activeLog
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+
+    assert.equal(events.length, 3)
+    assert.deepEqual(events.map((item) => item.sessionID), ["s1", "s1", "s2"])
+    assert.equal(events[0].at, 100_000)
+    assert.equal(events[1].at, 161_000)
+  })
+})
+
+test("load comparison counts distinct sessions used within 30 minutes", () => {
+  const now = 2_000_000
+  const loads = buildCandidateAccountLoads({
+    snapshot: {
+      accounts: {
+        main: {
+          sessions: {
+            s1: now - 10_000,
+            s2: now - 20_000,
+            stale: now - (30 * 60 * 1000) - 1,
+          },
+        },
+        alt: {
+          sessions: {
+            s9: now - 5_000,
+          },
+        },
+      },
+      appliedSegments: [],
+    },
+    candidateAccountNames: ["main", "alt", "missing"],
+    now,
+  })
+
+  assert.equal(loads.get("main"), 2)
+  assert.equal(loads.get("alt"), 1)
+  assert.equal(loads.get("missing"), 0)
 })

@@ -1,7 +1,10 @@
 import path from "node:path"
+import os from "node:os"
 import { promises as fs } from "node:fs"
+import { xdgData } from "xdg-basedir"
 
 const SESSION_WINDOW_MS = 30 * 60 * 1000
+const TOUCH_THROTTLE_MS = 60 * 1000
 
 export type RoutingAccountState = {
   sessions?: Record<string, number>
@@ -28,6 +31,74 @@ export type RateLimitFlaggedEvent = {
 }
 
 export type RoutingEvent = SessionTouchEvent | RateLimitFlaggedEvent
+
+export type AppendSessionTouchEventInput = {
+  directory: string
+  accountName: string
+  sessionID: string
+  at: number
+  lastTouchWrites: Map<string, number>
+}
+
+export function routingStatePath(): string {
+  const dataDir = xdgData ?? path.join(os.homedir(), ".local", "share")
+  return path.join(dataDir, "opencode", "copilot-routing-state")
+}
+
+export async function appendRoutingEvent(input: {
+  directory: string
+  event: RoutingEvent
+}) {
+  await fs.mkdir(input.directory, { recursive: true })
+  await fs.appendFile(path.join(input.directory, "active.log"), `${JSON.stringify(input.event)}\n`, "utf8")
+}
+
+export async function appendSessionTouchEvent(input: AppendSessionTouchEventInput) {
+  const key = `${input.accountName}:${input.sessionID}`
+  const lastWrite = input.lastTouchWrites.get(key)
+  if (typeof lastWrite === "number" && input.at - lastWrite < TOUCH_THROTTLE_MS) {
+    return false
+  }
+
+  await appendRoutingEvent({
+    directory: input.directory,
+    event: {
+      type: "session-touch",
+      accountName: input.accountName,
+      sessionID: input.sessionID,
+      at: input.at,
+    },
+  })
+  input.lastTouchWrites.set(key, input.at)
+  return true
+}
+
+export function buildCandidateAccountLoads(input: {
+  snapshot: RoutingSnapshot
+  candidateAccountNames: string[]
+  now: number
+}) {
+  const loads = new Map<string, number>()
+  const cutoff = input.now - SESSION_WINDOW_MS
+
+  for (const accountName of input.candidateAccountNames) {
+    const sessions = input.snapshot.accounts[accountName]?.sessions
+    if (!sessions) {
+      loads.set(accountName, 0)
+      continue
+    }
+
+    let count = 0
+    for (const at of Object.values(sessions)) {
+      if (typeof at === "number" && Number.isFinite(at) && at >= cutoff) {
+        count += 1
+      }
+    }
+    loads.set(accountName, count)
+  }
+
+  return loads
+}
 
 function cloneSnapshot(input: RoutingSnapshot): RoutingSnapshot {
   const accounts: Record<string, RoutingAccountState> = {}

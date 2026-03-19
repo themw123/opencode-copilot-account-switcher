@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs"
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
 import { buildPluginHooks } from "../dist/plugin-hooks.js"
+import { buildCandidateAccountLoads } from "../dist/routing-state.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
 
 async function armInject(plugin, args = "") {
@@ -2454,6 +2455,42 @@ test("plugin auth loader reselects on a new user turn when current account load 
   assert.equal(harness.outgoing.length, 2)
   assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
+})
+
+test("plugin auth loader selection path can consume routing-state-derived loads", async () => {
+  const now = 2_000_000
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ candidates }) => buildCandidateAccountLoads({
+      snapshot: {
+        accounts: {
+          main: {
+            sessions: {
+              s1: now - 20_000,
+              s2: now - 30_000,
+              s3: now - 40_000,
+            },
+          },
+          alt: {
+            sessions: {
+              s9: now - 10_000,
+            },
+          },
+        },
+        appliedSegments: [],
+      },
+      candidateAccountNames: candidates.map((item) => item.name),
+      now,
+    }),
+  })
+
+  await harness.sendRequest({
+    sessionID: "child-routing-loads",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
 })
 
 test("plugin auth loader keeps candidate order as tie-breaker when loads are equal", async () => {
