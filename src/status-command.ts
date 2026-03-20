@@ -60,6 +60,19 @@ function formatRoutingGroup(store: StoreFile) {
 function buildSuccessMessage(store: StoreFile, _name: string, quota?: StoreFile["accounts"][string]["quota"]) {
   const premiumValue = formatQuotaValue(quota?.snapshots?.premium)
   const modelIDs = Object.keys(store.modelAccountAssignments ?? {}).sort((a, b) => a.localeCompare(b))
+
+  if (modelIDs.length === 0) {
+    const activeSummary = [
+      `current active: ${_name}`,
+      `premium ${premiumValue}`,
+      `chat ${formatQuotaValue(quota?.snapshots?.chat)}`,
+      `completions ${formatQuotaValue(quota?.snapshots?.completions)}`,
+      formatUpdatedAt(quota?.updatedAt),
+    ].join(" | ")
+
+    return [activeSummary, `活跃组: ${formatActiveGroup(store)}`, `路由组: ${formatRoutingGroup(store)}`].join("\n")
+  }
+
   const groupedPremiumSummary = [
     `[default] premium ${premiumValue}`,
     ...modelIDs.map((modelID) => `[${modelID}] premium ${premiumValue}`),
