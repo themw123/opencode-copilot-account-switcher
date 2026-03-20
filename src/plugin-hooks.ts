@@ -644,12 +644,13 @@ export function buildPluginHooks(input: {
       }
     }
 
-    const sessionLookup = input.client?.session?.get as undefined | ((input: {
+    const sessionClient = input.client?.session
+    const sessionLookup = sessionClient?.get as undefined | ((input: {
       path: { id: string }
       query?: { directory?: string }
       throwOnError?: boolean
     }) => Promise<SessionGetResponse | undefined>)
-    const messageLookup = input.client?.session?.message as undefined | ((input: {
+    const messageLookup = sessionClient?.message as undefined | ((input: {
       path: { id: string; messageID: string }
       query?: { directory?: string }
       throwOnError?: boolean
@@ -657,7 +658,7 @@ export function buildPluginHooks(input: {
 
     const messageIDHeader = getMergedRequestHeader(requestInput.request, requestInput.init, INTERNAL_DEBUG_LINK_HEADER)
     if (typeof messageIDHeader === "string" && messageIDHeader.length > 0) {
-      const currentMessage = await messageLookup?.({
+      const currentMessage = await messageLookup?.call(sessionClient, {
         path: {
           id: requestInput.sessionID,
           messageID: messageIDHeader,
@@ -675,7 +676,7 @@ export function buildPluginHooks(input: {
       }
     }
 
-    const session = await sessionLookup?.({
+    const session = await sessionLookup?.call(sessionClient, {
       path: {
         id: requestInput.sessionID,
       },

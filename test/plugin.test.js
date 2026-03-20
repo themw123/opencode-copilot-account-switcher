@@ -3185,6 +3185,177 @@ test("plugin auth loader should reuse the bound account when official finalized 
   ])
 })
 
+test("plugin auth loader preserves session client this binding when finalized initiator becomes agent", async () => {
+  const outgoing = []
+  const sessionCalls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main"],
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "agent",
+        },
+      },
+    }),
+    client: {
+      session: {
+        _client: { id: "bound-session-client" },
+        get(request) {
+          if (this?._client?.id !== "bound-session-client") {
+            throw new TypeError("undefined is not an object (evaluating 'this._client')")
+          }
+          sessionCalls.push(request)
+          return Promise.resolve({ data: {} })
+        },
+      },
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (_request, init) => {
+        outgoing.push({
+          auth: await getAuth(),
+          headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  await assert.doesNotReject(() => authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "binding-session",
+      "x-initiator": "user",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+    }),
+  }))
+
+  assert.equal(sessionCalls.length, 1)
+  assert.equal(outgoing.length, 1)
+  assert.equal(outgoing[0]?.auth?.refresh, "main-refresh")
+})
+
+test("plugin auth loader preserves session message this binding when finalized initiator becomes agent", async () => {
+  const outgoing = []
+  const messageCalls = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main"],
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "agent",
+        },
+      },
+    }),
+    client: {
+      session: {
+        _client: { id: "bound-session-client" },
+        message(request) {
+          if (this?._client?.id !== "bound-session-client") {
+            throw new TypeError("undefined is not an object (evaluating 'this._client')")
+          }
+          messageCalls.push(request)
+          return Promise.resolve({ data: { parts: [] } })
+        },
+      },
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (_request, init) => {
+        outgoing.push({
+          auth: await getAuth(),
+          headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  await assert.doesNotReject(() => authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "binding-session-message",
+      "x-opencode-debug-link-id": "msg-1",
+      "x-initiator": "user",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+    }),
+  }))
+
+  assert.equal(messageCalls.length, 1)
+  assert.equal(outgoing.length, 1)
+  assert.equal(outgoing[0]?.auth?.refresh, "main-refresh")
+})
+
 test("plugin auth loader default finalized-header inspection does not consume Request body before real send", async () => {
   const seenBodies = []
   const plugin = buildPluginHooks({
