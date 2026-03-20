@@ -510,6 +510,82 @@ test("normalizes retryable errors for copilot hosts even on non-whitelisted path
   )
 })
 
+test("normalizes AI_JSONParseError JSON parsing failed Text errors for copilot urls", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    const error = new Error("JSON parsing failed: Text:")
+    error.name = "AI_JSONParseError"
+    throw error
+  })
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(attempts, 1)
+      assertRetryableApiCallError(error, {
+        message: /copilot retryable error \[transport\]: json parsing failed: text:/i,
+        statusCode: undefined,
+      })
+      assertWrappedRetryableMessage(error, "transport", /json parsing failed: text:/i)
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
+test("does not normalize AI_JSONParseError JSON parsing failed Text errors for non copilot urls", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    const error = new Error("JSON parsing failed: Text:")
+    error.name = "AI_JSONParseError"
+    throw error
+  })
+
+  await assert.rejects(
+    wrapped("https://example.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(attempts, 1)
+      assert.equal(error.name, "AI_JSONParseError")
+      assert.match(error.message, /json parsing failed: text:/i)
+      assert.equal(error.isRetryable, undefined)
+      return true
+    },
+  )
+})
+
+test("does not normalize local parse errors without AI response signature for copilot urls", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    throw new SyntaxError("JSON parsing failed: Text:")
+  })
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(attempts, 1)
+      assert.equal(error.name, "SyntaxError")
+      assert.match(error.message, /json parsing failed: text:/i)
+      assert.equal(error.isRetryable, undefined)
+      return true
+    },
+  )
+})
+
 test("does not normalize transient errors for non copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")

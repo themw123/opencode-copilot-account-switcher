@@ -1355,6 +1355,16 @@ export function isRetryableCopilotFetchError(error: unknown) {
   return RETRYABLE_MESSAGES.some((part) => message.includes(part))
 }
 
+function isRetryableCopilotJsonParseError(error: unknown) {
+  if (!error || isAbortError(error)) return false
+
+  const message = getErrorMessage(error)
+  const name = error instanceof Error ? error.name : ""
+  const hasAiJsonParseSignature = name === "AI_JSONParseError" || message.includes("ai_jsonparseerror")
+
+  return hasAiJsonParseSignature && message.includes("json parsing failed") && message.includes("text:")
+}
+
 export function createCopilotRetryingFetch(
   baseFetch: FetchLike,
   options?: CopilotRetryContext,
@@ -1567,12 +1577,15 @@ export function createCopilotRetryingFetch(
       }
       return response
     } catch (error) {
+      const retryableByMessage = isRetryableCopilotFetchError(error)
+      const retryableCopilotJsonParse = isRetryableCopilotJsonParseError(error)
       debugLog("fetch threw", {
         message: getErrorMessage(error),
-        retryableByMessage: isRetryableCopilotFetchError(error),
+        retryableByMessage,
+        retryableCopilotJsonParse,
       })
 
-      if (!isCopilotUrl(safeRequest) || !isRetryableCopilotFetchError(error)) {
+      if (!isCopilotUrl(safeRequest) || (!retryableByMessage && !retryableCopilotJsonParse)) {
         throw error
       }
 
