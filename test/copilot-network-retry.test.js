@@ -1736,6 +1736,105 @@ test("real sdk client exposes internal patch transport compatible with persisten
   assert.equal(calls[1].body.metadata.openai.keep, true)
 })
 
+test("repairs through client _client.patch while preserving method this binding", async () => {
+  const calls = []
+  const sessionReads = []
+  const patchCalls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?client-bound-patch-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(
+    async (_request, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"))
+      calls.push(body)
+
+      if (calls.length === 1) {
+        return new Response(
+          "Invalid 'input[3].id': string too long. Expected a string with maximum length 64, but got a string with length 408 instead.",
+          {
+            status: 400,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+          },
+        )
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    },
+    {
+      directory: "C:/repo",
+      serverUrl: new URL("http://localhost:4096"),
+      client: {
+        session: {
+          messages: async ({ path }) => {
+            sessionReads.push(path)
+            return {
+              data: [
+                {
+                  info: { id: "msg_1", role: "assistant" },
+                  parts: [
+                    {
+                      id: "part_1",
+                      messageID: "msg_1",
+                      sessionID: "sess-123",
+                      type: "text",
+                      text: "hi",
+                      metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                    },
+                  ],
+                },
+              ],
+            }
+          },
+          message: async ({ path }) => ({
+            data: {
+              info: { id: path.messageID, role: "assistant" },
+              parts: [
+                {
+                  id: "part_1",
+                  messageID: path.messageID,
+                  sessionID: path.id,
+                  type: "text",
+                  text: "hi",
+                  metadata: { openai: { itemId: "x".repeat(408), keep: true }, custom: { keep: "value" } },
+                },
+              ],
+            },
+          }),
+        },
+        _client: {
+          _client: { id: "bound" },
+          async patch(request) {
+            if (this?._client?.id !== "bound") {
+              throw new TypeError("undefined is not an object (evaluating 'this._client')")
+            }
+            patchCalls.push(request)
+            return { data: JSON.parse(JSON.stringify(request.body ?? {})) }
+          },
+        },
+      },
+    },
+  )
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-opencode-session-id": "sess-123" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "bad" }], id: "x".repeat(408) },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(sessionReads, [{ id: "sess-123" }])
+  assert.equal(patchCalls.length, 1)
+  assert.equal(patchCalls[0].path.sessionID, "sess-123")
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+})
+
 test("falls back to targeted payload retry when client part.update fails with a network-style error", async () => {
   const calls = []
   const sessionReads = []

@@ -2812,6 +2812,477 @@ test("plugin auth loader reselects on a new user turn when current account load 
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
+test("plugin auth loader keeps bound account for main-agent follow-up when upstream initiator remains agent", async () => {
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+   client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "main-agent-follow-up",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "main-agent-follow-up",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "alt-refresh")
+})
+
+test("plugin auth loader reselects when final initiator header is user even if request body looks like agent follow-up", async () => {
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+  })
+
+  await harness.sendRawRequest("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "main-user-header-agent-body",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+    }),
+  })
+
+  await harness.sendRawRequest("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "main-user-header-agent-body",
+      "x-initiator": "user",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "tool follow-up" }] },
+      ],
+    }),
+  })
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
+})
+
+test("plugin auth loader reselects for Request completions when final initiator header is user", async () => {
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const harness = createSessionBindingHarness({
+    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+  })
+
+  await harness.sendRawRequest(new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "request-completions-agent-follow-up",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  }))
+
+  await harness.sendRawRequest(new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "request-completions-agent-follow-up",
+      "x-initiator": "user",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "tool follow-up" },
+      ],
+    }),
+  }))
+
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
+})
+
+test("plugin auth loader reselect uses x-initiator after chat.headers processing", async () => {
+  const outgoing = []
+  const processedHeaders = []
+  const loadsSeen = []
+  let loadCall = 0
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const officialInitiators = ["agent", "user"]
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+        alt: {
+          name: "alt",
+          refresh: "alt-refresh",
+          access: "alt-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCandidateAccountLoads: async () => {
+      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
+      loadCall += 1
+      loadsSeen.push(loads)
+      return loads
+    },
+    loadOfficialChatHeaders: async () => async (_hookInput, output) => {
+      output.headers["x-initiator"] = officialInitiators.shift() ?? "agent"
+    },
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        outgoing.push({
+          auth,
+          url: request instanceof URL ? request.href : String(request),
+          headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  const sendProcessedRequest = async (messageID) => {
+    const headers = {}
+    await plugin["chat.headers"]?.(
+      createChatHeadersInput({
+        sessionID: "processed-header-session",
+        message: {
+          id: messageID,
+          sessionID: "processed-header-session",
+        },
+      }),
+      { headers },
+    )
+    processedHeaders.push({ ...headers })
+
+    await authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "gpt-5" }),
+    })
+  }
+
+  await sendProcessedRequest("processed-1")
+  await sendProcessedRequest("processed-2")
+
+  assert.equal(outgoing.length, 2)
+  assert.equal(processedHeaders[0]?.["x-initiator"], "agent")
+  assert.equal(outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(processedHeaders[1]?.["x-initiator"], "user")
+  assert.equal(outgoing[1]?.auth?.refresh, "main-refresh")
+  assert.deepEqual(loadsSeen, [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ])
+})
+
+test("plugin auth loader should reuse the bound account when official finalized headers mark follow-up as agent", async () => {
+  const officialNetworkHeaders = []
+  const loadsSeen = []
+  let loadCall = 0
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+        alt: {
+          name: "alt",
+          refresh: "alt-refresh",
+          access: "alt-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCandidateAccountLoads: async () => {
+      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
+      loadCall += 1
+      loadsSeen.push(loads)
+      return loads
+    },
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "agent",
+        },
+      },
+    }),
+    loadOfficialConfig: async ({ getAuth, baseFetch }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        const headers = {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          Authorization: `Bearer ${auth?.refresh ?? ""}`,
+          "x-initiator": "agent",
+        }
+
+        if (typeof baseFetch === "function") {
+          return baseFetch(request, {
+            ...(init ?? {}),
+            headers,
+          })
+        }
+
+        officialNetworkHeaders.push(headers)
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), {
+    models: {
+      "gpt-5": {
+        api: {
+          url: "https://api.githubcopilot.com/chat/completions",
+          npm: "@ai-sdk/github-copilot",
+        },
+      },
+    },
+  })
+
+  const send = async () => {
+    await authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      headers: new Headers({
+        "content-type": "application/json",
+        "x-opencode-session-id": "late-agent-finalization",
+        "x-initiator": "user",
+      }),
+      body: JSON.stringify({
+        model: "gpt-5",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "tool follow-up" },
+        ],
+      }),
+    })
+  }
+
+  await send()
+  await send()
+
+  assert.equal(officialNetworkHeaders.length, 2)
+  assert.equal(officialNetworkHeaders[0]?.["x-initiator"], "agent")
+  assert.equal(officialNetworkHeaders[1]?.["x-initiator"], "agent")
+  assert.equal(officialNetworkHeaders[0]?.Authorization, "Bearer alt-refresh")
+  assert.equal(officialNetworkHeaders[1]?.Authorization, "Bearer alt-refresh")
+  assert.deepEqual(loadsSeen, [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ])
+})
+
+test("plugin auth loader default finalized-header inspection does not consume Request body before real send", async () => {
+  const seenBodies = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "main-refresh",
+          access: "main-access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadOfficialConfig: async ({ getAuth, baseFetch }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        const headers = {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          Authorization: `Bearer ${auth?.refresh ?? ""}`,
+          "x-initiator": "agent",
+        }
+
+        if (typeof baseFetch === "function") {
+          return baseFetch(request, {
+            ...(init ?? {}),
+            headers,
+          })
+        }
+
+        const rawBody =
+          typeof init?.body === "string"
+            ? init.body
+            : request instanceof Request
+              ? await request.clone().text()
+              : undefined
+        seenBodies.push(rawBody)
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), {
+    models: {
+      "gpt-5": {
+        api: {
+          url: "https://api.githubcopilot.com/chat/completions",
+          npm: "@ai-sdk/github-copilot",
+        },
+      },
+    },
+  })
+
+  const request = new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "request-body-preserved",
+      "x-initiator": "user",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "tool follow-up" },
+      ],
+    }),
+  })
+
+  await assert.doesNotReject(() => authOptions?.fetch?.(request))
+  assert.equal(seenBodies.length, 1)
+  assert.match(String(seenBodies[0]), /tool follow-up/)
+})
+
 test("plugin auth loader does not flag account as rate-limited before the third hit", async () => {
   let currentNow = 10_000
   const events = []

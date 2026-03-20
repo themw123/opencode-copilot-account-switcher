@@ -512,7 +512,21 @@ export function buildPluginHooks(input: {
   loadOfficialConfig?: (input: {
     getAuth: () => Promise<CopilotAuthState | undefined>
     provider?: CopilotProviderConfig
+    baseFetch?: typeof fetch
+    version?: string
   }) => Promise<OfficialCopilotConfig | undefined>
+  finalizeRequestForSelection?: (input: {
+    request: Request | URL | string
+    init?: RequestInit
+    getAuth: () => Promise<CopilotAuthState | undefined>
+    provider?: CopilotProviderConfig
+  }) => Promise<
+    | {
+        request: Request | URL | string
+        init?: RequestInit
+      }
+    | undefined
+  >
   loadOfficialChatHeaders?: (input: { client?: object; directory?: string }) => Promise<OfficialChatHeadersHook>
   createRetryFetch?: (fetch: FetchLike, ctx?: CopilotRetryContext) => FetchLike
   client?: CopilotRetryContext["client"]
@@ -701,11 +715,51 @@ export function buildPluginHooks(input: {
   const loader: AuthLoader = async (getAuth, provider) => {
     const authOverride = new AsyncLocalStorage<CopilotAuthState | undefined>()
     const getScopedAuth = async () => authOverride.getStore() ?? getAuth()
+    const providerConfig = provider as unknown as CopilotProviderConfig | undefined
     const config = await loadOfficialConfig({
       getAuth: getScopedAuth as () => Promise<CopilotAuthState | undefined>,
-      provider: provider as unknown as CopilotProviderConfig | undefined,
+      provider: providerConfig,
     })
     if (!config) return {}
+
+    const finalizeRequestForSelection = input.finalizeRequestForSelection
+      ?? (input.loadOfficialConfig
+        ? undefined
+        : async (selectionInput: {
+            request: Request | URL | string
+            init?: RequestInit
+          }) => {
+            let captured:
+              | {
+                  request: Request | URL | string
+                  init?: RequestInit
+                }
+              | undefined
+
+            const captureConfig = await loadOfficialConfig({
+              getAuth: getScopedAuth as () => Promise<CopilotAuthState | undefined>,
+              provider: providerConfig,
+              baseFetch: async (nextRequest, nextInit) => {
+                captured = {
+                  request: nextRequest,
+                  init: nextInit,
+                }
+                return new Response("{}", {
+                  status: 200,
+                  headers: {
+                    "content-type": "application/json",
+                  },
+                })
+              },
+            })
+            if (!captureConfig) return undefined
+
+            const inspectionRequest = selectionInput.request instanceof Request
+              ? selectionInput.request.clone()
+              : selectionInput.request
+            await captureConfig.fetch(inspectionRequest, selectionInput.init).catch(() => undefined)
+            return captured
+          })
 
     const store = await loadStore().catch(() => undefined)
     const retryStore = readRetryStoreContext(store)
@@ -722,7 +776,15 @@ export function buildPluginHooks(input: {
         maxEntries: touchWriteCacheMaxEntries,
       })
       const sessionID = getInternalSessionID(request, init)
-      const initiator = getMergedRequestHeader(request, init, "x-initiator")
+      const finalized = await finalizeRequestForSelection?.({
+        request,
+        init,
+        getAuth: getScopedAuth as () => Promise<CopilotAuthState | undefined>,
+        provider: providerConfig,
+      }).catch(() => undefined)
+      const selectionRequest = finalized?.request ?? request
+      const selectionInit = finalized?.init ?? init
+      const initiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
       const allowReselect = initiator === "user"
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
       const hasExplicitModelGroup = Boolean(
@@ -761,7 +823,7 @@ export function buildPluginHooks(input: {
 
       const candidateNames = candidates.map((item) => item.name)
       const classification = sessionID.length > 0
-        ? await classifyRequestReason({ sessionID, request, init })
+        ? await classifyRequestReason({ sessionID, request: selectionRequest, init: selectionInit })
         : {
             reason: toReasonByInitiator(initiator),
           }

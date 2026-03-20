@@ -661,7 +661,7 @@ function stripOpenAIItemId(part: JsonRecord) {
 }
 
 function getInternalPatchClient(client: CopilotRetryContext["client"]) {
-  const patch = (client as {
+  const internalClient = (client as {
     _client?: {
       patch?: (input: {
         url: string
@@ -671,8 +671,9 @@ function getInternalPatchClient(client: CopilotRetryContext["client"]) {
         headers?: Record<string, string>
       }) => Promise<unknown>
     }
-  } | undefined)?._client?.patch
-  return typeof patch === "function" ? patch : undefined
+  } | undefined)?._client
+  const patch = internalClient?.patch
+  return typeof patch === "function" ? patch.bind(internalClient) : undefined
 }
 
 function collectSessionRepairMatches(
