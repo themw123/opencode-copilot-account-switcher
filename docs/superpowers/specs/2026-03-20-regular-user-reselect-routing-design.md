@@ -132,13 +132,19 @@
 
 - `hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)`
 
-然后分类规则按下面顺序收敛：
+然后分类规则按下面顺序收敛。这里说的顺序只负责产出基础 `reason`，不包含后置的限流替换覆写：
 
 1. `initiator === "user"` -> `user-reselect`
 2. `initiator === "agent"` 且 message 为 compaction -> `compaction`
 3. `initiator === "agent"` 且 session 为 true child -> `subagent`
 4. `initiator === "agent"` 且 root-session 且 `hasExistingBinding === false` -> `unbound-fallback`
 5. 其他 root-session follow-up -> `regular`
+
+`rate-limit-switch` 不参与上面这一步基础分类。它的优先级保持和当前实现一致：
+
+- 先完成一次基础分类，得出 `regular` / `user-reselect` / `subagent` / `compaction` / `unbound-fallback`
+- 如果真实请求返回后命中现有 rate-limit 替换逻辑，并且成功切到替代账号，则最终记录的 `reason` 仍然覆写为 `rate-limit-switch`
+- 如果没有触发成功替换，则保留原始基础分类 reason
 
 ### 3. 发送语义与日志语义分离
 
@@ -148,7 +154,8 @@
 
 - 日志 reason 保持 `unbound-fallback`
 - 但发送前要把 outbound request 的 `x-initiator: agent` 去掉
-- 账号选择行为视作一次 `user-reselect` 型首次入口，而不是 `regular` follow-up
+- 账号选择行为必须与 `user-reselect` 使用同一条选择路径和同一套 `allowReselect` 语义，而不是仅仅删 header 后沿用 `regular` follow-up 分支
+- 换句话说，实现必须保证：这类请求在“是否允许首次入口式选号/绑定”的处理上，与真实 `user-reselect` 等价，而不是继续按已有绑定 follow-up 处理
 
 这样既不会让日志丢失异常入口痕迹，也不会继续把真实发送语义错放到 `agent` / `regular` 上。
 
@@ -163,12 +170,18 @@ toast 规则收紧为：
 - `regular`：不弹普通消费 toast
 - `rate-limit-switch`：继续弹 warning 切换 toast
 
-`unbound-fallback` 的 toast 需要与普通 `user-reselect` 显式区分。推荐保留单独文案和 variant，例如：
+`unbound-fallback` 的 toast 需要与普通 `user-reselect` 显式区分，而且这件事必须是可测试的。最低要求：
+
+- variant 固定为 `warning`
+- message 必须包含 `异常无绑定 agent 入口`
+- message 必须包含 `已按用户回合处理`
+
+推荐完整文案例如：
 
 - variant: `warning`
 - message: `已使用 <account>（异常无绑定 agent 入口，已按用户回合处理）`
 
-最终文案可以在实现阶段再微调，但必须满足“用户一眼能看出这是异常兜底入口，而不是普通常规请求”。
+实现阶段可以在不破坏以上 3 条最低约束的前提下微调完整文案。
 
 ### 5. route-decision 日志保持可追溯
 
@@ -219,11 +232,13 @@ toast 规则收紧为：
 
 1. root-session、最终 `agent`、无既有绑定、非 compaction、非 child session -> reason 记为 `unbound-fallback`。
 2. 上述场景真实发请求前会移除 outbound request 上的 `x-initiator: agent`。
-3. 上述场景会弹单独类型 toast，而不是 `regular` / `user-reselect` 默认文案。
-4. 已有既有绑定的 root-session `agent` follow-up -> 继续记为 `regular`，且不弹普通消费 toast。
-5. true child session 仍然保持 `subagent` 语义，不被新规则吞掉。
-6. compaction 仍然保持 `compaction` 语义，不被新规则吞掉。
-7. `user-reselect` 原有负载重选行为保持不变。
+3. 上述场景在日志中必须记录 `unbound-fallback`，同时发送行为必须等价于 `user-reselect` 首次入口处理。
+4. 上述场景会弹单独类型 toast，且 toast 至少满足固定 `warning` variant 和关键文案字段约束，而不是 `regular` / `user-reselect` 默认文案。
+5. 已有既有绑定的 root-session `agent` follow-up -> 继续记为 `regular`，且不弹普通消费 toast。
+6. true child session 仍然保持 `subagent` 语义，不被新规则吞掉。
+7. compaction 仍然保持 `compaction` 语义，不被新规则吞掉。
+8. `user-reselect` 原有负载重选行为保持不变。
+9. 命中并成功完成限流替换时，最终 `reason` 仍覆写为 `rate-limit-switch`，不受新基础分类影响。
 
 ## 风险与边界
 
