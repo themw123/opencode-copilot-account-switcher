@@ -4,7 +4,6 @@ const RETRYABLE_MESSAGES = [
   "load failed",
   "failed to fetch",
   "network request failed",
-  "sse read timed out",
   "unable to connect",
   "econnreset",
   "etimedout",
@@ -1316,21 +1315,25 @@ function withStreamDebugLogs(response: Response, request: Request | URL | string
           }
         } catch (error) {
           const message = getErrorMessage(error)
+          const isSseReadTimeout = message.includes("sse read timed out")
           const retryable = RETRYABLE_MESSAGES.some((part) => message.includes(part))
           if (isDebugEnabled()) {
             debugLog("sse stream read error", {
               url: rawUrl,
               message,
               retryableByMessage: retryable,
+              bypassedTimeoutWrap: isSseReadTimeout,
             })
           }
-          controller.error(retryable
-            ? toRetryableApiCallError(error, request, {
-                group: "stream",
-                statusCode: response.status,
-                responseHeaders: response.headers,
-              })
-            : error)
+          controller.error(isSseReadTimeout
+            ? error
+            : retryable
+              ? toRetryableApiCallError(error, request, {
+                  group: "stream",
+                  statusCode: response.status,
+                  responseHeaders: response.headers,
+                })
+              : error)
         }
       }
 

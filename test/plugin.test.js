@@ -1,9 +1,10 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { promises as fs } from "node:fs"
+import { existsSync, promises as fs } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
+import { pathToFileURL } from "node:url"
 
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
@@ -21,6 +22,31 @@ function buildPluginHooks(input = {}) {
     routingStateDirectory: input.routingStateDirectory ?? createTempRoutingStateDirectory(),
   })
 }
+
+const upstreamAiDistPath = join(
+  process.cwd(),
+  "..",
+  "opencode",
+  "packages",
+  "opencode",
+  "node_modules",
+  "ai",
+  "dist",
+  "index.mjs",
+)
+
+const upstreamProviderUtilsDistPath = join(
+  process.cwd(),
+  "..",
+  "opencode",
+  "packages",
+  "opencode",
+  "node_modules",
+  "@ai-sdk",
+  "provider-utils",
+  "dist",
+  "index.js",
+)
 
 async function armInject(plugin, args = "") {
   await assert.rejects(
@@ -2301,6 +2327,203 @@ test("plugin auth loader notifier is a no-op when plugin client toast sdk is una
       },
     },
   ])
+})
+
+test("plugin auth loader leaves sse stream timeout errors untouched from retry fetch", async () => {
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: async () => {
+        let sent = false
+        const body = new ReadableStream({
+          pull(controller) {
+            if (!sent) {
+              sent = true
+              controller.enqueue(new TextEncoder().encode("data: hello\n\n"))
+              return
+            }
+            controller.error(new Error("SSE read timed out"))
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        })
+      },
+    }),
+  })
+
+  const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+  const response = await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  })
+
+  await assert.rejects(
+    response?.text(),
+    (error) => {
+      assert.equal(error?.name, "Error")
+      assert.match(String(error?.message ?? ""), /sse read timed out/i)
+      assert.equal(error?.isRetryable, undefined)
+      return true
+    },
+  )
+})
+
+test("plugin auth loader leaves raw stream timeout errors on upstream responses streamText path", {
+  skip: !existsSync(upstreamAiDistPath) || !existsSync(upstreamProviderUtilsDistPath),
+}, async () => {
+  const { streamText } = await import(pathToFileURL(upstreamAiDistPath).href)
+  const { createEventSourceResponseHandler, postJsonToApi } = await import(pathToFileURL(upstreamProviderUtilsDistPath).href)
+
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      baseURL: "https://api.githubcopilot.com",
+      apiKey: "",
+      fetch: async () => {
+        let sent = false
+        const body = new ReadableStream({
+          pull(controller) {
+            if (!sent) {
+              sent = true
+              controller.enqueue(new TextEncoder().encode("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
+              return
+            }
+            controller.error(new Error("SSE read timed out"))
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        })
+      },
+    }),
+  })
+
+  const options = await plugin.auth?.loader?.(async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }), {
+    models: {},
+  })
+
+  const chunkSchema = {
+    "~standard": {
+      validate: async (value) => ({ value }),
+    },
+  }
+
+  const model = {
+    specificationVersion: "v2",
+    provider: "github-copilot.responses",
+    modelId: "gpt-5.4",
+    supportedUrls: async () => ({}),
+    async doGenerate() {
+      throw new Error("unused")
+    },
+    async doStream() {
+      let emittedText = false
+      const { value } = await postJsonToApi({
+        url: "https://api.githubcopilot.com/responses",
+        headers: {},
+        body: {
+          model: "gpt-5.4",
+          input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+          stream: true,
+        },
+        failedResponseHandler: async () => {
+          throw new Error("unexpected")
+        },
+        successfulResponseHandler: createEventSourceResponseHandler(chunkSchema),
+        fetch: options.fetch,
+      })
+
+      const stream = new ReadableStream({
+        async start(controller) {
+          controller.enqueue({ type: "stream-start", warnings: [] })
+
+          try {
+            const reader = value.getReader()
+            while (true) {
+              const next = await reader.read()
+              if (next.done) break
+              if (emittedText) continue
+              emittedText = true
+              controller.enqueue({ type: "text-start", id: "text_1" })
+              controller.enqueue({ type: "text-delta", id: "text_1", delta: "hello" })
+            }
+
+            if (emittedText) {
+              controller.enqueue({ type: "text-end", id: "text_1" })
+            }
+            controller.enqueue({
+              type: "finish",
+              finishReason: "stop",
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                totalTokens: 2,
+              },
+            })
+            controller.close()
+          } catch (error) {
+            controller.error(error)
+          }
+        },
+      })
+
+      return {
+        stream,
+        request: { body: JSON.stringify({ model: "gpt-5.4" }) },
+        response: { headers: {} },
+      }
+    },
+  }
+
+  const result = streamText({
+    model,
+    messages: [{ role: "user", content: "hi" }],
+    maxRetries: 0,
+    onError: () => {},
+  })
+
+  await assert.rejects(
+    (async () => {
+      for await (const _part of result.fullStream) {
+        // consume stream until the SSE error surfaces
+      }
+    })(),
+    (error) => {
+      assert.equal(error?.name, "Error")
+      assert.match(String(error?.message ?? ""), /sse read timed out/i)
+      assert.equal(error?.isRetryable, undefined)
+      return true
+    },
+  )
 })
 
 test("plugin auth loader notifier reads latest account switch context from store after loader setup", async () => {

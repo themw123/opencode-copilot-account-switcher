@@ -1,7 +1,9 @@
 import assert from "node:assert/strict"
+import { existsSync } from "node:fs"
 import { readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import test from "node:test"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 
@@ -54,7 +56,7 @@ test("normalizes retryable copilot network errors into retryable API-call-shaped
   )
 })
 
-test("normalizes sse read timeout errors for copilot urls into retryable API-call-shaped failures", async () => {
+test("leaves sse read timeout transport errors untouched for copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
   const wrapped = createCopilotRetryingFetch(async () => {
@@ -69,12 +71,9 @@ test("normalizes sse read timeout errors for copilot urls into retryable API-cal
     }),
     (error) => {
       assert.equal(attempts, 1)
-      assertRetryableApiCallError(error, {
-        message: /copilot retryable error \[transport\]: sse read timed out/i,
-        statusCode: undefined,
-      })
-      assertWrappedRetryableMessage(error, "transport", /sse read timed out/i)
-      assert.ok(error.cause instanceof Error)
+      assert.equal(error?.name, "Error")
+      assert.match(String(error?.message ?? ""), /sse read timed out/i)
+      assert.equal(error?.isRetryable, undefined)
       return true
     },
   )
@@ -138,7 +137,7 @@ test("preserves 499 API-call fields without rewrapping in catch", async () => {
   )
 })
 
-test("normalizes sse stream read timeout failures after the response starts streaming", async () => {
+test("leaves sse stream read timeout failures untouched after the response starts streaming", async () => {
   const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?sse-stream-timeout-${Date.now()}`)
   const wrapped = createCopilotRetryingFetch(async () => {
     let sent = false
@@ -169,12 +168,198 @@ test("normalizes sse stream read timeout failures after the response starts stre
   await assert.rejects(
     response.text(),
     (error) => {
+      assert.equal(error?.name, "Error")
+      assert.match(String(error?.message ?? ""), /sse read timed out/i)
+      assert.equal(error?.isRetryable, undefined)
+      return true
+    },
+  )
+})
+
+test("still normalizes non-timeout sse stream failures after the response starts streaming", async () => {
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?sse-stream-reset-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async () => {
+    let sent = false
+    const body = new ReadableStream({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(new TextEncoder().encode("data: hello\n\n"))
+          return
+        }
+        controller.error(new Error("ECONNRESET during stream"))
+      },
+    })
+
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    })
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  })
+
+  await assert.rejects(
+    response.text(),
+    (error) => {
       assertRetryableApiCallError(error, {
-        message: /copilot retryable error \[stream\]: sse read timed out/i,
+        message: /copilot retryable error \[stream\]: econnreset during stream/i,
         statusCode: 200,
       })
-      assertWrappedRetryableMessage(error, "stream", /sse read timed out/i)
+      assertWrappedRetryableMessage(error, "stream", /econnreset during stream/i)
       assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
+const upstreamAiDistPath = join(
+  process.cwd(),
+  "..",
+  "opencode",
+  "packages",
+  "opencode",
+  "node_modules",
+  "ai",
+  "dist",
+  "index.mjs",
+)
+
+const upstreamProviderUtilsDistPath = join(
+  process.cwd(),
+  "..",
+  "opencode",
+  "packages",
+  "opencode",
+  "node_modules",
+  "@ai-sdk",
+  "provider-utils",
+  "dist",
+  "index.js",
+)
+
+test("upstream responses streamText now receives raw stream timeout errors from retry fetch", {
+  skip: !existsSync(upstreamAiDistPath) || !existsSync(upstreamProviderUtilsDistPath),
+}, async () => {
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?responses-stream-timeout-${Date.now()}`)
+  const { streamText } = await import(pathToFileURL(upstreamAiDistPath).href)
+  const { createEventSourceResponseHandler, postJsonToApi } = await import(pathToFileURL(upstreamProviderUtilsDistPath).href)
+  const wrappedFetch = createCopilotRetryingFetch(async () => {
+    let sent = false
+    const body = new ReadableStream({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(new TextEncoder().encode("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
+          return
+        }
+        controller.error(new Error("SSE read timed out"))
+      },
+    })
+
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    })
+  })
+
+  const chunkSchema = {
+    "~standard": {
+      validate: async (value) => ({ value }),
+    },
+  }
+
+  const model = {
+    specificationVersion: "v2",
+    provider: "mock-provider",
+    modelId: "gpt-5.4",
+    supportedUrls: async () => ({}),
+    async doGenerate() {
+      throw new Error("unused")
+    },
+    async doStream() {
+      let emittedText = false
+      const { value } = await postJsonToApi({
+        url: "https://api.githubcopilot.com/responses",
+        headers: {},
+        body: {
+          model: "gpt-5.4",
+          input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+          stream: true,
+        },
+        failedResponseHandler: async () => {
+          throw new Error("unexpected")
+        },
+        successfulResponseHandler: createEventSourceResponseHandler(chunkSchema),
+        fetch: wrappedFetch,
+      })
+
+      const stream = new ReadableStream({
+        async start(controller) {
+          controller.enqueue({ type: "stream-start", warnings: [] })
+
+          try {
+            const reader = value.getReader()
+            while (true) {
+              const next = await reader.read()
+              if (next.done) break
+              if (emittedText) continue
+              emittedText = true
+              controller.enqueue({ type: "text-start", id: "text_1" })
+              controller.enqueue({ type: "text-delta", id: "text_1", delta: "hello" })
+            }
+
+            if (emittedText) {
+              controller.enqueue({ type: "text-end", id: "text_1" })
+            }
+            controller.enqueue({
+              type: "finish",
+              finishReason: "stop",
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                totalTokens: 2,
+              },
+            })
+            controller.close()
+          } catch (error) {
+            controller.error(error)
+          }
+        },
+      })
+
+      return {
+        stream,
+        request: { body: JSON.stringify({ model: "gpt-5.4" }) },
+        response: { headers: {} },
+      }
+    },
+  }
+
+  const result = streamText({
+    model,
+    messages: [{ role: "user", content: "hi" }],
+    maxRetries: 0,
+    onError: () => {},
+  })
+
+  await assert.rejects(
+    (async () => {
+      for await (const _part of result.fullStream) {
+        // consume stream until the SSE error surfaces
+      }
+    })(),
+    (error) => {
+      assert.equal(error?.name, "Error")
+      assert.match(String(error?.message ?? ""), /sse read timed out/i)
+      assert.equal(error?.isRetryable, undefined)
       return true
     },
   )
