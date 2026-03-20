@@ -369,6 +369,13 @@ function buildConsumptionToast(input: {
     }
   }
 
+  if (input.reason === "unbound-fallback") {
+    return {
+      message: `已使用 ${input.accountName}（异常无绑定 agent 入口，已按用户回合处理）`,
+      variant: "warning" as const,
+    }
+  }
+
   return {
     message: `已使用 ${input.accountName}（${toConsumptionReasonText(input.reason)}）`,
     variant: "info" as const,
@@ -379,6 +386,7 @@ function shouldShowConsumptionToast(input: {
   reason: RouteDecisionEvent["reason"]
   isFirstUse: boolean
 }) {
+  if (input.reason === "regular") return false
   if (input.reason === "subagent") return input.isFirstUse
   if (input.reason === "compaction") return false
   return true

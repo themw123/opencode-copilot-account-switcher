@@ -3928,7 +3928,36 @@ test("session lookup unavailable does not classify as unbound-fallback", async (
   assert.equal(harness.outgoing[1]?.headers["x-initiator"], "agent")
 })
 
-test("toasts billed regular requests but suppresses later non-billed true child reuse", async () => {
+test("unbound-fallback emits dedicated warning toast with required key phrases", async () => {
+  const toasts = []
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "toast-unbound-fallback",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(toasts.length, 1)
+  assert.equal(toasts[0]?.body?.variant, "warning")
+  assert.match(String(toasts[0]?.body?.message ?? ""), /异常无绑定 agent 入口/)
+  assert.match(String(toasts[0]?.body?.message ?? ""), /已按用户回合处理/)
+})
+
+test("regular follow-up no longer emits ordinary consumption toast", async () => {
   const toasts = []
   const harness = createSessionBindingHarness({
     client: {
@@ -3957,9 +3986,7 @@ test("toasts billed regular requests but suppresses later non-billed true child 
     model: "gpt-5",
   })
 
-  assert.equal(toasts.length, 1)
-  assert.equal(toasts[0]?.body?.variant, "info")
-  assert.equal(toasts[0]?.body?.message, "已使用 main（常规请求）")
+  assert.equal(toasts.length, 0)
 })
 
 test("toasts first billed true child use but suppresses the second use of same account", async () => {
