@@ -77,6 +77,7 @@ git commit -m "test(routing): 覆盖 unbound fallback 基础分类"
 - `decisions.log` / `appendRouteDecisionEventImpl` 看到的 reason 是 `unbound-fallback`
 - 实际发出的 outbound request 没有 `x-initiator: agent`
 - 当前请求没有被当成 `regular` follow-up 处理
+- 账号选择结果与真实 `user-reselect` 首次入口一致：也就是它会走允许首次入口选号/绑定的那条路径，而不是已有绑定 follow-up 的复用路径
 
 - [ ] **Step 2: 只跑这条测试，确认失败原因正确**
 
@@ -182,11 +183,11 @@ git commit -m "fix(routing): 收紧 regular toast 并新增 fallback 警告"
 - `user-reselect` 仍允许原有负载重选
 - 命中成功限流切换时最终 reason 仍覆写为 `rate-limit-switch`
 
-- [ ] **Step 3: 单独运行这些回归测试，确认先失败或至少能证明新 case 被覆盖**
+- [ ] **Step 3: 单独运行这些回归测试，确认新增断言先失败**
 
 Run: `node --test test/plugin.test.js --test-name-pattern "subagent|compaction|user-reselect|rate-limit-switch|route decision"`
 
-Expected: 如果有新断言则先 FAIL；若无 FAIL，至少确认包含新覆盖点。
+Expected: FAIL，且失败点来自这轮新增/收紧的断言，而不是无关错误。
 
 - [ ] **Step 4: 在 `src/routing-state.ts` 做最小类型扩展，在 `src/plugin-hooks.ts` 补齐兼容实现**
 
@@ -230,7 +231,7 @@ Expected: PASS
 
 - [ ] **Step 3: 检查最终 diff，确认只包含本轮语义收敛改动**
 
-Run: `git diff --stat HEAD~4..HEAD`
+Run: `git diff --stat origin/master...HEAD`
 
 Expected: 只涉及 `src/plugin-hooks.ts`、`src/routing-state.ts`、`test/plugin.test.js`，以及必要的相关文件。
 
