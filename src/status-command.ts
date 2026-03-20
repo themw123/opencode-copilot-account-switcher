@@ -57,16 +57,15 @@ function formatRoutingGroup(store: StoreFile) {
   return mapped.length > 0 ? mapped.join("; ") : "none"
 }
 
-function buildSuccessMessage(store: StoreFile, name: string, quota?: StoreFile["accounts"][string]["quota"]) {
-  const activeSummary = [
-    `current active: ${name}`,
-    `premium ${formatQuotaValue(quota?.snapshots?.premium)}`,
-    `chat ${formatQuotaValue(quota?.snapshots?.chat)}`,
-    `completions ${formatQuotaValue(quota?.snapshots?.completions)}`,
-    formatUpdatedAt(quota?.updatedAt),
+function buildSuccessMessage(store: StoreFile, _name: string, quota?: StoreFile["accounts"][string]["quota"]) {
+  const premiumValue = formatQuotaValue(quota?.snapshots?.premium)
+  const modelIDs = Object.keys(store.modelAccountAssignments ?? {}).sort((a, b) => a.localeCompare(b))
+  const groupedPremiumSummary = [
+    `[default] premium ${premiumValue}`,
+    ...modelIDs.map((modelID) => `[${modelID}] premium ${premiumValue}`),
   ].join(" | ")
 
-  return [activeSummary, `活跃组: ${formatActiveGroup(store)}`, `路由组: ${formatRoutingGroup(store)}`].join("\n")
+  return [groupedPremiumSummary, `活跃组: ${formatActiveGroup(store)}`, `路由组: ${formatRoutingGroup(store)}`].join("\n")
 }
 
 function buildMissingActiveMessage() {
