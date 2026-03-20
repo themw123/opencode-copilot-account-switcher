@@ -505,14 +505,7 @@ async function readJsonResponseBody(response: Response): Promise<JsonRecord | un
 
 export async function detectRateLimitEvidence(response: Response): Promise<RateLimitEvidence> {
   const retryAfterMs = parseRetryAfterMs(response.headers)
-  if (response.status === 429) {
-    return {
-      matched: true,
-      retryAfterMs,
-    }
-  }
-
-  if (response.status < 400) {
+  if (response.ok) {
     return {
       matched: false,
     }
@@ -526,7 +519,7 @@ export async function detectRateLimitEvidence(response: Response): Promise<RateL
   const errorType = typeof errorRecord?.type === "string" ? errorRecord.type.toLowerCase() : ""
   const errorCode = typeof errorRecord?.code === "string" ? errorRecord.code.toLowerCase() : ""
 
-  if (errorType === "too_many_requests" || errorCode.includes("rate_limit")) {
+  if (retryAfterMs !== undefined || errorType === "too_many_requests" || errorCode.includes("rate_limit")) {
     return {
       matched: true,
       retryAfterMs,
@@ -893,7 +886,7 @@ async function maybeRetryConnectionMismatchItemIds(
   sessionID?: string,
   startedNotified = false,
 ) {
-  if (response.status !== 400) {
+  if (response.ok) {
     return {
       response,
       retried: false as const,
@@ -1007,7 +1000,7 @@ async function maybeRetryInputIdTooLong(
   sessionID?: string,
   startedNotified = false,
 ) {
-  if (response.status !== 400) {
+  if (response.ok) {
     return {
       response,
       retried: false as const,
@@ -1205,7 +1198,7 @@ function isCopilotUrl(request: Request | URL | string) {
 }
 
 async function getInputIdRetryErrorDetails(response: Response) {
-  if (response.status !== 400) return undefined
+  if (response.ok) return undefined
 
   const responseText = await response
     .clone()

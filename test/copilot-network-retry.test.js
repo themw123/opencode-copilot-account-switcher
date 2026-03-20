@@ -55,7 +55,7 @@ test("normalizes sse read timeout errors for copilot urls", async () => {
   )
 })
 
-test("detects rate limit from 429 and too_many_requests payloads", async () => {
+test("detects rate limit from semantic evidence including retry-after and too_many_requests payloads", async () => {
   const { detectRateLimitEvidence } = await import("../dist/copilot-network-retry.js")
 
   const fromStatus429 = await detectRateLimitEvidence(
@@ -114,6 +114,38 @@ test("does not match rate-limit payload evidence on successful responses", async
     }),
   )
   assert.equal(successRateLimitCode.matched, false)
+})
+
+test("detects rate limit from retry-after headers even when status is not 429", async () => {
+  const { detectRateLimitEvidence } = await import("../dist/copilot-network-retry.js")
+
+  const fromRetryAfterHeader = await detectRateLimitEvidence(
+    new Response("slow down", {
+      status: 409,
+      headers: {
+        "retry-after": "7",
+      },
+    }),
+  )
+
+  assert.equal(fromRetryAfterHeader.matched, true)
+  assert.equal(fromRetryAfterHeader.retryAfterMs, 7_000)
+})
+
+test("does not treat bare 429 without semantic evidence as a rate-limit type", async () => {
+  const { detectRateLimitEvidence } = await import("../dist/copilot-network-retry.js")
+
+  const bare429 = await detectRateLimitEvidence(
+    new Response("upstream error", {
+      status: 429,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+      },
+    }),
+  )
+
+  assert.equal(bare429.matched, false)
+  assert.equal(bare429.retryAfterMs, undefined)
 })
 
 test("normalizes unable to connect errors for copilot urls", async () => {
@@ -1051,6 +1083,48 @@ test("bulk strips all input ids when connection mismatch message says item with 
         },
       }), {
         status: 400,
+        headers: { "content-type": "application/json" },
+      })
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "a" }], id: "item_a" },
+        { role: "assistant", content: [{ type: "output_text", text: "b" }], id: "item_b" },
+      ],
+    }),
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].input[1].id, undefined)
+  assert.equal(calls[1].input[2].id, undefined)
+})
+
+test("bulk strips all input ids for connection mismatch even when server returns 409", async () => {
+  const calls = []
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?connection-mismatch-409-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async (_request, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"))
+    calls.push(body)
+
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({
+        error: {
+          message: "Input item ID does not belong to this connection.",
+        },
+      }), {
+        status: 409,
         headers: { "content-type": "application/json" },
       })
     }
@@ -2807,13 +2881,13 @@ test("retries Request-body cleanup after the first provider call consumes the or
 })
 
 test("fails open for connection mismatch when the original Request body was already consumed before wrapper entry", async () => {
-  const calls = []
+  let attempts = 0
   const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?connection-mismatch-consumed-${Date.now()}`)
   const wrapped = createCopilotRetryingFetch(async (request, init) => {
-    if (request instanceof Request) {
-      await request.text()
+    attempts += 1
+    if (attempts > 1) {
+      assert.fail("should not retry consumed request bodies before wrapper entry")
     }
-    calls.push(typeof init?.body)
 
     return new Response(JSON.stringify({
       error: {
@@ -2842,8 +2916,7 @@ test("fails open for connection mismatch when the original Request body was alre
   const response = await wrapped(request)
 
   assert.equal(response.status, 400)
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0], "undefined")
+  assert.equal(attempts, 1)
 })
 
 test("retry notifier sends toast through client.tui.showToast", async () => {

@@ -2592,6 +2592,41 @@ test("plugin auth loader does not flag account as rate-limited before the third 
   assert.deepEqual(events, [])
 })
 
+test("plugin auth loader does not treat bare 429 responses as rate-limit hits without semantic evidence", async () => {
+  let currentNow = 15_000
+  const events = []
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    now: () => currentNow,
+    appendRoutingEventImpl: async (input) => {
+      events.push(input.event)
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+    fetchImpl: async () => new Response("upstream overloaded", {
+      status: 429,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+      },
+    }),
+  })
+
+  await harness.sendRequest({ sessionID: "child-rate-bare-429", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  await harness.sendRequest({ sessionID: "child-rate-bare-429", initiator: "agent", model: "gpt-5" })
+  currentNow += 60_000
+  const response = await harness.sendRequest({ sessionID: "child-rate-bare-429", initiator: "agent", model: "gpt-5" })
+
+  assert.equal(response?.status, 429)
+  assert.deepEqual(events, [])
+  assert.equal(decisions.length, 3)
+  assert.equal(decisions[2]?.rateLimitMatched, false)
+  assert.equal(decisions[2]?.retryAfterMs, undefined)
+  assert.equal(decisions[2]?.reason, "subagent")
+  assert.equal(decisions[2]?.switched, false)
+})
+
 test("records route decision evidence for regular request with successful touch write", async () => {
   const decisions = []
   const harness = createSessionBindingHarness({
