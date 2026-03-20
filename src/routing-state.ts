@@ -100,7 +100,7 @@ export type RouteDecisionEvent = {
   groupSource: "model" | "active"
   candidateNames: string[]
   loads: Record<string, number>
-  reason: "regular" | "subagent" | "user-reselect" | "rate-limit-switch"
+  reason: "regular" | "subagent" | "compaction" | "user-reselect" | "rate-limit-switch"
   switched: boolean
   switchFrom?: string
   switchBlockedBy?: "no-cooled-down-candidate" | "replacement-load-higher" | "routing-state-read-failed" | "no-replacement-candidate"

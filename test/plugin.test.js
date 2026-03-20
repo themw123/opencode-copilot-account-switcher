@@ -1094,13 +1094,35 @@ function createSessionBindingHarness(input = {}) {
     outgoing,
     routingStateDirectory,
     async sendRequest(options = {}) {
+      const sessionID = options.sessionID ?? "child-session"
+      const headers = {
+        ...(options.headers ?? {}),
+      }
+
+      if (options.useChatHeaders === true) {
+        await plugin["chat.headers"]?.(
+          createChatHeadersInput({
+            sessionID,
+            providerID: options.providerID,
+            message: {
+              id: options.messageID ?? `message-${outgoing.length + 1}`,
+              sessionID,
+            },
+          }),
+          { headers },
+        )
+      }
+
+      if (typeof options.initiator === "string") {
+        headers["x-initiator"] = options.initiator
+      }
+
       const authOptions = await authOptionsPromise
       return authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
         method: "POST",
         headers: {
-          "x-opencode-session-id": options.sessionID ?? "child-session",
-          "x-initiator": options.initiator ?? "agent",
-          ...(options.headers ?? {}),
+          "x-opencode-session-id": sessionID,
+          ...headers,
         },
         body: JSON.stringify({
           model: options.model ?? "gpt-5",
@@ -1142,6 +1164,7 @@ test("plugin chat headers synthetic stays disabled by default", async () => {
 
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
+    "x-opencode-debug-link-id": "message-456",
     "x-opencode-session-id": "session-123",
   })
 })
@@ -1166,6 +1189,7 @@ test("plugin chat headers synthetic text overrides x-initiator when enabled", as
   assert.deepEqual(output.headers, {
     "anthropic-beta": "interleaved-thinking-2025-05-14",
     "x-initiator": "agent",
+    "x-opencode-debug-link-id": "message-456",
     "x-opencode-session-id": "session-123",
   })
   assert.deepEqual(calls, [
@@ -2598,6 +2622,12 @@ test("plugin auth loader does not treat bare 429 responses as rate-limit hits wi
   const decisions = []
   const harness = createSessionBindingHarness({
     now: () => currentNow,
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: { parentID: "root-session" } }),
+      },
+    },
     appendRoutingEventImpl: async (input) => {
       events.push(input.event)
     },
@@ -2612,11 +2642,11 @@ test("plugin auth loader does not treat bare 429 responses as rate-limit hits wi
     }),
   })
 
-  await harness.sendRequest({ sessionID: "child-rate-bare-429", initiator: "agent", model: "gpt-5" })
+  await harness.sendRequest({ sessionID: "child-rate-bare-429", useChatHeaders: true, model: "gpt-5" })
   currentNow += 60_000
-  await harness.sendRequest({ sessionID: "child-rate-bare-429", initiator: "agent", model: "gpt-5" })
+  await harness.sendRequest({ sessionID: "child-rate-bare-429", useChatHeaders: true, model: "gpt-5" })
   currentNow += 60_000
-  const response = await harness.sendRequest({ sessionID: "child-rate-bare-429", initiator: "agent", model: "gpt-5" })
+  const response = await harness.sendRequest({ sessionID: "child-rate-bare-429", useChatHeaders: true, model: "gpt-5" })
 
   assert.equal(response?.status, 429)
   assert.deepEqual(events, [])
@@ -2630,6 +2660,12 @@ test("plugin auth loader does not treat bare 429 responses as rate-limit hits wi
 test("records route decision evidence for regular request with successful touch write", async () => {
   const decisions = []
   const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: { parentID: "root-session" } }),
+      },
+    },
     appendSessionTouchEventImpl: async () => true,
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
@@ -2638,7 +2674,7 @@ test("records route decision evidence for regular request with successful touch 
 
   const response = await harness.sendRequest({
     sessionID: "decision-regular",
-    initiator: "agent",
+    useChatHeaders: true,
     model: "gpt-5",
   })
 
@@ -2790,10 +2826,64 @@ test("non-retry requests keep session visible to routing while stripping it from
   assert.equal(harness.outgoing[0]?.headers["x-opencode-session-id"], undefined)
 })
 
-test("toasts actual consumption for regular and subagent requests", async () => {
+test("records route decision reason as subagent only when upstream session parentID exists", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: { parentID: "root-session" } }),
+      },
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "derived-child-session",
+    useChatHeaders: true,
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.reason, "subagent")
+})
+
+test("records route decision reason as compaction for upstream compaction requests", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [{ type: "compaction" }] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "derived-compaction-session",
+    useChatHeaders: true,
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.reason, "compaction")
+})
+
+test("toasts billed regular requests but suppresses later non-billed true child reuse", async () => {
   const toasts = []
   const harness = createSessionBindingHarness({
     client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: { parentID: "root-session" } }),
+      },
       tui: {
         showToast: async (options) => {
           toasts.push(options)
@@ -2811,15 +2901,71 @@ test("toasts actual consumption for regular and subagent requests", async () => 
   })
   await harness.sendRequest({
     sessionID: "toast-subagent",
-    initiator: "agent",
+    useChatHeaders: true,
     model: "gpt-5",
   })
 
-  assert.equal(toasts.length, 2)
+  assert.equal(toasts.length, 1)
   assert.equal(toasts[0]?.body?.variant, "info")
   assert.equal(toasts[0]?.body?.message, "已使用 main（常规请求）")
-  assert.equal(toasts[1]?.body?.variant, "info")
-  assert.equal(toasts[1]?.body?.message, "已使用 main（子代理请求）")
+})
+
+test("toasts first billed true child use but suppresses the second use of same account", async () => {
+  const toasts = []
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: { parentID: "root-session" } }),
+      },
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "toast-subagent-first-use",
+    useChatHeaders: true,
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "toast-subagent-second-use",
+    useChatHeaders: true,
+    model: "gpt-5",
+  })
+
+  assert.equal(toasts.length, 1)
+  assert.equal(toasts[0]?.body?.variant, "info")
+  assert.equal(toasts[0]?.body?.message, "已使用 main（子代理请求）")
+})
+
+test("suppresses ordinary consumption toast for first compaction account selection", async () => {
+  const toasts = []
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [{ type: "compaction" }] } }),
+        get: async () => ({ data: {} }),
+      },
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "toast-compaction-first-use",
+    useChatHeaders: true,
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(toasts.length, 0)
 })
 
 test("toasts actual consumption with user-reselect reason", async () => {
@@ -2939,6 +3085,12 @@ test("records route decision evidence when switch is blocked by routing-state re
   const decisions = []
   const harness = createSessionBindingHarness({
     now: () => now,
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: { parentID: "root-session" } }),
+      },
+    },
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
     },
@@ -2953,11 +3105,11 @@ test("records route decision evidence when switch is blocked by routing-state re
     }),
   })
 
-  await harness.sendRequest({ sessionID: "decision-blocked", initiator: "agent", model: "gpt-5" })
+  await harness.sendRequest({ sessionID: "decision-blocked", useChatHeaders: true, model: "gpt-5" })
   now += 60_000
-  await harness.sendRequest({ sessionID: "decision-blocked", initiator: "agent", model: "gpt-5" })
+  await harness.sendRequest({ sessionID: "decision-blocked", useChatHeaders: true, model: "gpt-5" })
   now += 60_000
-  const response = await harness.sendRequest({ sessionID: "decision-blocked", initiator: "agent", model: "gpt-5" })
+  const response = await harness.sendRequest({ sessionID: "decision-blocked", useChatHeaders: true, model: "gpt-5" })
 
   assert.equal(response?.status, 429)
   assert.equal(decisions.length, 3)

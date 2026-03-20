@@ -90,6 +90,7 @@ const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000
 const MAX_SESSION_BINDINGS = 256
 const TOUCH_WRITE_CACHE_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_TOUCH_WRITE_CACHE_ENTRIES = 2048
+const INTERNAL_DEBUG_LINK_HEADER = "x-opencode-debug-link-id"
 
 type TriggerBillingCompensationInput = {
   fromAccountName: string
@@ -310,6 +311,7 @@ function getInternalSessionID(request: Request | URL | string, init: RequestInit
 function stripInternalSessionHeader(request: Request | URL | string, init?: RequestInit) {
   return mergeAndRewriteRequestHeaders(request, init, (headers) => {
     headers.delete("x-opencode-session-id")
+    headers.delete(INTERNAL_DEBUG_LINK_HEADER)
   })
 }
 
@@ -339,6 +341,10 @@ function toReasonByInitiator(initiator: string | null): RouteDecisionEvent["reas
   return "regular"
 }
 
+type RequestClassification = {
+  reason: RouteDecisionEvent["reason"]
+}
+
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
@@ -346,6 +352,7 @@ function toErrorMessage(error: unknown): string {
 
 function toConsumptionReasonText(reason: RouteDecisionEvent["reason"]) {
   if (reason === "subagent") return "子代理请求"
+  if (reason === "compaction") return "上下文压缩"
   if (reason === "user-reselect") return "用户回合重选"
   return "常规请求"
 }
@@ -366,6 +373,15 @@ function buildConsumptionToast(input: {
     message: `已使用 ${input.accountName}（${toConsumptionReasonText(input.reason)}）`,
     variant: "info" as const,
   }
+}
+
+function shouldShowConsumptionToast(input: {
+  reason: RouteDecisionEvent["reason"]
+  isFirstUse: boolean
+}) {
+  if (input.reason === "subagent") return input.isFirstUse
+  if (input.reason === "compaction") return false
+  return true
 }
 
 function chooseCandidateAccount(input: {
@@ -602,6 +618,64 @@ export function buildPluginHooks(input: {
     }]
   }
 
+  const classifyRequestReason = async (requestInput: {
+    sessionID: string
+    request: Request | URL | string
+    init?: RequestInit
+  }): Promise<RequestClassification> => {
+    const initiator = getMergedRequestHeader(requestInput.request, requestInput.init, "x-initiator")
+    if (initiator !== "agent") {
+      return {
+        reason: toReasonByInitiator(initiator),
+      }
+    }
+
+    const sessionLookup = input.client?.session?.get as undefined | ((input: {
+      path: { id: string }
+      query?: { directory?: string }
+      throwOnError?: boolean
+    }) => Promise<SessionGetResponse | undefined>)
+    const messageLookup = input.client?.session?.message as undefined | ((input: {
+      path: { id: string; messageID: string }
+      query?: { directory?: string }
+      throwOnError?: boolean
+    }) => Promise<{ data?: { parts?: Array<DebugPart> } } | undefined>)
+
+    const messageIDHeader = getMergedRequestHeader(requestInput.request, requestInput.init, INTERNAL_DEBUG_LINK_HEADER)
+    if (typeof messageIDHeader === "string" && messageIDHeader.length > 0) {
+      const currentMessage = await messageLookup?.({
+        path: {
+          id: requestInput.sessionID,
+          messageID: messageIDHeader,
+        },
+        query: {
+          directory: input.directory,
+        },
+        throwOnError: true,
+      }).catch(() => undefined)
+      const parts = Array.isArray(currentMessage?.data?.parts) ? currentMessage.data.parts : undefined
+      if (parts?.some((part) => part?.type === "compaction") === true) {
+        return {
+          reason: "compaction",
+        }
+      }
+    }
+
+    const session = await sessionLookup?.({
+      path: {
+        id: requestInput.sessionID,
+      },
+      query: {
+        directory: input.directory,
+      },
+      throwOnError: true,
+    }).catch(() => undefined)
+    const isTrueChildSession = typeof session?.data?.parentID === "string" && session.data.parentID.length > 0
+    return {
+      reason: isTrueChildSession ? "subagent" : "regular",
+    }
+  }
+
   const getLatestLastAccountSwitchAt = async () => {
     const store = readRetryStoreContext(await loadStore().catch(() => undefined))
     return store?.lastAccountSwitchAt
@@ -686,8 +760,13 @@ export function buildPluginHooks(input: {
       }
 
       const candidateNames = candidates.map((item) => item.name)
+      const classification = sessionID.length > 0
+        ? await classifyRequestReason({ sessionID, request, init })
+        : {
+            reason: toReasonByInitiator(initiator),
+          }
       let decisionLoads = loadMapToRecord(loads, candidateNames)
-      let decisionReason: RouteDecisionEvent["reason"] = toReasonByInitiator(initiator)
+      let decisionReason: RouteDecisionEvent["reason"] = classification.reason
       let decisionSwitched = false
       let decisionSwitchFrom: string | undefined
       let decisionSwitchBlockedBy: RouteDecisionEvent["switchBlockedBy"]
@@ -980,19 +1059,21 @@ export function buildPluginHooks(input: {
         },
       }).catch(() => undefined)
 
-      const consumptionToast = buildConsumptionToast({
-        accountName: finalChosenAccount,
-        reason: decisionReason,
-        switchFrom: decisionSwitchFrom,
-      })
-      await showStatusToast({
-        client: input.client,
-        message: consumptionToast.message,
-        variant: consumptionToast.variant,
-        warn: (scope, error) => {
-          console.warn(`[${scope}] failed to show toast`, error)
-        },
-      }).catch(() => undefined)
+      if (shouldShowConsumptionToast({ reason: decisionReason, isFirstUse })) {
+        const consumptionToast = buildConsumptionToast({
+          accountName: finalChosenAccount,
+          reason: decisionReason,
+          switchFrom: decisionSwitchFrom,
+        })
+        await showStatusToast({
+          client: input.client,
+          message: consumptionToast.message,
+          variant: consumptionToast.variant,
+          warn: (scope, error) => {
+            console.warn(`[${scope}] failed to show toast`, error)
+          },
+        }).catch(() => undefined)
+      }
 
       return response
     }
@@ -1133,6 +1214,7 @@ export function buildPluginHooks(input: {
         },
       })
     }
+    output.headers[INTERNAL_DEBUG_LINK_HEADER] = hookInput.message.id
     output.headers["x-opencode-session-id"] = hookInput.sessionID
   }
 
