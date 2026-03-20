@@ -25,13 +25,22 @@ export type CopilotRetryNotifier = {
   stopped: (state: { remaining: number }) => Promise<void>
 }
 
-type RetryableSystemError = Error & {
-  code: string
-  syscall: string
+type RetryableApiCallError = Error & {
+  url: string
+  requestBodyValues: unknown
+  statusCode?: number
+  responseHeaders?: Record<string, string>
+  responseBody?: string
+  isRetryable: boolean
+  data?: unknown
   cause: unknown
+  [key: symbol]: unknown
 }
 
 type JsonRecord = Record<string, unknown>
+
+const AI_ERROR_MARKER = Symbol.for("vercel.ai.error")
+const API_CALL_ERROR_MARKER = Symbol.for("vercel.ai.error.AI_APICallError")
 
 export type AccountSwitchCleanupResult = {
   payload: JsonRecord
@@ -1174,14 +1183,48 @@ async function maybeRetryInputIdTooLong(
   return { response: retried, retried: true as const, nextInit, nextPayload: sanitized, retryState }
 }
 
-function toRetryableSystemError(error: unknown): RetryableSystemError {
+function getRequestUrl(request: Request | URL | string) {
+  return request instanceof Request ? request.url : request instanceof URL ? request.href : String(request)
+}
+
+function toRetryableApiCallError(
+  error: unknown,
+  request: Request | URL | string,
+  options?: {
+    requestBodyValues?: unknown
+    statusCode?: number
+    responseHeaders?: Headers | Record<string, string>
+    responseBody?: string
+  },
+): RetryableApiCallError {
   const base = error instanceof Error ? error : new Error(String(error))
-  const wrapped = new Error(`[copilot-network-retry normalized] ${base.message}`) as RetryableSystemError
-  wrapped.name = base.name
-  wrapped.code = "ECONNRESET"
-  wrapped.syscall = "fetch"
+  const wrapped = new Error(base.message) as RetryableApiCallError
+  wrapped.name = "AI_APICallError"
+  wrapped.url = getRequestUrl(request)
+  wrapped.requestBodyValues = options?.requestBodyValues ?? {}
+  wrapped.statusCode = options?.statusCode
+  wrapped.responseHeaders = options?.responseHeaders instanceof Headers
+    ? Object.fromEntries(options.responseHeaders.entries())
+    : options?.responseHeaders
+  wrapped.responseBody = options?.responseBody
+  wrapped.isRetryable = true
   wrapped.cause = error
+  wrapped[AI_ERROR_MARKER] = true
+  wrapped[API_CALL_ERROR_MARKER] = true
   return wrapped
+}
+
+function isRetryableApiCallError(error: unknown): error is RetryableApiCallError {
+  return Boolean(
+    error
+      && typeof error === "object"
+      && (error as RetryableApiCallError)[AI_ERROR_MARKER] === true
+      && (error as RetryableApiCallError)[API_CALL_ERROR_MARKER] === true,
+  )
+}
+
+function isRetryableCopilotStatus(status: number) {
+  return status === 499
 }
 
 function isCopilotUrl(request: Request | URL | string) {
@@ -1246,7 +1289,6 @@ async function parseJsonRequestPayload(request: Request | URL | string, init?: R
 }
 
 function withStreamDebugLogs(response: Response, request: Request | URL | string) {
-  if (!isDebugEnabled()) return response
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? ""
   if (!contentType.includes("text/event-stream") || !response.body) return response
 
@@ -1267,12 +1309,20 @@ function withStreamDebugLogs(response: Response, request: Request | URL | string
           }
         } catch (error) {
           const message = getErrorMessage(error)
-          debugLog("sse stream read error", {
-            url: rawUrl,
-            message,
-            retryableByMessage: RETRYABLE_MESSAGES.some((part) => message.includes(part)),
-          })
-          controller.error(error)
+          const retryable = RETRYABLE_MESSAGES.some((part) => message.includes(part))
+          if (isDebugEnabled()) {
+            debugLog("sse stream read error", {
+              url: rawUrl,
+              message,
+              retryableByMessage: retryable,
+            })
+          }
+          controller.error(retryable
+            ? toRetryableApiCallError(error, request, {
+                statusCode: response.status,
+                responseHeaders: response.headers,
+              })
+            : error)
         }
       }
 
@@ -1337,6 +1387,16 @@ export function createCopilotRetryingFetch(
         status: response.status,
         contentType: response.headers.get("content-type") ?? undefined,
       })
+
+      if (isCopilotUrl(safeRequest) && isRetryableCopilotStatus(response.status)) {
+        const responseBody = await response.clone().text().catch(() => "")
+        throw toRetryableApiCallError(new Error(responseBody || `status code ${response.status}`), safeRequest, {
+          requestBodyValues: currentPayload,
+          statusCode: response.status,
+          responseHeaders: response.headers,
+          responseBody: responseBody || undefined,
+        })
+      }
 
       if (isCopilotUrl(safeRequest)) {
         let currentResponse = response
@@ -1503,7 +1563,13 @@ export function createCopilotRetryingFetch(
         throw error
       }
 
-      throw toRetryableSystemError(error)
+      if (isRetryableApiCallError(error)) {
+        throw error
+      }
+
+      throw toRetryableApiCallError(error, safeRequest, {
+        requestBodyValues: currentPayload,
+      })
     }
   }
 }

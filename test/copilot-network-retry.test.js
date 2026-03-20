@@ -5,7 +5,25 @@ import { join } from "node:path"
 import test from "node:test"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 
-test("normalizes retryable copilot network errors into ECONNRESET-shaped failures", async () => {
+const AI_ERROR_MARKER = Symbol.for("vercel.ai.error")
+const API_CALL_ERROR_MARKER = Symbol.for("vercel.ai.error.AI_APICallError")
+
+function assertRetryableApiCallError(error, { message, statusCode, responseBody }) {
+  assert.equal(error.name, "AI_APICallError")
+  assert.equal(error[AI_ERROR_MARKER], true)
+  assert.equal(error[API_CALL_ERROR_MARKER], true)
+  assert.equal(error.isRetryable, true)
+  assert.match(error.message, message)
+  assert.equal(error.statusCode, statusCode)
+  if (responseBody === undefined) {
+    assert.equal(error.responseBody, undefined)
+  } else {
+    assert.match(error.responseBody, responseBody)
+  }
+  return true
+}
+
+test("normalizes retryable copilot network errors into retryable API-call-shaped failures", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
   const wrapped = createCopilotRetryingFetch(async () => {
@@ -20,17 +38,17 @@ test("normalizes retryable copilot network errors into ECONNRESET-shaped failure
     }),
     (error) => {
       assert.equal(attempts, 1)
-      assert.equal(error.code, "ECONNRESET")
-      assert.equal(error.syscall, "fetch")
-      assert.match(error.message, /copilot-network-retry normalized/i)
-      assert.match(error.message, /unknown certificate/i)
+      assertRetryableApiCallError(error, {
+        message: /unknown certificate/i,
+        statusCode: undefined,
+      })
       assert.ok(error.cause instanceof Error)
       return true
     },
   )
 })
 
-test("normalizes sse read timeout errors for copilot urls", async () => {
+test("normalizes sse read timeout errors for copilot urls into retryable API-call-shaped failures", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
   const wrapped = createCopilotRetryingFetch(async () => {
@@ -45,10 +63,107 @@ test("normalizes sse read timeout errors for copilot urls", async () => {
     }),
     (error) => {
       assert.equal(attempts, 1)
-      assert.equal(error.code, "ECONNRESET")
-      assert.equal(error.syscall, "fetch")
-      assert.match(error.message, /copilot-network-retry normalized/i)
-      assert.match(error.message, /sse read timed out/i)
+      assertRetryableApiCallError(error, {
+        message: /sse read timed out/i,
+        statusCode: undefined,
+      })
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
+test("normalizes 499 responses into retryable API-call-shaped failures for copilot urls", async () => {
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?status-499-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async () => new Response("client closed request", {
+    status: 499,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+    },
+  }))
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assertRetryableApiCallError(error, {
+        message: /client closed request|status code 499/i,
+        statusCode: 499,
+        responseBody: /client closed request/i,
+      })
+      assert.equal(error.responseHeaders["content-type"], "text/plain; charset=utf-8")
+      assert.deepEqual(error.requestBodyValues, { messages: [{ role: "user", content: "hi" }] })
+      assert.ok(error.cause instanceof Error)
+      return true
+    },
+  )
+})
+
+test("preserves 499 API-call fields without rewrapping in catch", async () => {
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?status-499-preserve-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async () => new Response("failed to fetch", {
+    status: 499,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "x-test": "keep-me",
+    },
+  }))
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assertRetryableApiCallError(error, {
+        message: /failed to fetch/i,
+        statusCode: 499,
+        responseBody: /failed to fetch/i,
+      })
+      assert.equal(error.responseHeaders["x-test"], "keep-me")
+      assert.deepEqual(error.requestBodyValues, { messages: [{ role: "user", content: "hi" }] })
+      return true
+    },
+  )
+})
+
+test("normalizes sse stream read timeout failures after the response starts streaming", async () => {
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?sse-stream-timeout-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async () => {
+    let sent = false
+    const body = new ReadableStream({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(new TextEncoder().encode("data: hello\n\n"))
+          return
+        }
+        controller.error(new Error("SSE read timed out"))
+      },
+    })
+
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    })
+  })
+
+  const response = await wrapped("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  })
+
+  await assert.rejects(
+    response.text(),
+    (error) => {
+      assertRetryableApiCallError(error, {
+        message: /sse read timed out/i,
+        statusCode: 200,
+      })
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -163,10 +278,10 @@ test("normalizes unable to connect errors for copilot urls", async () => {
     }),
     (error) => {
       assert.equal(attempts, 1)
-      assert.equal(error.code, "ECONNRESET")
-      assert.equal(error.syscall, "fetch")
-      assert.match(error.message, /copilot-network-retry normalized/i)
-      assert.match(error.message, /unable to connect/i)
+      assertRetryableApiCallError(error, {
+        message: /unable to connect/i,
+        statusCode: undefined,
+      })
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -188,10 +303,10 @@ test("normalizes retryable errors for copilot hosts even on non-whitelisted path
     }),
     (error) => {
       assert.equal(attempts, 1)
-      assert.equal(error.code, "ECONNRESET")
-      assert.equal(error.syscall, "fetch")
-      assert.match(error.message, /copilot-network-retry normalized/i)
-      assert.match(error.message, /unknown certificate verification error/i)
+      assertRetryableApiCallError(error, {
+        message: /unknown certificate verification error/i,
+        statusCode: undefined,
+      })
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -304,9 +419,10 @@ test("normalizes retryable request errors without replaying consumed request bod
   })
 
   await assert.rejects(wrapped(request), (error) => {
-    assert.equal(error.code, "ECONNRESET")
-    assert.match(error.message, /copilot-network-retry normalized/i)
-    assert.match(error.message, /failed to fetch/i)
+    assertRetryableApiCallError(error, {
+      message: /failed to fetch/i,
+      statusCode: undefined,
+    })
     return true
   })
   assert.equal(attempts, 1)
@@ -325,9 +441,10 @@ test("normalizes retryable request-object errors on the first failure", async ()
   })
 
   await assert.rejects(wrapped(request), (error) => {
-    assert.equal(error.code, "ECONNRESET")
-    assert.match(error.message, /copilot-network-retry normalized/i)
-    assert.match(error.message, /failed to fetch/i)
+    assertRetryableApiCallError(error, {
+      message: /failed to fetch/i,
+      statusCode: undefined,
+    })
     return true
   })
   assert.equal(attempts, 1)
