@@ -3741,6 +3741,33 @@ test("records route decision reason as compaction for upstream compaction reques
   assert.equal(decisions[0]?.reason, "compaction")
 })
 
+test("records unbound-fallback for root agent request without existing session binding", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "unbound-fallback-root",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.reason, "unbound-fallback")
+  assert.equal(harness.outgoing.length, 1)
+  assert.equal(Object.hasOwn(harness.outgoing[0]?.headers ?? {}, "x-initiator"), false)
+})
+
 test("toasts billed regular requests but suppresses later non-billed true child reuse", async () => {
   const toasts = []
   const harness = createSessionBindingHarness({

@@ -634,6 +634,7 @@ export function buildPluginHooks(input: {
 
   const classifyRequestReason = async (requestInput: {
     sessionID: string
+    hasExistingBinding: boolean
     request: Request | URL | string
     init?: RequestInit
   }): Promise<RequestClassification> => {
@@ -686,6 +687,11 @@ export function buildPluginHooks(input: {
       throwOnError: true,
     }).catch(() => undefined)
     const isTrueChildSession = typeof session?.data?.parentID === "string" && session.data.parentID.length > 0
+    if (!isTrueChildSession && requestInput.hasExistingBinding === false) {
+      return {
+        reason: "unbound-fallback",
+      }
+    }
     return {
       reason: isTrueChildSession ? "subagent" : "regular",
     }
@@ -823,8 +829,14 @@ export function buildPluginHooks(input: {
       }
 
       const candidateNames = candidates.map((item) => item.name)
+      const hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)
       const classification = sessionID.length > 0
-        ? await classifyRequestReason({ sessionID, request: selectionRequest, init: selectionInit })
+        ? await classifyRequestReason({
+            sessionID,
+            hasExistingBinding,
+            request: selectionRequest,
+            init: selectionInit,
+          })
         : {
             reason: toReasonByInitiator(initiator),
           }
@@ -869,15 +881,15 @@ export function buildPluginHooks(input: {
 
       let nextRequest = request
       let nextInit = init
-      if (isFirstUse) {
-        const currentInitiator = getMergedRequestHeader(request, init, "x-initiator")
-        if (currentInitiator === "agent") {
-          const rewritten = mergeAndRewriteRequestHeaders(request, init, (headers) => {
-            headers.delete("x-initiator")
-          })
-          nextRequest = rewritten.request
-          nextInit = rewritten.init
-        }
+      const currentInitiator = getMergedRequestHeader(request, init, "x-initiator")
+      const shouldStripAgentInitiator = classification.reason === "unbound-fallback"
+        || (isFirstUse && currentInitiator === "agent")
+      if (shouldStripAgentInitiator && currentInitiator === "agent") {
+        const rewritten = mergeAndRewriteRequestHeaders(request, init, (headers) => {
+          headers.delete("x-initiator")
+        })
+        nextRequest = rewritten.request
+        nextInit = rewritten.init
       }
 
       const auth: CopilotAuthState = {
