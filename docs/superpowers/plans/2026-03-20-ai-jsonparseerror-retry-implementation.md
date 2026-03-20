@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: 用失败测试钉住 Copilot `AI_JSONParseError` 的可重试转换
+### Task 1: 先一次性写出命中与排除测试，再统一最小实现
 
 **Files:**
 - Modify: `test/copilot-network-retry.test.js`
@@ -26,13 +26,20 @@
 - `isRetryable === true`
 - 错误 message 仍保留现有 `Copilot retryable error [transport]: ...` 风格
 
-- [ ] **Step 2: 只跑这条测试，确认先失败**
+- [ ] **Step 2: 在同一轮 RED 中补上两个排除测试**
 
-Run: `node --test test/copilot-network-retry.test.js --test-name-pattern "AI_JSONParseError"`
+新增测试至少断言：
 
-Expected: FAIL，且失败点是当前代码没有把这类错误转成 retryable `AI_APICallError`。
+- 非 Copilot URL 上相同 `AI_JSONParseError` 不转
+- Copilot URL 上普通 `SyntaxError` 或不带 AI 特征的 parse error 不转
 
-- [ ] **Step 3: 在 `src/copilot-network-retry.ts` 新增窄匹配判定函数**
+- [ ] **Step 3: 只跑这组三类测试，确认先失败**
+
+Run: `node --test test/copilot-network-retry.test.js --test-name-pattern "AI_JSONParseError|非 Copilot|本地 parse|does not normalize"`
+
+Expected: FAIL，且失败点至少包含“Copilot 命中场景还没被转成 retryable”；排除测试可以先绿，但必须和命中测试一起构成同一轮 RED 基线。
+
+- [ ] **Step 4: 在 `src/copilot-network-retry.ts` 新增窄匹配判定函数**
 
 最小实现要求：
 
@@ -43,73 +50,58 @@ Expected: FAIL，且失败点是当前代码没有把这类错误转成 retryabl
   - message 里包含 `text:`
 - 不要把这类逻辑塞进通用 `RETRYABLE_MESSAGES`
 
-- [ ] **Step 4: 在最外层 `catch` 里把这个窄匹配并入 Copilot retry 判定**
+- [ ] **Step 5: 在最外层 `catch` 里把这个窄匹配并入 Copilot retry 判定**
 
 最小实现要求：
 
 - 只在 `isCopilotUrl(safeRequest)` 为 true 时生效
 - 命中后继续走现有 `toRetryableApiCallError(..., { group: "transport" })`
 - 不引入新的对外错误类型
+- 保证前面写下的两个排除测试继续通过
 
-- [ ] **Step 5: 重跑目标测试，确认转绿**
+- [ ] **Step 6: 重跑这组三类测试，确认转绿**
 
-Run: `node --test test/copilot-network-retry.test.js --test-name-pattern "AI_JSONParseError"`
+Run: `node --test test/copilot-network-retry.test.js --test-name-pattern "AI_JSONParseError|非 Copilot|本地 parse|does not normalize"`
 
 Expected: PASS
 
-- [ ] **Step 6: 提交这一小步**
+- [ ] **Step 7: 提交这一小步**
 
 ```bash
 git add test/copilot-network-retry.test.js src/copilot-network-retry.ts
 git commit -m "fix(retry): 支持 Copilot JSON 解析截断错误重试"
 ```
 
-### Task 2: 用失败测试锁住排除条件，防止误伤
+### Task 2: 运行整个 retry 测试文件并补齐回归验证
 
 **Files:**
 - Modify: `test/copilot-network-retry.test.js`
 - Modify: `src/copilot-network-retry.ts`
 
-- [ ] **Step 1: 写失败测试，覆盖“非 Copilot URL 相同错误不转”**
+- [ ] **Step 1: 运行整个 retry 测试文件，确认没有回归**
 
-新增测试至少断言：
-
-- 请求 URL 不是 Copilot 域名
-- `baseFetch` 抛出同样的 `AI_JSONParseError`
-- 最终仍抛原错误，不被改写成 `AI_APICallError`
-
-- [ ] **Step 2: 写失败测试，覆盖“普通本地 parse error 不转”**
-
-新增测试至少断言：
-
-- Copilot URL 下如果抛出的只是普通 `SyntaxError` 或不带 AI 特征的 parse error
-- 最终不应被改写成 retryable `AI_APICallError`
-
-- [ ] **Step 3: 只跑这组排除测试，确认先失败**
-
-Run: `node --test test/copilot-network-retry.test.js --test-name-pattern "非 Copilot|本地 parse|does not normalize"`
-
-Expected: FAIL，且失败点是当前实现如果过宽会把不该转的错误也转掉。
-
-- [ ] **Step 4: 最小收紧判定函数与 `catch` 条件**
-
-实现要求：
-
-- 非 Copilot URL 明确排除
-- 不带 AI 响应解析特征的 parse error 明确排除
-- 不破坏 Task 1 的命中场景
-
-- [ ] **Step 5: 重跑排除测试，确认转绿**
-
-Run: `node --test test/copilot-network-retry.test.js --test-name-pattern "非 Copilot|本地 parse|does not normalize"`
+Run: `node --test test/copilot-network-retry.test.js`
 
 Expected: PASS
 
-- [ ] **Step 6: 提交这一小步**
+- [ ] **Step 2: 如果发现 retry 文件内有相关旧测试被误伤，再先补失败测试再做最小修复**
+
+要求：
+
+- 只有在 Task 1 的实现让现有 retry 测试暴露新回归时，才新增测试并修复
+- 不要主动扩 scope
+
+- [ ] **Step 3: 如有修复，重跑整个 retry 测试文件确认转绿；如无修复需求则记录无额外改动**
+
+Run: `node --test test/copilot-network-retry.test.js`
+
+Expected: PASS
+
+- [ ] **Step 4: 提交这一小步（如果 Task 2 没有代码改动则跳过）**
 
 ```bash
 git add test/copilot-network-retry.test.js src/copilot-network-retry.ts
-git commit -m "test(retry): 锁住 JSON 解析错误重试排除条件"
+git commit -m "test(retry): 补齐 JSON 解析错误重试回归验证"
 ```
 
 ### Task 3: 运行针对性与全量验证
@@ -132,7 +124,7 @@ Expected: PASS
 
 - [ ] **Step 3: 检查最终 diff 只包含本轮修复相关文件**
 
-Run: `git diff --stat origin/master...HEAD`
+Run: `git diff --stat HEAD~1..HEAD`
 
 Expected: 主要只涉及 `src/copilot-network-retry.ts` 与 `test/copilot-network-retry.test.js`，以及必要文档。
 
