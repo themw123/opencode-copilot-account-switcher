@@ -3768,6 +3768,38 @@ test("records unbound-fallback for root agent request without existing session b
   assert.equal(Object.hasOwn(harness.outgoing[0]?.headers ?? {}, "x-initiator"), false)
 })
 
+test("writes unbound-fallback route decision as JSON line end-to-end", async () => {
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "decision-log-unbound-fallback",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+
+  const decisionsLogPath = join(harness.routingStateDirectory, "decisions.log")
+  assert.equal(existsSync(decisionsLogPath), true)
+  const lines = (await fs.readFile(decisionsLogPath, "utf8"))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  assert.equal(lines.length, 1)
+
+  const event = JSON.parse(lines[0])
+  assert.equal(event.type, "route-decision")
+  assert.equal(event.reason, "unbound-fallback")
+  assert.equal(event.sessionID, "decision-log-unbound-fallback")
+})
+
 test("unbound-fallback keeps decision reason while sending aligns with user-reselect first entry and not regular reuse", async () => {
   const decisions = []
   let regularContrastCall = 0
@@ -4023,6 +4055,7 @@ test("toasts first billed true child use but suppresses the second use of same a
 
 test("suppresses ordinary consumption toast for first compaction account selection", async () => {
   const toasts = []
+  const decisions = []
   const harness = createSessionBindingHarness({
     client: {
       session: {
@@ -4035,6 +4068,9 @@ test("suppresses ordinary consumption toast for first compaction account selecti
         },
       },
     },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
   })
 
   const response = await harness.sendRequest({
@@ -4044,18 +4080,28 @@ test("suppresses ordinary consumption toast for first compaction account selecti
   })
 
   assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.reason, "compaction")
   assert.equal(toasts.length, 0)
 })
 
 test("toasts actual consumption with user-reselect reason", async () => {
   const toasts = []
+  const decisions = []
   const loadsByCall = [
     { main: 4, alt: 1 },
     { main: 1, alt: 5 },
   ]
   const harness = createSessionBindingHarness({
     loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
     client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
       tui: {
         showToast: async (options) => {
           toasts.push(options)
@@ -4080,6 +4126,70 @@ test("toasts actual consumption with user-reselect reason", async () => {
   assert.equal(toasts.length, 1)
   assert.equal(toasts[0]?.body?.variant, "info")
   assert.equal(toasts[0]?.body?.message, "已使用 main（用户回合重选）")
+  assert.equal(decisions.length, 2)
+  assert.equal(decisions[0]?.chosenAccount, "alt")
+  assert.equal(decisions[0]?.reason, "unbound-fallback")
+  assert.equal(decisions[1]?.chosenAccount, "main")
+  assert.equal(decisions[1]?.reason, "user-reselect")
+})
+
+test("rate-limit switch still overrides final reason after prior unbound-fallback and regular decisions", async () => {
+  let now = 11_000_000
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    now: () => now,
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+    readRoutingStateImpl: async () => ({
+      accounts: {
+        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
+        alt: {
+          touchBuckets: { [String(now - 60_000)]: 1 },
+          lastRateLimitedAt: now - 11 * 60 * 1000,
+        },
+      },
+      appliedSegments: [],
+    }),
+    fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
+      ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      : new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        }),
+  })
+
+  await harness.sendRequest({ sessionID: "switch-from-unbound-fallback", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  await harness.sendRequest({ sessionID: "switch-from-unbound-fallback", initiator: "agent", model: "gpt-5" })
+  now += 60_000
+  const thirdResponse = await harness.sendRequest({
+    sessionID: "switch-from-unbound-fallback",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(thirdResponse?.status, 200)
+  assert.equal(decisions.length, 3)
+  assert.equal(decisions[0]?.reason, "unbound-fallback")
+  assert.equal(decisions[1]?.reason, "regular")
+  assert.equal(decisions[2]?.reason, "rate-limit-switch")
+  assert.equal(decisions[2]?.switched, true)
+  assert.equal(decisions[2]?.switchFrom, "main")
+  assert.equal(decisions[2]?.chosenAccount, "alt")
 })
 
 test("keeps request fail-open when route decision append fails", async () => {
