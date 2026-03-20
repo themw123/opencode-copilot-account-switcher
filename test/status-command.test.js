@@ -181,7 +181,8 @@ test("status command without active account sends only one error toast", async (
   assert.equal(refreshCount, 0)
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.body?.variant, "error")
-  assert.match(calls[0]?.body?.message ?? "", /active account|当前账号/i)
+  assert.doesNotMatch(calls[0]?.body?.message ?? "", /active account|当前账号/i)
+  assert.match(calls[0]?.body?.message ?? "", /default group|默认组|refreshable account|可刷新账号/i)
   assert.doesNotMatch(calls[0]?.body?.message ?? "", /StatusCommandHandledError|status-command-handled|handled/i)
 })
 
@@ -215,7 +216,8 @@ test("status command with stale active key sends one missing-active error toast"
   assert.equal(refreshCount, 0)
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.body?.variant, "error")
-  assert.match(calls[0]?.body?.message ?? "", /active account|当前账号/i)
+  assert.doesNotMatch(calls[0]?.body?.message ?? "", /active account|当前账号/i)
+  assert.match(calls[0]?.body?.message ?? "", /default group|默认组|refreshable account|可刷新账号/i)
   assert.doesNotMatch(calls[0]?.body?.message ?? "", /StatusCommandHandledError|status-command-handled|handled/i)
 })
 
@@ -251,8 +253,152 @@ test("status command handles refreshQuota missing-active after loading toast", a
   assert.equal(calls.length, 2)
   assert.equal(calls[0]?.body?.variant, "info")
   assert.equal(calls[1]?.body?.variant, "error")
-  assert.match(calls[1]?.body?.message ?? "", /active account|当前账号/i)
+  assert.doesNotMatch(calls[1]?.body?.message ?? "", /active account|当前账号/i)
+  assert.match(calls[1]?.body?.message ?? "", /default group|默认组|refreshable account|可刷新账号/i)
   assert.equal(writes.length, 0)
+})
+
+test("status command success keeps default group account order from activeAccountNames", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        activeAccountNames: ["charlie", "alice", "bob"],
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+          bob: { name: "bob", refresh: "ghu_y", access: "ghu_y", expires: 0 },
+          charlie: { name: "charlie", refresh: "ghu_z", access: "ghu_z", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: { snapshots: { premium: { remaining: 2, entitlement: 9 } } },
+        }
+        store.accounts.bob = {
+          ...store.accounts.bob,
+          quota: { snapshots: { premium: { remaining: 3, entitlement: 9 } } },
+        }
+        store.accounts.charlie = {
+          ...store.accounts.charlie,
+          quota: { snapshots: { premium: { remaining: 1, entitlement: 9 } } },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  const message = calls.at(-1)?.body?.message ?? ""
+  const lines = message.split("\n")
+  const defaultIndex = lines.indexOf("[default]")
+  const defaultRow = lines[defaultIndex + 1] ?? ""
+  assert.equal(defaultIndex >= 0, true)
+  assert.match(defaultRow, /charlie 1\/9/)
+  assert.match(defaultRow, /alice 2\/9/)
+  assert.match(defaultRow, /bob 3\/9/)
+  assert.equal(defaultRow.indexOf("charlie 1/9") < defaultRow.indexOf("alice 2/9"), true)
+  assert.equal(defaultRow.indexOf("alice 2/9") < defaultRow.indexOf("bob 3/9"), true)
+})
+
+test("status command success sorts model groups by model key and keeps configured account order", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        activeAccountNames: ["alice"],
+        modelAccountAssignments: {
+          "gpt-4.1": ["charlie", "alice"],
+          "claude-3.7": ["alice", "charlie"],
+        },
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+          charlie: { name: "charlie", refresh: "ghu_z", access: "ghu_z", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: { snapshots: { premium: { remaining: 2, entitlement: 9 } } },
+        }
+        store.accounts.charlie = {
+          ...store.accounts.charlie,
+          quota: { snapshots: { premium: { remaining: 1, entitlement: 9 } } },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  const message = calls.at(-1)?.body?.message ?? ""
+  const lines = message.split("\n")
+  const claudeIndex = lines.indexOf("[claude-3.7]")
+  const gptIndex = lines.indexOf("[gpt-4.1]")
+  assert.equal(claudeIndex >= 0, true)
+  assert.equal(gptIndex > claudeIndex, true)
+
+  const claudeRow = lines[claudeIndex + 1] ?? ""
+  const gptRow = lines[gptIndex + 1] ?? ""
+  assert.equal(claudeRow.indexOf("alice 2/9") < claudeRow.indexOf("charlie 1/9"), true)
+  assert.equal(gptRow.indexOf("charlie 1/9") < gptRow.indexOf("alice 2/9"), true)
+})
+
+test("status command success renders explicit empty states for missing default and route groups", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        activeAccountNames: [],
+        modelAccountAssignments: {},
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: { snapshots: { premium: { remaining: 2, entitlement: 9 } } },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  const message = calls.at(-1)?.body?.message ?? ""
+  const lines = message.split("\n")
+  assert.equal(lines[0] ?? "", "[default]")
+  assert.equal(lines[1] ?? "", "(none)")
+  assert.equal(lines[2] ?? "", "[routes]")
+  assert.equal(lines[3] ?? "", "(none)")
 })
 
 test("status command refreshes quota, persists store, and ends with controlled interrupt", async () => {
@@ -402,7 +548,9 @@ test("status command success shows active group none when activeAccountNames is 
   const successMessage = calls[1]?.body?.message ?? ""
   const messageLines = successMessage.split("\n")
   assert.equal(messageLines[0] ?? "", "[default]")
-  assert.equal((messageLines[1] ?? "").length, 50)
+  assert.equal(messageLines[1] ?? "", "(none)")
+  assert.equal(messageLines[2] ?? "", "[routes]")
+  assert.equal(messageLines[3] ?? "", "(none)")
   assert.match(messageLines.at(-2) ?? "", /^活跃组: none$/)
 })
 
@@ -841,6 +989,7 @@ test("status command reports store persistence failure separately from controlle
   assert.equal(calls[1]?.body?.variant, "error")
   assert.match(calls[1]?.body?.message ?? "", /persist failed|保存失败/i)
   assert.match(calls[1]?.body?.message ?? "", /已刷新|刷新成功|latest quota/i)
-  assert.match(calls[1]?.body?.message ?? "", /10\/50|更新时间|更新于/i)
+  assert.match(calls[1]?.body?.message ?? "", /\[default\]\n\(none\)/)
+  assert.match(calls[1]?.body?.message ?? "", /\[routes\]\n\(none\)/)
   assert.doesNotMatch(calls[1]?.body?.message ?? "", /StatusCommandHandledError|status-command-handled|handled/i)
 })

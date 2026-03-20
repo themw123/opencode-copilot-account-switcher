@@ -106,24 +106,35 @@ function formatRoutingGroup(store: StoreFile) {
 function buildSuccessMessage(store: StoreFile, _name: string) {
   const defaultNames = Array.isArray(store.activeAccountNames) && store.activeAccountNames.length > 0
     ? store.activeAccountNames
-    : [_name]
+    : []
   const modelIDs = Object.keys(store.modelAccountAssignments ?? {}).sort((a, b) => a.localeCompare(b))
   const lines: string[] = []
 
   lines.push("[default]")
-  lines.push(...renderAccountGrid(defaultNames.map((name) => ({
-    name,
-    quota: formatPremiumQuota(store.accounts[name]?.quota),
-  }))))
+  if (defaultNames.length === 0) {
+    lines.push("(none)")
+  } else {
+    lines.push(...renderAccountGrid(defaultNames.map((name) => ({
+      name,
+      quota: formatPremiumQuota(store.accounts[name]?.quota),
+    }))))
+  }
 
+  let hasModelRouteGroup = false
   for (const modelID of modelIDs) {
     const names = store.modelAccountAssignments?.[modelID] ?? []
     if (names.length === 0) continue
+    hasModelRouteGroup = true
     lines.push(`[${modelID}]`)
     lines.push(...renderAccountGrid(names.map((name) => ({
       name,
       quota: formatPremiumQuota(store.accounts[name]?.quota),
     }))))
+  }
+
+  if (!hasModelRouteGroup) {
+    lines.push("[routes]")
+    lines.push("(none)")
   }
 
   lines.push(`活跃组: ${formatActiveGroup(store)}`)
@@ -133,7 +144,7 @@ function buildSuccessMessage(store: StoreFile, _name: string) {
 }
 
 function buildMissingActiveMessage() {
-  return "No active account available for Copilot status."
+  return "No default-group refreshable account available for Copilot status."
 }
 
 function buildRefreshFailedMessage(result: { error: string; previousQuota?: StoreFile["accounts"][string]["quota"] }) {
