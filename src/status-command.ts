@@ -75,18 +75,13 @@ function renderAccountRow(cells: Array<{ name: string; quota: string }>) {
 }
 
 function renderAccountGrid(cells: Array<{ name: string; quota: string }>) {
-  if (cells.length === 0) return [renderAccountRow([])]
+  if (cells.length === 0) return []
 
   const rows = []
   for (let index = 0; index < cells.length; index += ACCOUNT_COLUMNS_PER_ROW) {
     rows.push(renderAccountRow(cells.slice(index, index + ACCOUNT_COLUMNS_PER_ROW)))
   }
   return rows
-}
-
-function formatUpdatedAt(updatedAt?: number) {
-  if (typeof updatedAt !== "number") return "updated at unknown"
-  return `updated at ${new Date(updatedAt).toISOString()}`
 }
 
 function formatActiveGroup(store: StoreFile) {
@@ -108,7 +103,7 @@ function formatRoutingGroup(store: StoreFile) {
   return mapped.length > 0 ? mapped.join("; ") : "none"
 }
 
-function buildSuccessMessage(store: StoreFile, _name: string, quota?: StoreFile["accounts"][string]["quota"]) {
+function buildSuccessMessage(store: StoreFile, _name: string) {
   const defaultNames = Array.isArray(store.activeAccountNames) && store.activeAccountNames.length > 0
     ? store.activeAccountNames
     : [_name]
@@ -122,8 +117,9 @@ function buildSuccessMessage(store: StoreFile, _name: string, quota?: StoreFile[
   }))))
 
   for (const modelID of modelIDs) {
-    lines.push(`[${modelID}]`)
     const names = store.modelAccountAssignments?.[modelID] ?? []
+    if (names.length === 0) continue
+    lines.push(`[${modelID}]`)
     lines.push(...renderAccountGrid(names.map((name) => ({
       name,
       quota: formatPremiumQuota(store.accounts[name]?.quota),
@@ -147,7 +143,7 @@ function buildRefreshFailedMessage(result: { error: string; previousQuota?: Stor
 }
 
 function buildPersistFailedMessage(store: StoreFile, entry: StoreFile["accounts"][string], error: unknown) {
-  return `Latest quota refreshed but store persistence failed: ${summarizeError(error)}. ${buildSuccessMessage(store, entry.name, entry.quota)}`
+  return `Latest quota refreshed but store persistence failed: ${summarizeError(error)}. ${buildSuccessMessage(store, entry.name)}`
 }
 
 export async function showStatusToast(input: {
@@ -271,7 +267,7 @@ export async function handleStatusCommand(input: {
 
   await showStatusToast({
     client: input.client,
-    message: buildSuccessMessage(store, result.name, result.entry.quota),
+    message: buildSuccessMessage(store, result.name),
     variant: "success",
     warn,
   })

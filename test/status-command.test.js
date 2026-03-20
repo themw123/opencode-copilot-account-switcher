@@ -454,6 +454,52 @@ test("status command success renders routing assignment names directly from mode
   assert.match(messageLines.at(-1) ?? "", /^路由组: gpt-4\.1 -> ghost, alice$/)
 })
 
+test("status command success skips empty model groups instead of rendering blank 50-char row", async () => {
+  const calls = []
+  const { handleStatusCommand } = await import("../dist/status-command.js")
+
+  await assert.rejects(
+    handleStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadStore: async () => ({
+        active: "alice",
+        activeAccountNames: ["alice"],
+        modelAccountAssignments: {
+          "gpt-4.1": [],
+          "claude-3.7": ["alice"],
+        },
+        accounts: {
+          alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
+        },
+      }),
+      writeStore: async () => {},
+      refreshQuota: async (store) => {
+        store.accounts.alice = {
+          ...store.accounts.alice,
+          quota: {
+            snapshots: {
+              premium: { remaining: 10, entitlement: 50 },
+            },
+          },
+        }
+        return { type: "success", name: "alice", entry: store.accounts.alice }
+      },
+    }),
+    (error) => error?.name === "StatusCommandHandledError",
+  )
+
+  const successMessage = calls.at(-1)?.body?.message ?? ""
+  const messageLines = successMessage.split("\n")
+
+  assert.doesNotMatch(successMessage, /\[gpt-4\.1\]/)
+  assert.equal(messageLines.includes("[claude-3.7]"), true)
+  assert.doesNotMatch(successMessage, /\n\s{50}\n/)
+})
+
 test("status command success renders grouped premium rows with fixed 50-width, 3-column cells", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
