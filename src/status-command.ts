@@ -33,6 +33,57 @@ function formatQuotaValue(snapshot?: { remaining?: number; entitlement?: number 
   return `${remaining ?? "?"}/${entitlement ?? "?"}`
 }
 
+const ACCOUNT_CELL_WIDTH = 16
+const ACCOUNT_COLUMNS_PER_ROW = 3
+
+function formatPremiumQuota(quota?: StoreFile["accounts"][string]["quota"]) {
+  return formatQuotaValue(quota?.snapshots?.premium)
+}
+
+function truncateMiddle(value: string, maxWidth: number) {
+  if (maxWidth <= 0) return ""
+  if (value.length <= maxWidth) return value
+  if (maxWidth <= 3) return ".".repeat(maxWidth)
+
+  const visibleWidth = maxWidth - 3
+  const leftWidth = Math.ceil(visibleWidth / 2)
+  const rightWidth = Math.floor(visibleWidth / 2)
+  return `${value.slice(0, leftWidth)}...${value.slice(value.length - rightWidth)}`
+}
+
+function renderAccountCell(name: string, quotaText: string) {
+  if (quotaText.length >= ACCOUNT_CELL_WIDTH) {
+    return quotaText.slice(-ACCOUNT_CELL_WIDTH)
+  }
+
+  const usernameWidth = ACCOUNT_CELL_WIDTH - quotaText.length - 1
+  if (usernameWidth <= 0) {
+    return quotaText.padStart(ACCOUNT_CELL_WIDTH)
+  }
+
+  const username = truncateMiddle(name, usernameWidth)
+  return `${username} ${quotaText}`.padEnd(ACCOUNT_CELL_WIDTH)
+}
+
+function renderAccountRow(cells: Array<{ name: string; quota: string }>) {
+  const rendered = []
+  for (let i = 0; i < ACCOUNT_COLUMNS_PER_ROW; i += 1) {
+    const cell = cells[i]
+    rendered.push(cell ? renderAccountCell(cell.name, cell.quota) : "".padEnd(ACCOUNT_CELL_WIDTH))
+  }
+  return rendered.join(" ")
+}
+
+function renderAccountGrid(cells: Array<{ name: string; quota: string }>) {
+  if (cells.length === 0) return [renderAccountRow([])]
+
+  const rows = []
+  for (let index = 0; index < cells.length; index += ACCOUNT_COLUMNS_PER_ROW) {
+    rows.push(renderAccountRow(cells.slice(index, index + ACCOUNT_COLUMNS_PER_ROW)))
+  }
+  return rows
+}
+
 function formatUpdatedAt(updatedAt?: number) {
   if (typeof updatedAt !== "number") return "updated at unknown"
   return `updated at ${new Date(updatedAt).toISOString()}`
@@ -58,27 +109,31 @@ function formatRoutingGroup(store: StoreFile) {
 }
 
 function buildSuccessMessage(store: StoreFile, _name: string, quota?: StoreFile["accounts"][string]["quota"]) {
-  const premiumValue = formatQuotaValue(quota?.snapshots?.premium)
+  const defaultNames = Array.isArray(store.activeAccountNames) && store.activeAccountNames.length > 0
+    ? store.activeAccountNames
+    : [_name]
   const modelIDs = Object.keys(store.modelAccountAssignments ?? {}).sort((a, b) => a.localeCompare(b))
+  const lines: string[] = []
 
-  if (modelIDs.length === 0) {
-    const activeSummary = [
-      `current active: ${_name}`,
-      `premium ${premiumValue}`,
-      `chat ${formatQuotaValue(quota?.snapshots?.chat)}`,
-      `completions ${formatQuotaValue(quota?.snapshots?.completions)}`,
-      formatUpdatedAt(quota?.updatedAt),
-    ].join(" | ")
+  lines.push("[default]")
+  lines.push(...renderAccountGrid(defaultNames.map((name) => ({
+    name,
+    quota: formatPremiumQuota(store.accounts[name]?.quota),
+  }))))
 
-    return [activeSummary, `活跃组: ${formatActiveGroup(store)}`, `路由组: ${formatRoutingGroup(store)}`].join("\n")
+  for (const modelID of modelIDs) {
+    lines.push(`[${modelID}]`)
+    const names = store.modelAccountAssignments?.[modelID] ?? []
+    lines.push(...renderAccountGrid(names.map((name) => ({
+      name,
+      quota: formatPremiumQuota(store.accounts[name]?.quota),
+    }))))
   }
 
-  const groupedPremiumSummary = [
-    `[default] premium ${premiumValue}`,
-    ...modelIDs.map((modelID) => `[${modelID}] premium ${premiumValue}`),
-  ].join(" | ")
+  lines.push(`活跃组: ${formatActiveGroup(store)}`)
+  lines.push(`路由组: ${formatRoutingGroup(store)}`)
 
-  return [groupedPremiumSummary, `活跃组: ${formatActiveGroup(store)}`, `路由组: ${formatRoutingGroup(store)}`].join("\n")
+  return lines.join("\n")
 }
 
 function buildMissingActiveMessage() {
