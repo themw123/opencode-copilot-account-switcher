@@ -793,6 +793,12 @@ export function buildPluginHooks(input: {
       const selectionRequest = finalized?.request ?? request
       const selectionInit = finalized?.init ?? init
       const initiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
+      const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
+      if (candidates.length === 0) {
+        const outbound = stripInternalSessionHeader(request, init)
+        return config.fetch(outbound.request, outbound.init)
+      }
+
       const hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)
       const classification = sessionID.length > 0
         ? await classifyRequestReason({
@@ -806,7 +812,6 @@ export function buildPluginHooks(input: {
           }
       const selectionAllowReselect = classification.reason === "user-reselect"
         || classification.reason === "unbound-fallback"
-      const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
       const hasExplicitModelGroup = Boolean(
         latestStore
         && typeof modelID === "string"

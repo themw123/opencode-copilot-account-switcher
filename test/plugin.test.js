@@ -3770,16 +3770,12 @@ test("records unbound-fallback for root agent request without existing session b
 
 test("unbound-fallback keeps decision reason while sending aligns with user-reselect first entry and not regular reuse", async () => {
   const decisions = []
-  const sessionLookupSeen = new Set()
   let regularContrastCall = 0
   const harness = createSessionBindingHarness({
     client: {
       session: {
         message: async () => ({ data: { parts: [] } }),
-        get: async (request) => {
-          sessionLookupSeen.add(request.path.id)
-          return { data: {} }
-        },
+        get: async () => ({ data: {} }),
       },
     },
     loadCandidateAccountLoads: async ({ sessionID }) => {
@@ -3790,9 +3786,7 @@ test("unbound-fallback keeps decision reason while sending aligns with user-rese
       }
 
       if (sessionID === "unbound-fallback-sending") {
-        return sessionLookupSeen.has(sessionID)
-          ? { main: 0, alt: 5 }
-          : { main: 5, alt: 0 }
+        return { main: 0, alt: 5 }
       }
 
       if (sessionID === "user-first-entry") {
@@ -3841,6 +3835,70 @@ test("unbound-fallback keeps decision reason while sending aligns with user-rese
 
   assert.equal(harness.outgoing.length, 4)
   assert.equal(Object.hasOwn(harness.outgoing[2]?.headers ?? {}, "x-initiator"), false)
+})
+
+test("agent pass-through without resolved candidate does not trigger session ancestry lookup", async () => {
+  const sessionGetCalls = []
+  const outgoing = []
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => {
+          sessionGetCalls.push("called")
+          return { data: {} }
+        },
+      },
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (request, init) => {
+        const auth = await getAuth()
+        outgoing.push({
+          auth,
+          url: request instanceof URL ? request.href : String(request),
+          headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const options = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  const response = await options?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "no-candidate-pass-through",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({ model: "gpt-5" }),
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(sessionGetCalls.length, 0)
+  assert.equal(outgoing.length, 1)
+  assert.equal(outgoing[0]?.auth?.refresh, "base-refresh")
 })
 
 test("session lookup unavailable does not classify as unbound-fallback", async () => {
