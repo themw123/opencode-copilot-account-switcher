@@ -23,6 +23,11 @@ function assertRetryableApiCallError(error, { message, statusCode, responseBody 
   return true
 }
 
+function assertWrappedRetryableMessage(error, tag, detail) {
+  assert.match(error.message, new RegExp(`^Copilot retryable error \\[${tag}\\]: `, "i"))
+  assert.match(error.message, detail)
+}
+
 test("normalizes retryable copilot network errors into retryable API-call-shaped failures", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
@@ -39,9 +44,10 @@ test("normalizes retryable copilot network errors into retryable API-call-shaped
     (error) => {
       assert.equal(attempts, 1)
       assertRetryableApiCallError(error, {
-        message: /unknown certificate/i,
+        message: /copilot retryable error \[transport\]: unknown certificate/i,
         statusCode: undefined,
       })
+      assertWrappedRetryableMessage(error, "transport", /unknown certificate/i)
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -64,9 +70,10 @@ test("normalizes sse read timeout errors for copilot urls into retryable API-cal
     (error) => {
       assert.equal(attempts, 1)
       assertRetryableApiCallError(error, {
-        message: /sse read timed out/i,
+        message: /copilot retryable error \[transport\]: sse read timed out/i,
         statusCode: undefined,
       })
+      assertWrappedRetryableMessage(error, "transport", /sse read timed out/i)
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -89,10 +96,11 @@ test("normalizes 499 responses into retryable API-call-shaped failures for copil
     }),
     (error) => {
       assertRetryableApiCallError(error, {
-        message: /client closed request|status code 499/i,
+        message: /copilot retryable error \[status\]: client closed request|copilot retryable error \[status\]: status code 499/i,
         statusCode: 499,
         responseBody: /client closed request/i,
       })
+      assertWrappedRetryableMessage(error, "status", /client closed request|status code 499/i)
       assert.equal(error.responseHeaders["content-type"], "text/plain; charset=utf-8")
       assert.deepEqual(error.requestBodyValues, { messages: [{ role: "user", content: "hi" }] })
       assert.ok(error.cause instanceof Error)
@@ -118,10 +126,11 @@ test("preserves 499 API-call fields without rewrapping in catch", async () => {
     }),
     (error) => {
       assertRetryableApiCallError(error, {
-        message: /failed to fetch/i,
+        message: /copilot retryable error \[status\]: failed to fetch/i,
         statusCode: 499,
         responseBody: /failed to fetch/i,
       })
+      assertWrappedRetryableMessage(error, "status", /failed to fetch/i)
       assert.equal(error.responseHeaders["x-test"], "keep-me")
       assert.deepEqual(error.requestBodyValues, { messages: [{ role: "user", content: "hi" }] })
       return true
@@ -161,9 +170,10 @@ test("normalizes sse stream read timeout failures after the response starts stre
     response.text(),
     (error) => {
       assertRetryableApiCallError(error, {
-        message: /sse read timed out/i,
+        message: /copilot retryable error \[stream\]: sse read timed out/i,
         statusCode: 200,
       })
+      assertWrappedRetryableMessage(error, "stream", /sse read timed out/i)
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -279,9 +289,10 @@ test("normalizes unable to connect errors for copilot urls", async () => {
     (error) => {
       assert.equal(attempts, 1)
       assertRetryableApiCallError(error, {
-        message: /unable to connect/i,
+        message: /copilot retryable error \[transport\]: unable to connect/i,
         statusCode: undefined,
       })
+      assertWrappedRetryableMessage(error, "transport", /unable to connect/i)
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -304,9 +315,10 @@ test("normalizes retryable errors for copilot hosts even on non-whitelisted path
     (error) => {
       assert.equal(attempts, 1)
       assertRetryableApiCallError(error, {
-        message: /unknown certificate verification error/i,
+        message: /copilot retryable error \[transport\]: unknown certificate verification error/i,
         statusCode: undefined,
       })
+      assertWrappedRetryableMessage(error, "transport", /unknown certificate verification error/i)
       assert.ok(error.cause instanceof Error)
       return true
     },
@@ -420,9 +432,10 @@ test("normalizes retryable request errors without replaying consumed request bod
 
   await assert.rejects(wrapped(request), (error) => {
     assertRetryableApiCallError(error, {
-      message: /failed to fetch/i,
+      message: /copilot retryable error \[transport\]: failed to fetch/i,
       statusCode: undefined,
     })
+    assertWrappedRetryableMessage(error, "transport", /failed to fetch/i)
     return true
   })
   assert.equal(attempts, 1)
@@ -442,9 +455,10 @@ test("normalizes retryable request-object errors on the first failure", async ()
 
   await assert.rejects(wrapped(request), (error) => {
     assertRetryableApiCallError(error, {
-      message: /failed to fetch/i,
+      message: /copilot retryable error \[transport\]: failed to fetch/i,
       statusCode: undefined,
     })
+    assertWrappedRetryableMessage(error, "transport", /failed to fetch/i)
     return true
   })
   assert.equal(attempts, 1)

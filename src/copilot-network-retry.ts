@@ -37,6 +37,8 @@ type RetryableApiCallError = Error & {
   [key: symbol]: unknown
 }
 
+type RetryableErrorGroup = "transport" | "status" | "stream"
+
 type JsonRecord = Record<string, unknown>
 
 const AI_ERROR_MARKER = Symbol.for("vercel.ai.error")
@@ -1187,10 +1189,15 @@ function getRequestUrl(request: Request | URL | string) {
   return request instanceof Request ? request.url : request instanceof URL ? request.href : String(request)
 }
 
+function buildRetryableApiCallMessage(group: RetryableErrorGroup, detail: string) {
+  return `Copilot retryable error [${group}]: ${detail}`
+}
+
 function toRetryableApiCallError(
   error: unknown,
   request: Request | URL | string,
   options?: {
+    group: RetryableErrorGroup
     requestBodyValues?: unknown
     statusCode?: number
     responseHeaders?: Headers | Record<string, string>
@@ -1198,7 +1205,7 @@ function toRetryableApiCallError(
   },
 ): RetryableApiCallError {
   const base = error instanceof Error ? error : new Error(String(error))
-  const wrapped = new Error(base.message) as RetryableApiCallError
+  const wrapped = new Error(buildRetryableApiCallMessage(options?.group ?? "transport", base.message)) as RetryableApiCallError
   wrapped.name = "AI_APICallError"
   wrapped.url = getRequestUrl(request)
   wrapped.requestBodyValues = options?.requestBodyValues ?? {}
@@ -1319,6 +1326,7 @@ function withStreamDebugLogs(response: Response, request: Request | URL | string
           }
           controller.error(retryable
             ? toRetryableApiCallError(error, request, {
+                group: "stream",
                 statusCode: response.status,
                 responseHeaders: response.headers,
               })
@@ -1391,6 +1399,7 @@ export function createCopilotRetryingFetch(
       if (isCopilotUrl(safeRequest) && isRetryableCopilotStatus(response.status)) {
         const responseBody = await response.clone().text().catch(() => "")
         throw toRetryableApiCallError(new Error(responseBody || `status code ${response.status}`), safeRequest, {
+          group: "status",
           requestBodyValues: currentPayload,
           statusCode: response.status,
           responseHeaders: response.headers,
@@ -1568,6 +1577,7 @@ export function createCopilotRetryingFetch(
       }
 
       throw toRetryableApiCallError(error, safeRequest, {
+        group: "transport",
         requestBodyValues: currentPayload,
       })
     }
