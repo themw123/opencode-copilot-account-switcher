@@ -3768,6 +3768,81 @@ test("records unbound-fallback for root agent request without existing session b
   assert.equal(Object.hasOwn(harness.outgoing[0]?.headers ?? {}, "x-initiator"), false)
 })
 
+test("unbound-fallback keeps decision reason while sending aligns with user-reselect first entry and not regular reuse", async () => {
+  const decisions = []
+  const sessionLookupSeen = new Set()
+  let regularContrastCall = 0
+  const harness = createSessionBindingHarness({
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async (request) => {
+          sessionLookupSeen.add(request.path.id)
+          return { data: {} }
+        },
+      },
+    },
+    loadCandidateAccountLoads: async ({ sessionID }) => {
+      if (sessionID === "regular-reuse-contrast") {
+        const call = regularContrastCall
+        regularContrastCall += 1
+        return call === 0 ? { main: 5, alt: 0 } : { main: 0, alt: 5 }
+      }
+
+      if (sessionID === "unbound-fallback-sending") {
+        return sessionLookupSeen.has(sessionID)
+          ? { main: 0, alt: 5 }
+          : { main: 5, alt: 0 }
+      }
+
+      if (sessionID === "user-first-entry") {
+        return { main: 0, alt: 5 }
+      }
+
+      return { main: 0, alt: 0 }
+    },
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "regular-reuse-contrast",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "regular-reuse-contrast",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "unbound-fallback-sending",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+  await harness.sendRequest({
+    sessionID: "user-first-entry",
+    initiator: "user",
+    model: "gpt-5",
+  })
+
+  assert.equal(decisions.length, 4)
+  const regularFollowupDecision = decisions[1]
+  const unboundFallbackDecision = decisions[2]
+  const userFirstEntryDecision = decisions[3]
+
+  assert.equal(regularFollowupDecision?.reason, "regular")
+  assert.equal(unboundFallbackDecision?.reason, "unbound-fallback")
+  assert.equal(userFirstEntryDecision?.reason, "user-reselect")
+
+  assert.equal(unboundFallbackDecision?.chosenAccount, userFirstEntryDecision?.chosenAccount)
+  assert.notEqual(unboundFallbackDecision?.chosenAccount, regularFollowupDecision?.chosenAccount)
+
+  assert.equal(harness.outgoing.length, 4)
+  assert.equal(Object.hasOwn(harness.outgoing[2]?.headers ?? {}, "x-initiator"), false)
+})
+
 test("session lookup unavailable does not classify as unbound-fallback", async () => {
   const decisions = []
   const harness = createSessionBindingHarness({

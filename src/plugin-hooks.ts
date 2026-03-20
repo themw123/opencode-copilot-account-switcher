@@ -793,7 +793,19 @@ export function buildPluginHooks(input: {
       const selectionRequest = finalized?.request ?? request
       const selectionInit = finalized?.init ?? init
       const initiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
-      const allowReselect = initiator === "user"
+      const hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)
+      const classification = sessionID.length > 0
+        ? await classifyRequestReason({
+            sessionID,
+            hasExistingBinding,
+            request: selectionRequest,
+            init: selectionInit,
+          })
+        : {
+            reason: toReasonByInitiator(initiator),
+          }
+      const selectionAllowReselect = classification.reason === "user-reselect"
+        || classification.reason === "unbound-fallback"
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
       const hasExplicitModelGroup = Boolean(
         latestStore
@@ -818,7 +830,7 @@ export function buildPluginHooks(input: {
         ? chooseCandidateAccount({
           candidates,
           sessionID,
-          allowReselect,
+          allowReselect: selectionAllowReselect,
           sessionBindings: sessionAccountBindings,
           loads,
           random,
@@ -830,17 +842,6 @@ export function buildPluginHooks(input: {
       }
 
       const candidateNames = candidates.map((item) => item.name)
-      const hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)
-      const classification = sessionID.length > 0
-        ? await classifyRequestReason({
-            sessionID,
-            hasExistingBinding,
-            request: selectionRequest,
-            init: selectionInit,
-          })
-        : {
-            reason: toReasonByInitiator(initiator),
-          }
       let decisionLoads = loadMapToRecord(loads, candidateNames)
       let decisionReason: RouteDecisionEvent["reason"] = classification.reason
       let decisionSwitched = false
