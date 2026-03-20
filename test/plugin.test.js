@@ -3768,6 +3768,33 @@ test("records unbound-fallback for root agent request without existing session b
   assert.equal(Object.hasOwn(harness.outgoing[0]?.headers ?? {}, "x-initiator"), false)
 })
 
+test("session lookup unavailable does not classify as unbound-fallback", async () => {
+  const decisions = []
+  const harness = createSessionBindingHarness({
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  await harness.sendRequest({
+    sessionID: "prewarm-first-use",
+    initiator: "user",
+    model: "gpt-5",
+  })
+
+  const response = await harness.sendRequest({
+    sessionID: "lookup-unavailable-root",
+    initiator: "agent",
+    model: "gpt-5",
+  })
+
+  assert.equal(response?.status, 200)
+  assert.equal(decisions.length, 2)
+  assert.equal(decisions[1]?.reason, "regular")
+  assert.equal(harness.outgoing.length, 2)
+  assert.equal(harness.outgoing[1]?.headers["x-initiator"], "agent")
+})
+
 test("toasts billed regular requests but suppresses later non-billed true child reuse", async () => {
   const toasts = []
   const harness = createSessionBindingHarness({

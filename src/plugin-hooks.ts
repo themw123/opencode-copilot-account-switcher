@@ -686,8 +686,9 @@ export function buildPluginHooks(input: {
       },
       throwOnError: true,
     }).catch(() => undefined)
+    const canDetermineSessionAncestry = session !== undefined
     const isTrueChildSession = typeof session?.data?.parentID === "string" && session.data.parentID.length > 0
-    if (!isTrueChildSession && requestInput.hasExistingBinding === false) {
+    if (canDetermineSessionAncestry && !isTrueChildSession && requestInput.hasExistingBinding === false) {
       return {
         reason: "unbound-fallback",
       }
