@@ -1,4 +1,5 @@
 export {
+  CODEX_PROVIDER_DESCRIPTOR,
   COPILOT_PROVIDER_DESCRIPTOR,
   createCodexProviderDescriptor,
   createCopilotProviderDescriptor,

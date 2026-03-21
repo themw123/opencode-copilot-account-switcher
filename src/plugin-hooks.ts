@@ -32,6 +32,7 @@ import { createNotifyTool } from "./notify-tool.js"
 import { createWaitTool } from "./wait-tool.js"
 import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
 import { handleStatusCommand, showStatusToast } from "./status-command.js"
+import { handleCodexStatusCommand } from "./codex-status-command.js"
 import {
   handleCompactCommand,
   handleStopToolCommand,
@@ -79,6 +80,7 @@ type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
 }
 
 type StatusCommandHandler = typeof handleStatusCommand
+type CodexStatusCommandHandler = typeof handleCodexStatusCommand
 type CompactCommandHandler = typeof handleCompactCommand
 type StopToolCommandHandler = typeof handleStopToolCommand
 type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
@@ -554,6 +556,7 @@ export function buildPluginHooks(input: {
   now?: () => number
   refreshQuota?: RefreshQuota
   handleStatusCommandImpl?: StatusCommandHandler
+  handleCodexStatusCommandImpl?: CodexStatusCommandHandler
   handleCompactCommandImpl?: CompactCommandHandler
   handleStopToolCommandImpl?: StopToolCommandHandler
   loadCandidateAccountLoads?: (input: {
@@ -581,6 +584,7 @@ export function buildPluginHooks(input: {
   }
   const refreshQuota = input.refreshQuota ?? ((store: StoreFile) => refreshActiveAccountQuota({ store }))
   const handleStatusCommandImpl = input.handleStatusCommandImpl ?? handleStatusCommand
+  const handleCodexStatusCommandImpl = input.handleCodexStatusCommandImpl ?? handleCodexStatusCommand
   const handleCompactCommandImpl = input.handleCompactCommandImpl ?? handleCompactCommand
   const handleStopToolCommandImpl = input.handleStopToolCommandImpl ?? handleStopToolCommand
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
@@ -1332,7 +1336,13 @@ export function buildPluginHooks(input: {
     config: async (config) => {
       if (!config.command) config.command = {}
       const store = loadStoreSync()
-      if (!areExperimentalSlashCommandsEnabled(store)) return
+      if (!areExperimentalSlashCommandsEnabled(store)) {
+        return
+      }
+      config.command["codex-status"] = {
+        template: "Show the current Codex status and usage snapshot via the experimental status path.",
+        description: "Experimental Codex status command",
+      }
       config.command["copilot-status"] = {
         template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
         description: "Experimental Copilot quota status workaround",
@@ -1383,6 +1393,13 @@ export function buildPluginHooks(input: {
           loadStore,
           writeStore: persistStore,
           refreshQuota,
+        })
+      }
+
+      if (hookInput.command === "codex-status") {
+        if (!areExperimentalSlashCommandsEnabled(store)) return
+        await handleCodexStatusCommandImpl({
+          client: input.client,
         })
       }
 

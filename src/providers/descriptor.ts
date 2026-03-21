@@ -62,6 +62,21 @@ export const COPILOT_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
   ],
 }
 
+export const CODEX_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
+  key: "codex",
+  providerIDs: [
+    "openai",
+  ],
+  storeNamespace: "codex",
+  commands: [
+    "codex-status",
+  ],
+  menuEntries: [],
+  capabilities: [
+    "slash-commands",
+  ],
+}
+
 export function createCopilotProviderDescriptor(input: {
   buildPluginHooks: BuildPluginHooks
 }): AssembledProviderDescriptor {

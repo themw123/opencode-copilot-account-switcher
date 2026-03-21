@@ -1,0 +1,254 @@
+import test from "node:test"
+import assert from "node:assert/strict"
+
+async function loadCodexStatusFetcherOrFail() {
+  try {
+    return await import("../dist/codex-status-fetcher.js")
+  } catch (error) {
+    if (error?.code === "ERR_MODULE_NOT_FOUND") {
+      assert.fail("codex status fetcher module is missing: ../dist/codex-status-fetcher.js")
+    }
+    throw error
+  }
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  })
+}
+
+test("fetches codex usage with Authorization and ChatGPT-Account-Id headers", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+  const calls = []
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "access_token_1", refresh: "refresh_token_1" },
+    accountId: "acct_123",
+    now: () => 1700000000000,
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init })
+      return jsonResponse({ account_id: "acct_123" })
+    },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, "https://chatgpt.com/backend-api/codex/usage")
+  const headers = new Headers(calls[0].init?.headers)
+  assert.equal(headers.get("Authorization"), "Bearer access_token_1")
+  assert.equal(headers.get("ChatGPT-Account-Id"), "acct_123")
+  assert.equal(headers.get("Accept"), "application/json")
+  assert.equal(headers.get("User-Agent"), "Codex CLI")
+  assert.equal(result.ok, true)
+})
+
+test("normalizes usage payload into identity and window snapshots", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const payload = {
+    account: {
+      id: "acct_from_payload",
+      email: "user@example.com",
+      plan: "pro",
+    },
+    windows: {
+      primary: {
+        entitlement: 100,
+        remaining: 40,
+        used: 60,
+        resetAt: 1700001000000,
+      },
+      secondary: {
+        entitlement: 200,
+        remaining: 120,
+      },
+    },
+    credits: {
+      total: 12,
+      remaining: 8,
+      used: 4,
+    },
+  }
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "access_token_1", refresh: "refresh_token_1" },
+    accountId: "acct_header",
+    now: () => 1700000000000,
+    fetchImpl: async () => jsonResponse(payload),
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.status.identity.accountId, "acct_from_payload")
+  assert.equal(result.status.identity.email, "user@example.com")
+  assert.equal(result.status.identity.plan, "pro")
+  assert.equal(result.status.windows.primary.entitlement, 100)
+  assert.equal(result.status.windows.primary.remaining, 40)
+  assert.equal(result.status.windows.primary.used, 60)
+  assert.equal(result.status.windows.primary.resetAt, 1700001000000)
+  assert.equal(result.status.windows.secondary.entitlement, 200)
+  assert.equal(result.status.windows.secondary.remaining, 120)
+  assert.equal(result.status.windows.secondary.used, undefined)
+  assert.equal(result.status.windows.secondary.resetAt, undefined)
+  assert.equal(result.status.credits.total, 12)
+  assert.equal(result.status.credits.remaining, 8)
+  assert.equal(result.status.credits.used, 4)
+  assert.equal(result.status.updatedAt, 1700000000000)
+})
+
+test("retries once with refreshed oauth tokens after 401", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+  const usedTokens = []
+  const refreshCalls = []
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    accountId: "acct_123",
+    now: () => 1700000000000,
+    fetchImpl: async (_url, init) => {
+      const headers = new Headers(init?.headers)
+      usedTokens.push(headers.get("Authorization"))
+      if (usedTokens.length === 1) return jsonResponse({ error: "unauthorized" }, 401)
+      return jsonResponse({ account_id: "acct_123" }, 200)
+    },
+    refreshTokens: async (oauth) => {
+      refreshCalls.push(oauth)
+      return {
+        type: "oauth",
+        access: "new_access",
+        refresh: "new_refresh",
+        expires: 123456,
+        accountId: "acct_123",
+      }
+    },
+  })
+
+  assert.equal(refreshCalls.length, 1)
+  assert.deepEqual(usedTokens, ["Bearer expired_access", "Bearer new_access"])
+  assert.deepEqual(result.authPatch, {
+    access: "new_access",
+    refresh: "new_refresh",
+    expires: 123456,
+    accountId: "acct_123",
+  })
+  assert.equal(result.ok, true)
+})
+
+test("uses refreshed accountId on retry when caller does not pass accountId", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+  const accountHeaders = []
+
+  const result = await fetchCodexStatus({
+    oauth: {
+      type: "oauth",
+      access: "expired_access",
+      refresh: "refresh_token_1",
+      accountId: "acct_old",
+    },
+    fetchImpl: async (_url, init) => {
+      const headers = new Headers(init?.headers)
+      accountHeaders.push(headers.get("ChatGPT-Account-Id"))
+      if (accountHeaders.length === 1) return jsonResponse({ error: "unauthorized" }, 401)
+      return jsonResponse({ account_id: "acct_new" }, 200)
+    },
+    refreshTokens: async () => ({
+      type: "oauth",
+      access: "new_access",
+      refresh: "new_refresh",
+      accountId: "acct_new",
+    }),
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(accountHeaders, ["acct_old", "acct_new"])
+})
+
+test("degrades cleanly on 429 timeout 5xx and non-json responses", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const rateLimited = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "a", refresh: "r" },
+    fetchImpl: async () => jsonResponse({ error: "too_many_requests" }, 429),
+  })
+  assert.equal(rateLimited.ok, false)
+  assert.equal(rateLimited.error.kind, "rate_limited")
+  assert.equal(rateLimited.error.status, 429)
+  assert.match(rateLimited.error.message, /rate limit/i)
+
+  const timedOut = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "a", refresh: "r" },
+    fetchImpl: async () => {
+      const error = new Error("request timed out")
+      error.name = "AbortError"
+      throw error
+    },
+  })
+  assert.equal(timedOut.ok, false)
+  assert.equal(timedOut.error.kind, "timeout")
+  assert.match(timedOut.error.message, /timed out|timeout/i)
+
+  const serverError = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "a", refresh: "r" },
+    fetchImpl: async () => jsonResponse({ error: "server_down" }, 503),
+  })
+  assert.equal(serverError.ok, false)
+  assert.equal(serverError.error.kind, "server_error")
+  assert.equal(serverError.error.status, 503)
+  assert.match(serverError.error.message, /server/i)
+
+  const nonJson = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "a", refresh: "r" },
+    fetchImpl: async () =>
+      new Response("ok", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+  })
+  assert.equal(nonJson.ok, false)
+  assert.equal(nonJson.error.kind, "invalid_response")
+  assert.match(nonJson.error.message, /json/i)
+})
+
+test("returns structured error when token refresh throws", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const resultPromise = fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    fetchImpl: async () => jsonResponse({ error: "unauthorized" }, 401),
+    refreshTokens: async () => {
+      throw new Error("refresh service unavailable")
+    },
+  })
+
+  await assert.doesNotReject(resultPromise)
+  const result = await resultPromise
+  assert.equal(result.ok, false)
+  assert.equal(result.error.kind, "network_error")
+  assert.match(result.error.message, /refresh service unavailable/i)
+})
+
+test("keeps missing quota fields as undefined instead of fabricating values", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "access", refresh: "refresh" },
+    now: () => 1700000000000,
+    fetchImpl: async () =>
+      jsonResponse({
+        account_id: "acct_1",
+        windows: {
+          primary: {
+            remaining: 9,
+          },
+        },
+      }),
+  })
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.status.windows.primary, {
+    entitlement: undefined,
+    remaining: 9,
+    used: undefined,
+    resetAt: undefined,
+  })
+})
