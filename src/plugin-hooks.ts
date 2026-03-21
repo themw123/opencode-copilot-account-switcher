@@ -33,6 +33,10 @@ import { createWaitTool } from "./wait-tool.js"
 import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
 import { handleStatusCommand, showStatusToast } from "./status-command.js"
 import {
+  handleCompactCommand,
+  handleStopToolCommand,
+} from "./session-control-command.js"
+import {
   type AppendSessionTouchEventInput,
   appendRoutingEvent,
   appendRouteDecisionEvent,
@@ -75,6 +79,8 @@ type CopilotPluginHooksWithChatHeaders = CopilotPluginHooks & {
 }
 
 type StatusCommandHandler = typeof handleStatusCommand
+type CompactCommandHandler = typeof handleCompactCommand
+type StopToolCommandHandler = typeof handleStopToolCommand
 type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
 
 type CandidateAccountLoads = Record<string, number> | Map<string, number>
@@ -544,6 +550,8 @@ export function buildPluginHooks(input: {
   now?: () => number
   refreshQuota?: RefreshQuota
   handleStatusCommandImpl?: StatusCommandHandler
+  handleCompactCommandImpl?: CompactCommandHandler
+  handleStopToolCommandImpl?: StopToolCommandHandler
   loadCandidateAccountLoads?: (input: {
     sessionID: string
     modelID?: string
@@ -569,6 +577,8 @@ export function buildPluginHooks(input: {
   }
   const refreshQuota = input.refreshQuota ?? ((store: StoreFile) => refreshActiveAccountQuota({ store }))
   const handleStatusCommandImpl = input.handleStatusCommandImpl ?? handleStatusCommand
+  const handleCompactCommandImpl = input.handleCompactCommandImpl ?? handleCompactCommand
+  const handleStopToolCommandImpl = input.handleStopToolCommandImpl ?? handleStopToolCommand
   const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
   const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
   const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
@@ -1323,6 +1333,14 @@ export function buildPluginHooks(input: {
         template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
         description: "Experimental Copilot quota status workaround",
       }
+      config.command["copilot-compact"] = {
+        template: "Summarize the current session via real session compacting flow.",
+        description: "Experimental compact command for Copilot sessions",
+      }
+      config.command["copilot-stop-tool"] = {
+        template: "Interrupt the current session tool flow, annotate the interrupted result, and append a synthetic continue.",
+        description: "Experimental interrupt-and-annotate recovery with synthetic continue for Copilot sessions",
+      }
       config.command["copilot-inject"] = {
         template: "Arm an immediate tool-output inject marker flow that drives model to question.",
         description: "Experimental force-intervene hook for Copilot workflows",
@@ -1361,6 +1379,25 @@ export function buildPluginHooks(input: {
           loadStore,
           writeStore: persistStore,
           refreshQuota,
+        })
+      }
+
+      if (hookInput.command === "copilot-compact") {
+        if (!areExperimentalSlashCommandsEnabled(store)) return
+        await handleCompactCommandImpl({
+          client: input.client ?? {},
+          sessionID: hookInput.sessionID,
+          model: (hookInput as { model?: string }).model,
+        })
+      }
+
+      if (hookInput.command === "copilot-stop-tool") {
+        if (!areExperimentalSlashCommandsEnabled(store)) return
+        await handleStopToolCommandImpl({
+          client: input.client ?? {},
+          sessionID: hookInput.sessionID,
+          runningTools: (hookInput as { runningTools?: unknown[] }).runningTools,
+          syntheticAgentInitiatorEnabled: store?.syntheticAgentInitiatorEnabled === true,
         })
       }
     },

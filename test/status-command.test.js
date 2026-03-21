@@ -731,7 +731,7 @@ test("status command success renders grouped premium rows with fixed 50-width, 3
   assert.equal(defaultRow2.length, 50)
   assert.equal(routeRow1.length, 50)
 
-  assert.match(defaultRow1, /\.{3}/)
+  assert.match(defaultRow1, /…/)
   assert.match(defaultRow1, /n\/a/)
 
   const defaultCellsRow1 = [
@@ -802,7 +802,7 @@ test("status command success truncates overflow username with middle ellipsis in
 
   const firstCell = row.slice(0, 16)
   assert.equal(firstCell.length, 16)
-  assert.match(firstCell, /\.{3}/)
+  assert.match(firstCell, /…/)
   assert.match(firstCell, /^very/)
   assert.match(firstCell, /tail 9\/9$/)
 })

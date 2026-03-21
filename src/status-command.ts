@@ -43,12 +43,12 @@ function formatPremiumQuota(quota?: StoreFile["accounts"][string]["quota"]) {
 function truncateMiddle(value: string, maxWidth: number) {
   if (maxWidth <= 0) return ""
   if (value.length <= maxWidth) return value
-  if (maxWidth <= 3) return ".".repeat(maxWidth)
+  if (maxWidth === 1) return "…"
 
-  const visibleWidth = maxWidth - 3
+  const visibleWidth = maxWidth - 1
   const leftWidth = Math.ceil(visibleWidth / 2)
   const rightWidth = Math.floor(visibleWidth / 2)
-  return `${value.slice(0, leftWidth)}...${value.slice(value.length - rightWidth)}`
+  return `${value.slice(0, leftWidth)}…${value.slice(value.length - rightWidth)}`
 }
 
 function renderAccountCell(name: string, quotaText: string) {

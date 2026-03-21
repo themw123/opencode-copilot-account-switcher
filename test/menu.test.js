@@ -380,3 +380,21 @@ test("buildMenuItems includes a language switch action", () => {
   const toggle = items.find((item) => item.label === "Switch to English")
   assert.ok(toggle)
 })
+
+test("experimental slash commands hint includes compact and stop-tool commands", () => {
+  const items = buildMenuItems({
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    loopSafetyProviderScope: "copilot-only",
+    experimentalSlashCommandsEnabled: false,
+    networkRetryEnabled: false,
+    language: "en",
+  })
+
+  const toggle = items.find((item) => item.label === "Experimental slash commands: Off")
+  assert.ok(toggle)
+  assert.match(toggle?.hint ?? "", /copilot-compact/)
+  assert.match(toggle?.hint ?? "", /copilot-stop-tool/)
+})

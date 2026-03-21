@@ -76,7 +76,7 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
       experimentalSlashCommandsOn: "Experimental slash commands: On",
       experimentalSlashCommandsOff: "Experimental slash commands: Off",
       experimentalSlashCommandsHint:
-        "Controls whether /copilot-status, /copilot-inject, and /copilot-policy-all-models are registered",
+        "Controls whether /copilot-status, /copilot-compact, /copilot-stop-tool, /copilot-inject, and /copilot-policy-all-models are registered",
       retryOn: "Copilot Network Retry: On",
       retryOff: "Copilot Network Retry: Off",
       retryHint: "Helps recover some requests after account switches or malformed retries",
@@ -113,7 +113,8 @@ export function getMenuCopy(language: MenuLanguage = "zh") {
     policyScopeHint: "决定 Guided Loop Safety 默认只作用于 Copilot，还是扩展到所有模型",
     experimentalSlashCommandsOn: "实验性 Slash Commands：已开启",
     experimentalSlashCommandsOff: "实验性 Slash Commands：已关闭",
-    experimentalSlashCommandsHint: "控制 /copilot-status、/copilot-inject、/copilot-policy-all-models 是否注册",
+    experimentalSlashCommandsHint:
+      "控制 /copilot-status、/copilot-compact、/copilot-stop-tool、/copilot-inject、/copilot-policy-all-models 是否注册",
     retryOn: "Copilot Network Retry：已开启",
     retryOff: "Copilot Network Retry：已关闭",
     retryHint: "账号切换后若出现请求异常，可自动重试并修复部分请求",

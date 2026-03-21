@@ -112,6 +112,39 @@ test("status slash command is injected when experiment is enabled", async () => 
   assert.match(config.command["copilot-inject"].template, /tool|question|inject|intervene/i)
 })
 
+test("session control slash commands are injected when experiment is enabled", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStoreSync: () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalSlashCommandsEnabled: true,
+    }),
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalSlashCommandsEnabled: true,
+      syntheticAgentInitiatorEnabled: true,
+    }),
+  })
+
+  const config = { command: {} }
+  await plugin.config?.(config)
+
+  assert.equal(typeof config.command["copilot-compact"], "object")
+  assert.equal(typeof config.command["copilot-stop-tool"], "object")
+  assert.equal(typeof config.command["copilot-compact"].description, "string")
+  assert.equal(config.command["copilot-compact"].description.length > 0, true)
+  assert.equal(typeof config.command["copilot-stop-tool"].description, "string")
+  assert.equal(config.command["copilot-stop-tool"].description.length > 0, true)
+  assert.equal(typeof config.command["copilot-stop-tool"].template, "string")
+  assert.equal(config.command["copilot-stop-tool"].template.length > 0, true)
+  assert.match(config.command["copilot-stop-tool"].template, /interrupt.*tool flow|tool flow.*interrupt|annotate.*interrupted|synthetic continue/i)
+  assert.match(config.command["copilot-stop-tool"].description, /interrupt.*tool flow|annotate.*interrupted|synthetic continue/i)
+  assert.doesNotMatch(config.command["copilot-stop-tool"].template, /single|exactly one|仅.*一个|唯一/i)
+  assert.doesNotMatch(config.command["copilot-stop-tool"].description, /single|exactly one|仅.*一个|唯一/i)
+})
+
 test("experimental slash commands are not injected when unified switch is disabled", async () => {
   const plugin = buildPluginHooks({
     auth: { provider: "github-copilot", methods: [] },
@@ -539,6 +572,89 @@ test("status command hook delegates to status command handler", async () => {
   assert.equal(delegated[0]?.refreshQuota, "function")
   assert.equal(calls.length, 0)
   assert.equal(writes.length, 0)
+})
+
+test("session control command hooks delegate to injected handlers", async () => {
+  const delegated = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalSlashCommandsEnabled: true,
+      syntheticAgentInitiatorEnabled: true,
+    }),
+    handleCompactCommandImpl: async (input) => {
+      delegated.push({
+        command: "compact",
+        sessionID: input.sessionID,
+        client: typeof input.client,
+      })
+      throw new Error("compact delegated")
+    },
+    handleStopToolCommandImpl: async (input) => {
+      delegated.push({
+        command: "stop-tool",
+        sessionID: input.sessionID,
+        client: typeof input.client,
+        syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled,
+      })
+      throw new Error("stop-tool delegated")
+    },
+  })
+
+  await assert.rejects(
+    plugin["command.execute.before"]?.(
+      { command: "copilot-compact", sessionID: "s-compact", arguments: "" },
+      { parts: [] },
+    ),
+    /compact delegated/,
+  )
+
+  await assert.rejects(
+    plugin["command.execute.before"]?.(
+      { command: "copilot-stop-tool", sessionID: "s-stop", arguments: "" },
+      { parts: [] },
+    ),
+    /stop-tool delegated/,
+  )
+
+  assert.deepEqual(delegated, [
+    { command: "compact", sessionID: "s-compact", client: "object" },
+    {
+      command: "stop-tool",
+      sessionID: "s-stop",
+      client: "object",
+      syntheticAgentInitiatorEnabled: true,
+    },
+  ])
+})
+
+test("stop-tool command forwards synthetic switch as strict boolean", async () => {
+  const delegated = []
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      experimentalSlashCommandsEnabled: true,
+      syntheticAgentInitiatorEnabled: 1,
+    }),
+    handleStopToolCommandImpl: async (input) => {
+      delegated.push(input.syntheticAgentInitiatorEnabled)
+      throw new Error("stop-tool delegated")
+    },
+  })
+
+  await assert.rejects(
+    plugin["command.execute.before"]?.(
+      { command: "copilot-stop-tool", sessionID: "s-stop", arguments: "" },
+      { parts: [] },
+    ),
+    /stop-tool delegated/,
+  )
+
+  assert.deepEqual(delegated, [false])
 })
 
 test("status command hook still delegates when hook-level loadStore precheck fails", async () => {
