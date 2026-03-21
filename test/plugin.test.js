@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url"
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
 import { buildPluginHooks as buildPluginHooksRaw } from "../dist/plugin-hooks.js"
-import { COPILOT_PROVIDER_DESCRIPTOR } from "../dist/providers/descriptor.js"
+import { CODEX_PROVIDER_DESCRIPTOR, COPILOT_PROVIDER_DESCRIPTOR } from "../dist/providers/descriptor.js"
 import { getProviderDescriptorByKey, getProviderDescriptorByProviderID, listProviderDescriptors } from "../dist/providers/registry.js"
 import { buildCandidateAccountLoads } from "../dist/routing-state.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
@@ -6708,14 +6708,24 @@ test("provider descriptor includes required copilot fields", () => {
   assert.equal(typeof COPILOT_PROVIDER_DESCRIPTOR.capabilities, "object")
 })
 
-test("provider registry currently exposes copilot only", () => {
+test("provider registry global lookup remains copilot-scoped for providerID matching", () => {
   const descriptors = listProviderDescriptors()
   assert.equal(descriptors.length, 1)
   assert.equal(descriptors[0]?.key, "copilot")
   assert.equal(getProviderDescriptorByKey("copilot")?.key, "copilot")
+  assert.equal(getProviderDescriptorByKey("codex"), undefined)
   assert.equal(getProviderDescriptorByProviderID("github-copilot")?.key, "copilot")
   assert.equal(getProviderDescriptorByProviderID("github-copilot-enterprise")?.key, "copilot")
   assert.equal(getProviderDescriptorByProviderID("openai"), undefined)
+})
+
+test("codex descriptor declares codex-status command capability", () => {
+  assert.equal(CODEX_PROVIDER_DESCRIPTOR.key, "codex")
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.providerIDs, ["openai"])
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.commands, ["codex-status"])
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.menuEntries, [])
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.capabilities, ["slash-commands"])
+  assert.equal(CODEX_PROVIDER_DESCRIPTOR.storeNamespace, "codex")
 })
 
 test("provider registry exposes current Copilot descriptor while Codex stays opt-in", async () => {
@@ -6736,6 +6746,7 @@ test("provider registry exposes current Copilot descriptor while Codex stays opt
 test("provider descriptor contract keeps Copilot assembled and Codex disabled before explicit enable", async () => {
   const descriptors = await import(`../dist/provider-descriptor.js?provider-descriptor-${Date.now()}`)
 
+  assert.equal(typeof descriptors.CODEX_PROVIDER_DESCRIPTOR, "object")
   assert.equal(typeof descriptors.createCopilotProviderDescriptor, "function")
   assert.equal(typeof descriptors.createCodexProviderDescriptor, "function")
 
@@ -6747,5 +6758,10 @@ test("provider descriptor contract keeps Copilot assembled and Codex disabled be
   })
 
   assert.equal(copilot.auth.provider, "github-copilot")
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.providerIDs, ["openai"])
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.commands, ["codex-status"])
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.menuEntries, [])
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.capabilities, ["slash-commands"])
+  assert.equal(descriptors.CODEX_PROVIDER_DESCRIPTOR.storeNamespace, "codex")
   assert.equal(codex.enabledByDefault, false)
 })
