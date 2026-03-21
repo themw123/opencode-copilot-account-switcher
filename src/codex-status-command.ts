@@ -65,10 +65,11 @@ async function showToast(input: {
   message: string
   variant: ToastVariant
 }) {
+  const tui = input.client?.tui
   const show = input.client?.tui?.showToast
   if (!show) return
   try {
-    await show({
+    await show.call(tui, {
       body: {
         message: input.message,
         variant: input.variant,
@@ -128,11 +129,12 @@ function hasCachedStore(store: CodexStoreFile) {
 }
 
 async function defaultLoadAuth(client?: ToastClient): Promise<AuthPayload | undefined> {
+  const authClient = client?.auth
   const getAuth = client?.auth?.get
   if (!getAuth) return undefined
 
   try {
-    const result = await getAuth({ path: { id: "openai" }, throwOnError: true })
+    const result = await getAuth.call(authClient, { path: { id: "openai" }, throwOnError: true })
     const withData = asRecord(result)?.data
     const payload = asRecord(withData) ?? asRecord(result)
     if (!payload) return undefined
@@ -145,13 +147,14 @@ async function defaultLoadAuth(client?: ToastClient): Promise<AuthPayload | unde
 }
 
 async function defaultPersistAuth(client: ToastClient | undefined, auth: AuthPayload): Promise<void> {
+  const authClient = client?.auth
   const setAuth = client?.auth?.set
   if (!setAuth) return
 
   const openai = asRecord(auth.openai)
   if (!openai) return
 
-  await setAuth({
+  await setAuth.call(authClient, {
     path: { id: "openai" },
     body: {
       type: "oauth",

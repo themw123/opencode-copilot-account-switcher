@@ -62,6 +62,130 @@ test("codex status command ends with controlled interrupt after success toast", 
   assert.equal(hasSuccessToast, true)
 })
 
+test("codex status command preserves tui showToast this binding", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  const tui = {
+    _client: { id: "toast-ok" },
+    async showToast(options) {
+      const marker = this?._client?.id
+      if (!marker) throw new TypeError("undefined is not an object (evaluating 'this._client')")
+      calls.push({ marker, options })
+    },
+  }
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: { tui },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_1",
+          },
+          windows: {
+            primary: {},
+            secondary: {},
+          },
+          credits: {},
+          updatedAt: 1700000000000,
+        },
+      }),
+      readStore: async () => ({}),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0]?.marker, "toast-ok")
+  assert.equal(calls[0]?.options?.body?.variant, "info")
+  assert.equal(calls[1]?.marker, "toast-ok")
+  assert.equal(calls[1]?.options?.body?.variant, "success")
+})
+
+test("codex status command preserves auth get and set this binding", async () => {
+  const calls = []
+  const getCalls = []
+  const setCalls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  const auth = {
+    _client: { id: "auth-ok" },
+    async get(input) {
+      const marker = this?._client?.id
+      if (!marker) throw new TypeError("undefined is not an object (evaluating 'this._client')")
+      getCalls.push({ marker, input })
+      return {
+        data: {
+          type: "oauth",
+          access: "old_access",
+          refresh: "old_refresh",
+        },
+      }
+    },
+    async set(input) {
+      const marker = this?._client?.id
+      if (!marker) throw new TypeError("undefined is not an object (evaluating 'this._client')")
+      setCalls.push({ marker, input })
+    },
+  }
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+        auth,
+      },
+      fetchStatus: async () => ({
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_123",
+            email: "codex@example.com",
+            plan: "pro",
+          },
+          windows: {
+            primary: {
+              entitlement: 100,
+              remaining: 42,
+            },
+            secondary: {},
+          },
+          credits: {},
+          updatedAt: 1700000000123,
+        },
+        authPatch: {
+          access: "new_access",
+          refresh: "new_refresh",
+          accountId: "acct_123",
+        },
+      }),
+      readStore: async () => ({}),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  assert.equal(getCalls.length, 1)
+  assert.equal(getCalls[0]?.marker, "auth-ok")
+  assert.equal(setCalls.length, 1)
+  assert.equal(setCalls[0]?.marker, "auth-ok")
+  assert.equal(setCalls[0]?.input?.body?.access, "new_access")
+  assert.equal(setCalls[0]?.input?.body?.refresh, "new_refresh")
+  assert.equal(setCalls[0]?.input?.body?.accountId, "acct_123")
+  assert.equal(calls.at(-1)?.body?.variant, "success")
+})
+
 test("codex status command shows auth-missing error and exits with controlled interrupt", async () => {
   const calls = []
   const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
