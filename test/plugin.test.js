@@ -5625,6 +5625,232 @@ test("removeAccountFromStore chooses deterministic active fallback", async () =>
   assert.equal(fallbackStore.active, "alpha")
 })
 
+test("removeAccountFromStore immediately removes deleted account from modelAccountAssignments", async () => {
+  const { removeAccountFromStore } = await import("../dist/plugin.js")
+
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "alt"],
+    accounts: {
+      main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+      alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+    },
+    modelAccountAssignments: {
+      "gpt-5": ["main", "alt"],
+      "claude-3.7": ["main"],
+    },
+  }
+
+  removeAccountFromStore(store, "main")
+
+  const stillContainsDeleted = Object.values(store.modelAccountAssignments ?? {}).some((entry) => Array.isArray(entry)
+    ? entry.includes("main")
+    : entry === "main")
+  assert.equal(stillContainsDeleted, false)
+})
+
+test("plugin auth loader sends the finalized request headers it used for classification", async () => {
+  const decisions = []
+  const outgoing = []
+  let loadCall = 0
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+
+  const { plugin } = createPluginHooksTestHarness({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCandidateAccountLoads: async () => {
+      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
+      loadCall += 1
+      return loads
+    },
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "user",
+          "x-finalized-classification": "true",
+        },
+      },
+    }),
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (_request, init) => {
+        const headers = {
+          ...Object.fromEntries(_request instanceof Request ? _request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+        }
+        outgoing.push({
+          auth: await getAuth(),
+          headers,
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  const send = async () => authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "finalized-headers-for-classification",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "tool follow-up" },
+      ],
+    }),
+  })
+
+  await send()
+  await send()
+
+  const finalDecision = decisions.at(-1)
+  const finalOutgoing = outgoing.at(-1)
+  assert.equal(finalDecision?.reason, "user-reselect")
+  assert.equal(finalOutgoing?.headers["x-initiator"], "user")
+  assert.equal(finalOutgoing?.headers["x-finalized-classification"], "true")
+})
+
+test("user-reselect toast and outbound x-initiator stay aligned for routed user turns", async () => {
+  const toasts = []
+  const outgoing = []
+  let loadCall = 0
+  const loadsByCall = [
+    { main: 4, alt: 1 },
+    { main: 1, alt: 5 },
+  ]
+
+  const { plugin } = createPluginHooksTestHarness({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCandidateAccountLoads: async () => {
+      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
+      loadCall += 1
+      return loads
+    },
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "user",
+        },
+      },
+    }),
+    client: {
+      session: {
+        message: async () => ({ data: { parts: [] } }),
+        get: async () => ({ data: {} }),
+      },
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+    loadOfficialConfig: async ({ getAuth }) => ({
+      apiKey: "",
+      fetch: async (_request, init) => {
+        const headers = {
+          ...Object.fromEntries(_request instanceof Request ? _request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+        }
+        outgoing.push({
+          auth: await getAuth(),
+          headers,
+        })
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        })
+      },
+    }),
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  const send = async () => authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "toast-alignment-user-reselect",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "tool follow-up" },
+      ],
+    }),
+  })
+
+  await send()
+  toasts.length = 0
+  await send()
+
+  assert.equal(toasts.length, 1)
+  assert.match(String(toasts[0]?.body?.message ?? ""), /用户回合重选/)
+  assert.equal(outgoing.at(-1)?.headers["x-initiator"], "user")
+})
+
 test("plugin menu toggle path persists loopSafetyEnabled", async () => {
   const writes = []
   const store = {

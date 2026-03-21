@@ -98,7 +98,9 @@ export function rewriteModelAccountAssignments(store: StoreFile, rename: Record<
         const seen = new Set<string>()
         const resolvedNames: string[] = []
         for (const originalName of accountNames) {
-          const mappedName = rename[originalName] ?? originalName
+          const mappedName = Object.prototype.hasOwnProperty.call(rename, originalName)
+            ? rename[originalName]
+            : originalName
           if (typeof mappedName !== "string" || !store.accounts[mappedName] || seen.has(mappedName)) continue
           seen.add(mappedName)
           resolvedNames.push(mappedName)

@@ -84,25 +84,6 @@ function renderAccountGrid(cells: Array<{ name: string; quota: string }>) {
   return rows
 }
 
-function formatActiveGroup(store: StoreFile) {
-  const names = Array.isArray(store.activeAccountNames) ? store.activeAccountNames : []
-  if (names.length > 0) return names.join(", ")
-  return "none"
-}
-
-function formatRoutingGroup(store: StoreFile) {
-  const assignments = store.modelAccountAssignments ?? {}
-  const modelIDs = Object.keys(assignments).sort((a, b) => a.localeCompare(b))
-  const mapped = modelIDs
-    .map((modelID) => {
-      const names = assignments[modelID] ?? []
-      if (names.length === 0) return undefined
-      return `${modelID} -> ${names.join(", ")}`
-    })
-    .filter((line): line is string => Boolean(line))
-  return mapped.length > 0 ? mapped.join("; ") : "none"
-}
-
 function buildSuccessMessage(store: StoreFile, _name: string) {
   const defaultNames = Array.isArray(store.activeAccountNames) && store.activeAccountNames.length > 0
     ? store.activeAccountNames
@@ -136,9 +117,6 @@ function buildSuccessMessage(store: StoreFile, _name: string) {
     lines.push("[routes]")
     lines.push("(none)")
   }
-
-  lines.push(`活跃组: ${formatActiveGroup(store)}`)
-  lines.push(`路由组: ${formatRoutingGroup(store)}`)
 
   return lines.join("\n")
 }

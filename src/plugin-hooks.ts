@@ -813,7 +813,7 @@ export function buildPluginHooks(input: {
       const initiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
       if (candidates.length === 0) {
-        const outbound = stripInternalSessionHeader(request, init)
+        const outbound = stripInternalSessionHeader(selectionRequest, selectionInit)
         return config.fetch(outbound.request, outbound.init)
       }
 
@@ -860,7 +860,7 @@ export function buildPluginHooks(input: {
         })
         : undefined
       if (!resolved) {
-        const outbound = stripInternalSessionHeader(request, init)
+        const outbound = stripInternalSessionHeader(selectionRequest, selectionInit)
         return config.fetch(outbound.request, outbound.init)
       }
 
@@ -904,13 +904,13 @@ export function buildPluginHooks(input: {
         modelAccountFirstUse.add(resolved.name)
       }
 
-      let nextRequest = request
-      let nextInit = init
-      const currentInitiator = getMergedRequestHeader(request, init, "x-initiator")
+      let nextRequest = selectionRequest
+      let nextInit = selectionInit
+      const currentInitiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
       const shouldStripAgentInitiator = classification.reason === "unbound-fallback"
         || (isFirstUse && currentInitiator === "agent")
       if (shouldStripAgentInitiator && currentInitiator === "agent") {
-        const rewritten = mergeAndRewriteRequestHeaders(request, init, (headers) => {
+        const rewritten = mergeAndRewriteRequestHeaders(selectionRequest, selectionInit, (headers) => {
           headers.delete("x-initiator")
         })
         nextRequest = rewritten.request

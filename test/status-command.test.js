@@ -451,6 +451,7 @@ test("status command refreshes quota, persists store, and ends with controlled i
   assert.equal(calls[1]?.body?.variant, "success")
   const successMessage = calls[1]?.body?.message ?? ""
   const messageLines = successMessage.split("\n")
+  assert.equal(messageLines.length, 6)
   assert.equal(messageLines[0] ?? "", "[default]")
   assert.equal((messageLines[1] ?? "").length, 50)
   assert.equal(messageLines[2] ?? "", "[claude-3.7]")
@@ -460,8 +461,8 @@ test("status command refreshes quota, persists store, and ends with controlled i
   assert.doesNotMatch(successMessage, /current active/i)
   assert.doesNotMatch(successMessage, /\bchat\b/i)
   assert.doesNotMatch(successMessage, /\bcompletions\b/i)
-  assert.equal(messageLines.at(-2) ?? "", "活跃组: alice, bob")
-  assert.equal(messageLines.at(-1) ?? "", "路由组: claude-3.7 -> alice; gpt-4.1 -> bob, alice")
+  assert.doesNotMatch(successMessage, /^活跃组:/m)
+  assert.doesNotMatch(successMessage, /^路由组:/m)
   assert.equal(writes.length, 1)
   assert.equal(writes[0]?.store?.accounts?.alice?.quota?.snapshots?.premium?.remaining, 10)
 })
@@ -506,8 +507,9 @@ test("status command success shows none when routing group is not configured", a
   const messageLines = successMessage.split("\n")
   assert.equal(messageLines[0] ?? "", "[default]")
   assert.equal((messageLines[1] ?? "").length, 50)
-  assert.match(messageLines.at(-2) ?? "", /^活跃组: alice$/)
-  assert.match(messageLines.at(-1) ?? "", /^路由组: none$/)
+  assert.equal(messageLines[2] ?? "", "[routes]")
+  assert.equal(messageLines[3] ?? "", "(none)")
+  assert.equal(messageLines.length, 4)
 })
 
 test("status command success shows active group none when activeAccountNames is absent", async () => {
@@ -551,7 +553,7 @@ test("status command success shows active group none when activeAccountNames is 
   assert.equal(messageLines[1] ?? "", "(none)")
   assert.equal(messageLines[2] ?? "", "[routes]")
   assert.equal(messageLines[3] ?? "", "(none)")
-  assert.match(messageLines.at(-2) ?? "", /^活跃组: none$/)
+  assert.equal(messageLines.length, 4)
 })
 
 test("status command success renders routing assignment names directly from modelAccountAssignments", async () => {
@@ -599,7 +601,8 @@ test("status command success renders routing assignment names directly from mode
   assert.equal((messageLines[1] ?? "").length, 50)
   assert.equal(messageLines[2] ?? "", "[gpt-4.1]")
   assert.equal((messageLines[3] ?? "").length, 50)
-  assert.match(messageLines.at(-1) ?? "", /^路由组: gpt-4\.1 -> ghost, alice$/)
+  assert.equal(messageLines.length, 4)
+  assert.doesNotMatch(successMessage, /^路由组:/m)
 })
 
 test("status command success skips empty model groups instead of rendering blank 50-char row", async () => {
