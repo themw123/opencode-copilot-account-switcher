@@ -5745,6 +5745,7 @@ test("plugin auth loader sends the finalized request headers it used for classif
     const finalOutgoing = outgoing.at(-1)
     assert.equal(finalDecision?.reason, "user-reselect")
     assert.equal(finalDecision?.chosenAccount, "main")
+    assert.equal(finalDecision?.chosenAccountAuthFingerprint, "aae77eccb5dd")
     assert.equal(finalDecision?.finalRequestHeaders?.authorization, "Bearer [redacted]")
     assert.equal(finalDecision?.finalRequestHeaders?.["content-type"], "application/json")
     assert.equal(finalDecision?.finalRequestHeaders?.["openai-intent"], "conversation-edits")
@@ -5759,6 +5760,217 @@ test("plugin auth loader sends the finalized request headers it used for classif
     assert.equal(finalOutgoing?.headers.authorization, "Bearer main-refresh")
     assert.equal(finalOutgoing?.headers["openai-intent"], "conversation-edits")
     assert.equal(finalOutgoing?.headers["x-opencode-session-id"], undefined)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("route decision logs chosen account auth fingerprint for routed user turns", async () => {
+  const decisions = []
+
+  const { plugin } = createPluginHooksTestHarness({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCandidateAccountLoads: async () => ({ main: 1, alt: 5 }),
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "user",
+        },
+      },
+    }),
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  await authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "fingerprint-session",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "tool follow-up" },
+      ],
+    }),
+  })
+
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.chosenAccount, "main")
+  assert.equal(decisions[0]?.chosenAccountAuthFingerprint, "aae77eccb5dd")
+})
+
+test("route decision logs debug link id for routed user turns", async () => {
+  const decisions = []
+
+  const { plugin } = createPluginHooksTestHarness({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCandidateAccountLoads: async () => ({ main: 1, alt: 5 }),
+    finalizeRequestForSelection: async ({ request, init }) => ({
+      request,
+      init: {
+        ...(init ?? {}),
+        headers: {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+          "x-initiator": "user",
+        },
+      },
+    }),
+    appendRouteDecisionEventImpl: async (input) => {
+      decisions.push(input.event)
+    },
+  })
+
+  const authOptions = await plugin.auth?.loader?.(async () => ({
+    type: "oauth",
+    refresh: "base-refresh",
+    access: "base-access",
+    expires: 0,
+  }), { models: {} })
+
+  await authOptions?.fetch?.("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-opencode-session-id": "debug-link-session",
+      "x-opencode-debug-link-id": "debug-link-123",
+      "x-initiator": "agent",
+    },
+    body: JSON.stringify({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "tool follow-up" },
+      ],
+    }),
+  })
+
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.reason, "user-reselect")
+  assert.equal(decisions[0]?.debugLinkId, "debug-link-123")
+})
+
+test("plugin auth loader avoids duplicate finalized headers when request already carries official headers", async () => {
+  const decisions = []
+  const outgoing = []
+  const originalFetch = globalThis.fetch
+
+  try {
+    globalThis.fetch = async (request, init) => {
+      outgoing.push({
+        url: request instanceof Request ? request.url : String(request),
+        headers: {
+          ...Object.fromEntries(request instanceof Request ? request.headers.entries() : []),
+          ...Object.fromEntries(new Headers(init?.headers).entries()),
+        },
+      })
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
+
+    const { plugin } = createPluginHooksTestHarness({
+      auth: {
+        provider: "github-copilot",
+        methods: [],
+      },
+      loadStore: async () => ({
+        active: "main",
+        activeAccountNames: ["main"],
+        accounts: {
+          main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        },
+        loopSafetyEnabled: false,
+        networkRetryEnabled: false,
+      }),
+      appendRouteDecisionEventImpl: async (input) => {
+        decisions.push(input.event)
+      },
+    })
+
+    const authOptions = await plugin.auth?.loader?.(async () => ({
+      type: "oauth",
+      refresh: "base-refresh",
+      access: "base-access",
+      expires: 0,
+    }), { models: {} })
+
+    const request = new Request("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-opencode-session-id": "no-duplicate-final-headers",
+        authorization: "Bearer request-auth",
+        "openai-intent": "conversation-edits",
+        "user-agent": "opencode/request",
+        "x-initiator": "user",
+      },
+      body: JSON.stringify({
+        model: "gpt-5",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    })
+
+    await authOptions?.fetch?.(request, {
+      headers: {
+        authorization: "Bearer init-auth",
+        "openai-intent": "conversation-edits",
+        "user-agent": "opencode/init",
+      },
+    })
+
+    assert.equal(outgoing.length, 1)
+    assert.equal(outgoing[0]?.headers.authorization, "Bearer main-refresh")
+    assert.equal(outgoing[0]?.headers["openai-intent"], "conversation-edits")
+    assert.equal(outgoing[0]?.headers["user-agent"], "opencode/snapshot")
+    assert.equal(decisions[0]?.finalRequestHeaders?.["openai-intent"], "conversation-edits")
+    assert.equal(decisions[0]?.finalRequestHeaders?.["user-agent"], "opencode/snapshot")
+    assert.equal(decisions[0]?.networkRequestHeaders?.["openai-intent"], "conversation-edits")
+    assert.equal(decisions[0]?.networkRequestHeaders?.["user-agent"], "opencode/snapshot")
+    assert.equal(decisions[0]?.networkRequestUsedInitHeaders, false)
   } finally {
     globalThis.fetch = originalFetch
   }

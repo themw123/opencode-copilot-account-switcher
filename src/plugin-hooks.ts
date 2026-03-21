@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs"
 import { AsyncLocalStorage } from "node:async_hooks"
+import { createHash } from "node:crypto"
 import {
   createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
@@ -290,15 +291,51 @@ function mergeAndRewriteRequestHeaders(
   }
 
   if (request instanceof Request) {
+    const requestInit = { ...(init ?? {}) }
+    delete requestInit.headers
     return {
       request: rewriteRequestHeaders(request),
-      init: normalizedInit,
+      init: Object.keys(requestInit).length > 0 ? requestInit : undefined,
     }
   }
 
   return {
     request,
     init: normalizedInit,
+  }
+}
+
+function stripDuplicateHeadersFromRequestWhenInitOverrides(
+  request: Request | URL | string,
+  init?: RequestInit,
+): {
+  request: Request | URL | string
+  init: RequestInit | undefined
+} {
+  if (!(request instanceof Request) || init?.headers == null) {
+    return { request, init }
+  }
+
+  const initHeaders = new Headers(init.headers)
+  if ([...initHeaders.keys()].length === 0) {
+    return { request, init }
+  }
+
+  const requestHeaders = new Headers(request.headers)
+  let changed = false
+  for (const name of initHeaders.keys()) {
+    if (requestHeaders.has(name)) {
+      requestHeaders.delete(name)
+      changed = true
+    }
+  }
+  if (!changed) {
+    return { request, init }
+  }
+
+  return {
+    request: new Request(request, { headers: requestHeaders }),
+    init,
   }
 }
 
@@ -340,6 +377,11 @@ function sanitizeLoggedRequestHeadersRecord(headers: Record<string, string>) {
     sanitized["x-api-key"] = "[redacted]"
   }
   return sanitized
+}
+
+function toAuthFingerprint(value: string | undefined) {
+  if (typeof value !== "string" || value.length === 0) return undefined
+  return createHash("sha256").update(value).digest("hex").slice(0, 12)
 }
 
 function getInternalSessionID(request: Request | URL | string, init: RequestInit | undefined) {
@@ -924,10 +966,13 @@ export function buildPluginHooks(input: {
       let decisionTouchWriteOutcome: RouteDecisionEvent["touchWriteOutcome"] = "skipped-missing-session"
       let decisionTouchWriteError: string | undefined
       let finalChosenAccount = resolved.name
+      let chosenAccountAuthFingerprint = toAuthFingerprint(resolved.entry.refresh)
       let finalRequestHeaders = getFinalSentRequestHeadersRecord(selectionRequest, selectionInit)
       let networkRequestHeaders: Record<string, string> | undefined
+      let networkRequestUsedInitHeaders = selectionInit?.headers != null
 
       const previousBindingAccount = sessionID.length > 0 ? sessionAccountBindings.get(sessionID)?.accountName : undefined
+      const debugLinkId = getMergedRequestHeader(selectionRequest, selectionInit, INTERNAL_DEBUG_LINK_HEADER) ?? undefined
 
       if (sessionID.length > 0) {
         sessionAccountBindings.set(sessionID, {
@@ -1003,11 +1048,13 @@ export function buildPluginHooks(input: {
           expires: candidate.entry.expires,
           enterpriseUrl: candidate.entry.enterpriseUrl,
         }
-        const outbound = stripInternalSessionHeader(requestValue, initValue)
+        const deduplicated = stripDuplicateHeadersFromRequestWhenInitOverrides(requestValue, initValue)
+        const outbound = stripInternalSessionHeader(deduplicated.request, deduplicated.init)
         return finalHeaderCapture.run(
           (headers) => {
             finalRequestHeaders = headers
             networkRequestHeaders = headers
+            networkRequestUsedInitHeaders = outbound.init?.headers != null
           },
           () => authOverride.run(candidateAuth, () => config.fetch(
             rewriteRequestForAccount(outbound.request, candidate.entry.enterpriseUrl),
@@ -1139,6 +1186,7 @@ export function buildPluginHooks(input: {
               decisionSwitchFrom = resolved.name
               decisionSwitchBlockedBy = undefined
               finalChosenAccount = replacement.name
+              chosenAccountAuthFingerprint = toAuthFingerprint(replacement.entry.refresh)
 
               modelAccountFirstUse.add(replacement.name)
               const switchToast = buildConsumptionToast({
@@ -1171,10 +1219,13 @@ export function buildPluginHooks(input: {
                   sessionIDPresent: sessionID.length > 0,
                   groupSource: resolved.source,
                   candidateNames,
-                  loads: decisionLoads,
-                  chosenAccount: finalChosenAccount,
-                  reason: decisionReason,
-                  switched: decisionSwitched,
+                    loads: decisionLoads,
+                    chosenAccount: finalChosenAccount,
+                    chosenAccountAuthFingerprint,
+                    debugLinkId,
+                    networkRequestUsedInitHeaders,
+                    reason: decisionReason,
+                    switched: decisionSwitched,
                   switchFrom: decisionSwitchFrom,
                   switchBlockedBy: decisionSwitchBlockedBy,
                     touchWriteOutcome: decisionTouchWriteOutcome,
@@ -1209,6 +1260,9 @@ export function buildPluginHooks(input: {
           candidateNames,
           loads: decisionLoads,
           chosenAccount: finalChosenAccount,
+          chosenAccountAuthFingerprint,
+          debugLinkId,
+          networkRequestUsedInitHeaders,
           reason: decisionReason,
           switched: decisionSwitched,
           switchFrom: decisionSwitchFrom,

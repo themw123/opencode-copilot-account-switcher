@@ -95,6 +95,9 @@ export type RouteDecisionEvent = {
   at: number
   modelID?: string
   chosenAccount: string
+  chosenAccountAuthFingerprint?: string
+  debugLinkId?: string
+  networkRequestUsedInitHeaders?: boolean
   sessionID?: string
   sessionIDPresent: boolean
   groupSource: "model" | "active"
