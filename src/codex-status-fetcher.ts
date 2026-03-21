@@ -94,6 +94,12 @@ function readNumber(input: unknown): number | undefined {
   return typeof input === "number" && Number.isFinite(input) ? input : undefined
 }
 
+function readTimestamp(input: unknown): number | undefined {
+  const value = readNumber(input)
+  if (value === undefined) return undefined
+  return value >= 1e12 ? value : value * 1000
+}
+
 function pickRecord(source: JsonRecord, keys: string[]): JsonRecord | undefined {
   for (const key of keys) {
     const value = asRecord(source[key])
@@ -103,10 +109,13 @@ function pickRecord(source: JsonRecord, keys: string[]): JsonRecord | undefined 
 }
 
 function pickWindow(source: JsonRecord, key: "primary" | "secondary"): CodexWindowSnapshot {
+  const rateLimit = pickRecord(source, ["rate_limit", "rateLimit"])
+  const rateLimitKey = key === "primary" ? "primary_window" : "secondary_window"
+  const rateLimitWindow = rateLimit ? asRecord(rateLimit[rateLimitKey]) : undefined
   const windows = pickRecord(source, ["windows", "usage_windows", "quota_windows"])
   const block = windows ? asRecord(windows[key]) : undefined
   const fallback = asRecord(source[key])
-  const raw = block ?? fallback
+  const raw = rateLimitWindow ?? block ?? fallback
   if (!raw) {
     return {
       entitlement: undefined,
@@ -116,11 +125,18 @@ function pickWindow(source: JsonRecord, key: "primary" | "secondary"): CodexWind
     }
   }
 
+  const entitlement = readNumber(raw.entitlement)
+  const remainingPercent = readNumber(raw.remaining_percent)
+  const usedPercent = readNumber(raw.used_percent)
+  const remaining = readNumber(raw.remaining) ?? remainingPercent
+  const used = readNumber(raw.used) ?? usedPercent
+  const percentBased = remainingPercent !== undefined || usedPercent !== undefined
+
   return {
-    entitlement: readNumber(raw.entitlement),
-    remaining: readNumber(raw.remaining),
-    used: readNumber(raw.used),
-    resetAt: readNumber(raw.resetAt ?? raw.reset_at),
+    entitlement: entitlement ?? (percentBased ? 100 : undefined),
+    remaining: remaining ?? (used !== undefined ? Math.max(0, 100 - used) : undefined),
+    used,
+    resetAt: readTimestamp(raw.resetAt ?? raw.reset_at),
   }
 }
 
@@ -133,7 +149,7 @@ function normalizeUsageStatus(payload: unknown, now: () => number): CodexStatusS
     identity: {
       accountId: readString(account.id) ?? readString(source.account_id) ?? readString(source.accountId),
       email: readString(account.email) ?? readString(source.email),
-      plan: readString(account.plan) ?? readString(source.plan),
+      plan: readString(account.plan) ?? readString(source.plan) ?? readString(source.plan_type),
     },
     windows: {
       primary: pickWindow(source, "primary"),

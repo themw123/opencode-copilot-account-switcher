@@ -43,31 +43,24 @@ test("fetches codex usage with Authorization and ChatGPT-Account-Id headers", as
   assert.equal(result.ok, true)
 })
 
-test("normalizes usage payload into identity and window snapshots", async () => {
+test("normalizes real codex usage payload into identity and window snapshots", async () => {
   const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
 
   const payload = {
-    account: {
-      id: "acct_from_payload",
-      email: "user@example.com",
-      plan: "pro",
-    },
-    windows: {
-      primary: {
-        entitlement: 100,
-        remaining: 40,
-        used: 60,
-        resetAt: 1700001000000,
+    account_id: "acct_from_payload",
+    email: "user@example.com",
+    plan_type: "team",
+    rate_limit: {
+      primary_window: {
+        used_percent: 38,
+        limit_window_seconds: 18000,
+        reset_at: 1774134584,
       },
-      secondary: {
-        entitlement: 200,
-        remaining: 120,
+      secondary_window: {
+        used_percent: 94,
+        limit_window_seconds: 604800,
+        reset_at: 1774666375,
       },
-    },
-    credits: {
-      total: 12,
-      remaining: 8,
-      used: 4,
     },
   }
 
@@ -81,18 +74,18 @@ test("normalizes usage payload into identity and window snapshots", async () => 
   assert.equal(result.ok, true)
   assert.equal(result.status.identity.accountId, "acct_from_payload")
   assert.equal(result.status.identity.email, "user@example.com")
-  assert.equal(result.status.identity.plan, "pro")
+  assert.equal(result.status.identity.plan, "team")
   assert.equal(result.status.windows.primary.entitlement, 100)
-  assert.equal(result.status.windows.primary.remaining, 40)
-  assert.equal(result.status.windows.primary.used, 60)
-  assert.equal(result.status.windows.primary.resetAt, 1700001000000)
-  assert.equal(result.status.windows.secondary.entitlement, 200)
-  assert.equal(result.status.windows.secondary.remaining, 120)
-  assert.equal(result.status.windows.secondary.used, undefined)
-  assert.equal(result.status.windows.secondary.resetAt, undefined)
-  assert.equal(result.status.credits.total, 12)
-  assert.equal(result.status.credits.remaining, 8)
-  assert.equal(result.status.credits.used, 4)
+  assert.equal(result.status.windows.primary.remaining, 62)
+  assert.equal(result.status.windows.primary.used, 38)
+  assert.equal(result.status.windows.primary.resetAt, 1774134584000)
+  assert.equal(result.status.windows.secondary.entitlement, 100)
+  assert.equal(result.status.windows.secondary.remaining, 6)
+  assert.equal(result.status.windows.secondary.used, 94)
+  assert.equal(result.status.windows.secondary.resetAt, 1774666375000)
+  assert.equal(result.status.credits.total, undefined)
+  assert.equal(result.status.credits.remaining, undefined)
+  assert.equal(result.status.credits.used, undefined)
   assert.equal(result.status.updatedAt, 1700000000000)
 })
 

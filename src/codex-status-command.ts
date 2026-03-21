@@ -92,6 +92,16 @@ function value(value: string | number | undefined) {
   return value === undefined ? "n/a" : String(value)
 }
 
+function renderWindow(label: string, window: {
+  remaining?: number
+  entitlement?: number
+}) {
+  if (window.entitlement === 100 && window.remaining !== undefined) {
+    return `${label}: ${window.remaining}% left`
+  }
+  return `${label}: ${ratio(window.remaining, window.entitlement)}`
+}
+
 function renderStatus(status: CodexStatusSnapshot) {
   return [
     "Codex status updated.",
@@ -100,8 +110,8 @@ function renderStatus(status: CodexStatusSnapshot) {
     `email: ${value(status.identity.email)}`,
     `plan: ${value(status.identity.plan)}`,
     "[usage]",
-    `primary: ${ratio(status.windows.primary.remaining, status.windows.primary.entitlement)}`,
-    `secondary: ${ratio(status.windows.secondary.remaining, status.windows.secondary.entitlement)}`,
+    renderWindow("5h", status.windows.primary),
+    renderWindow("week", status.windows.secondary),
     `credits: ${ratio(status.credits.remaining, status.credits.total)}`,
   ].join("\n")
 }
@@ -113,8 +123,8 @@ function renderCachedStatus(store: CodexStoreFile) {
     `email: ${value(store.account?.email ?? store.activeEmail)}`,
     `plan: ${value(store.account?.plan)}`,
     "[usage]",
-    `primary: ${ratio(store.status?.premium?.remaining, store.status?.premium?.entitlement)}`,
-    "secondary: n/a",
+    renderWindow("5h", store.status?.premium ?? {}),
+    "week: n/a",
     "credits: n/a",
   ].join("\n")
 }

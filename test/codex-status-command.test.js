@@ -410,6 +410,57 @@ test("codex status command falls back to cached store when fetch fails", async (
   assert.match(warningText, /acct_cached|cached@example.com|180\/200|180|200/)
 })
 
+test("codex status command renders 5h and weekly percentage labels for percentage-based windows", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_1",
+            email: "codex@example.com",
+            plan: "team",
+          },
+          windows: {
+            primary: {
+              entitlement: 100,
+              remaining: 42,
+            },
+            secondary: {
+              entitlement: 100,
+              remaining: 6,
+            },
+          },
+          credits: {},
+          updatedAt: 1700000000000,
+        },
+      }),
+      readStore: async () => ({}),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const successToast = calls.find((item) => item?.body?.variant === "success")
+  const successText = String(successToast?.body?.message ?? "")
+  assert.match(successText, /5h:\s*42% left/i)
+  assert.match(successText, /week:\s*6% left/i)
+})
+
 test("codex status command renders n/a for missing fields", async () => {
   const calls = []
   const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
