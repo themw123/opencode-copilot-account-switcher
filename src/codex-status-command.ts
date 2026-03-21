@@ -145,6 +145,7 @@ function mapAuthEntryToOpenAI(entry: AccountEntry | undefined): OpenAIOAuthAuth 
     refresh: entry.refresh,
     access: entry.access,
     expires: entry.expires,
+    accountId: entry.accountId,
   }
 }
 

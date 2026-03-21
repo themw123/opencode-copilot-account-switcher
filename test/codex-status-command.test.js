@@ -232,6 +232,7 @@ test("codex status command falls back to auth.json-style openai auth when client
           access: "file_access",
           refresh: "file_refresh",
           expires: 1700000000000,
+          accountId: "acct_from_file_header",
         },
       }),
       fetchStatus: async (input) => {
@@ -265,6 +266,7 @@ test("codex status command falls back to auth.json-style openai auth when client
   assert.equal(fetchCalls.length, 1)
   assert.equal(fetchCalls[0]?.oauth?.access, "file_access")
   assert.equal(fetchCalls[0]?.oauth?.refresh, "file_refresh")
+  assert.equal(fetchCalls[0]?.accountId, "acct_from_file_header")
   assert.equal(calls.at(-1)?.body?.variant, "success")
 })
 

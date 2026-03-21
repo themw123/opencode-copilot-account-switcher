@@ -17,6 +17,7 @@ export type AccountEntry = {
   refresh: string
   access: string
   expires: number
+  accountId?: string
   enterpriseUrl?: string
   user?: string
   email?: string
@@ -269,6 +270,7 @@ export async function readAuth(filePath?: string): Promise<Record<string, Accoun
       refresh?: string
       access?: string
       expires?: number
+      accountId?: string
       enterpriseUrl?: string
     }
     if (info.type !== "oauth" || !(info.refresh || info.access)) return acc
@@ -277,6 +279,7 @@ export async function readAuth(filePath?: string): Promise<Record<string, Accoun
       refresh: info.refresh ?? info.access!,
       access: info.access ?? info.refresh!,
       expires: info.expires ?? 0,
+      accountId: info.accountId,
       enterpriseUrl: info.enterpriseUrl,
       source: "auth",
       providerId: key,

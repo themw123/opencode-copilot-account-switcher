@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-import { parseStore, readStore, readStoreSafe, writeStore } from "../dist/store.js"
+import { parseStore, readAuth, readStore, readStoreSafe, writeStore } from "../dist/store.js"
 
 async function withStoreDebugEnv(logFile, enabled, action) {
   const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
@@ -237,6 +237,28 @@ test("readStoreSafe returns undefined for unreadable files", async () => {
   const store = await readStoreSafe(dir)
 
   assert.equal(store, undefined)
+})
+
+test("readAuth preserves optional accountId from auth.json oauth entries", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "loop-safety-auth-"))
+  const file = path.join(dir, "auth.json")
+  await writeFile(
+    file,
+    JSON.stringify({
+      openai: {
+        type: "oauth",
+        refresh: "refresh_token",
+        access: "access_token",
+        expires: 1700000000000,
+        accountId: "acct_from_auth_json",
+      },
+    }),
+    "utf8",
+  )
+
+  const auth = await readAuth(file)
+
+  assert.equal(auth.openai?.accountId, "acct_from_auth_json")
 })
 
 test("writeStore does not emit debug log by default", async () => {
