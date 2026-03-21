@@ -925,6 +925,7 @@ export function buildPluginHooks(input: {
       let decisionTouchWriteError: string | undefined
       let finalChosenAccount = resolved.name
       let finalRequestHeaders = getFinalSentRequestHeadersRecord(selectionRequest, selectionInit)
+      let networkRequestHeaders: Record<string, string> | undefined
 
       const previousBindingAccount = sessionID.length > 0 ? sessionAccountBindings.get(sessionID)?.accountName : undefined
 
@@ -1006,6 +1007,7 @@ export function buildPluginHooks(input: {
         return finalHeaderCapture.run(
           (headers) => {
             finalRequestHeaders = headers
+            networkRequestHeaders = headers
           },
           () => authOverride.run(candidateAuth, () => config.fetch(
             rewriteRequestForAccount(outbound.request, candidate.entry.enterpriseUrl),
@@ -1180,6 +1182,7 @@ export function buildPluginHooks(input: {
                     rateLimitMatched: decisionRateLimitMatched,
                     retryAfterMs: decisionRetryAfterMs,
                     finalRequestHeaders,
+                    networkRequestHeaders,
                   },
                 }).catch(() => undefined)
 
@@ -1215,6 +1218,7 @@ export function buildPluginHooks(input: {
           rateLimitMatched: decisionRateLimitMatched,
           retryAfterMs: decisionRetryAfterMs,
           finalRequestHeaders,
+          networkRequestHeaders,
         },
       }).catch(() => undefined)
 

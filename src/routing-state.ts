@@ -109,6 +109,7 @@ export type RouteDecisionEvent = {
   rateLimitMatched: boolean
   retryAfterMs?: number
   finalRequestHeaders?: Record<string, string>
+  networkRequestHeaders?: Record<string, string>
 }
 
 export type RoutingEvent = SessionTouchEvent | RateLimitFlaggedEvent
