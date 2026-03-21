@@ -108,6 +108,7 @@ export type RouteDecisionEvent = {
   touchWriteError?: string
   rateLimitMatched: boolean
   retryAfterMs?: number
+  finalRequestHeaders?: Record<string, string>
 }
 
 export type RoutingEvent = SessionTouchEvent | RateLimitFlaggedEvent

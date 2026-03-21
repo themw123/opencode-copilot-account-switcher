@@ -310,6 +310,38 @@ function getMergedRequestHeader(request: Request | URL | string, init: RequestIn
   return headers.get(name)
 }
 
+function getMergedRequestHeadersRecord(request: Request | URL | string, init: RequestInit | undefined) {
+  const headers = new Headers(request instanceof Request ? request.headers : undefined)
+  for (const [headerName, value] of new Headers(init?.headers).entries()) {
+    headers.set(headerName, value)
+  }
+  return Object.fromEntries(headers.entries())
+}
+
+function getFinalSentRequestHeadersRecord(request: Request | URL | string, init: RequestInit | undefined) {
+  const headers = new Headers(request instanceof Request ? request.headers : undefined)
+  for (const [headerName, value] of new Headers(init?.headers).entries()) {
+    headers.set(headerName, value)
+  }
+  headers.delete("x-opencode-session-id")
+  headers.delete(INTERNAL_DEBUG_LINK_HEADER)
+  return sanitizeLoggedRequestHeadersRecord(Object.fromEntries(headers.entries()))
+}
+
+function sanitizeLoggedRequestHeadersRecord(headers: Record<string, string>) {
+  const sanitized = { ...headers }
+  if (typeof sanitized.authorization === "string" && sanitized.authorization.length > 0) {
+    sanitized.authorization = "Bearer [redacted]"
+  }
+  if (typeof sanitized.Authorization === "string" && sanitized.Authorization.length > 0) {
+    sanitized.Authorization = "Bearer [redacted]"
+  }
+  if (typeof sanitized["x-api-key"] === "string" && sanitized["x-api-key"].length > 0) {
+    sanitized["x-api-key"] = "[redacted]"
+  }
+  return sanitized
+}
+
 function getInternalSessionID(request: Request | URL | string, init: RequestInit | undefined) {
   const headerValue = getMergedRequestHeader(request, init, "x-opencode-session-id")
   if (typeof headerValue === "string" && headerValue.length > 0) return headerValue
@@ -748,11 +780,20 @@ export function buildPluginHooks(input: {
 
   const loader: AuthLoader = async (getAuth, provider) => {
     const authOverride = new AsyncLocalStorage<CopilotAuthState | undefined>()
+    const finalHeaderCapture = new AsyncLocalStorage<((headers: Record<string, string>) => void) | undefined>()
     const getScopedAuth = async () => authOverride.getStore() ?? getAuth()
     const providerConfig = provider as unknown as CopilotProviderConfig | undefined
     const config = await loadOfficialConfig({
       getAuth: getScopedAuth as () => Promise<CopilotAuthState | undefined>,
       provider: providerConfig,
+      ...(input.loadOfficialConfig == null
+        ? {
+            baseFetch: async (nextRequest, nextInit) => {
+              finalHeaderCapture.getStore()?.(getFinalSentRequestHeadersRecord(nextRequest, nextInit))
+              return fetch(nextRequest, nextInit)
+            },
+          }
+        : {}),
     })
     if (!config) return {}
 
@@ -883,6 +924,7 @@ export function buildPluginHooks(input: {
       let decisionTouchWriteOutcome: RouteDecisionEvent["touchWriteOutcome"] = "skipped-missing-session"
       let decisionTouchWriteError: string | undefined
       let finalChosenAccount = resolved.name
+      let finalRequestHeaders = getFinalSentRequestHeadersRecord(selectionRequest, selectionInit)
 
       const previousBindingAccount = sessionID.length > 0 ? sessionAccountBindings.get(sessionID)?.accountName : undefined
 
@@ -961,10 +1003,15 @@ export function buildPluginHooks(input: {
           enterpriseUrl: candidate.entry.enterpriseUrl,
         }
         const outbound = stripInternalSessionHeader(requestValue, initValue)
-        return authOverride.run(candidateAuth, () => config.fetch(
-          rewriteRequestForAccount(outbound.request, candidate.entry.enterpriseUrl),
-          outbound.init,
-        ))
+        return finalHeaderCapture.run(
+          (headers) => {
+            finalRequestHeaders = headers
+          },
+          () => authOverride.run(candidateAuth, () => config.fetch(
+            rewriteRequestForAccount(outbound.request, candidate.entry.enterpriseUrl),
+            outbound.init,
+          )),
+        )
       }
 
       const response = await sendWithAccount(resolved, nextRequest, nextInit)
@@ -1038,11 +1085,11 @@ export function buildPluginHooks(input: {
               }
             }
 
-            if (replacement) {
+              if (replacement) {
               let retriedRequest = nextRequest
               let retriedInit = nextInit
               const rawPayload = await readRequestBody(nextRequest, nextInit)
-              if (typeof rawPayload === "string") {
+                if (typeof rawPayload === "string") {
                 try {
                   const parsed = JSON.parse(rawPayload) as Record<string, unknown>
                   const cleaned = await cleanupLongIdsForAccountSwitch({ payload: parsed })
@@ -1059,9 +1106,11 @@ export function buildPluginHooks(input: {
                 } catch {
                   // keep fail-open on payload parse failures
                 }
-              }
+                }
 
-              if (sessionID.length > 0) {
+                finalRequestHeaders = getFinalSentRequestHeadersRecord(retriedRequest, retriedInit)
+
+                if (sessionID.length > 0) {
                 sessionAccountBindings.set(sessionID, {
                   accountName: replacement.name,
                   lastUsedAt: observedAt,
@@ -1126,12 +1175,13 @@ export function buildPluginHooks(input: {
                   switched: decisionSwitched,
                   switchFrom: decisionSwitchFrom,
                   switchBlockedBy: decisionSwitchBlockedBy,
-                  touchWriteOutcome: decisionTouchWriteOutcome,
-                  touchWriteError: decisionTouchWriteError,
-                  rateLimitMatched: decisionRateLimitMatched,
-                  retryAfterMs: decisionRetryAfterMs,
-                },
-              }).catch(() => undefined)
+                    touchWriteOutcome: decisionTouchWriteOutcome,
+                    touchWriteError: decisionTouchWriteError,
+                    rateLimitMatched: decisionRateLimitMatched,
+                    retryAfterMs: decisionRetryAfterMs,
+                    finalRequestHeaders,
+                  },
+                }).catch(() => undefined)
 
               return sendWithAccount(replacement, retriedRequest, retriedInit)
             }
@@ -1164,6 +1214,7 @@ export function buildPluginHooks(input: {
           touchWriteError: decisionTouchWriteError,
           rateLimitMatched: decisionRateLimitMatched,
           retryAfterMs: decisionRetryAfterMs,
+          finalRequestHeaders,
         },
       }).catch(() => undefined)
 
