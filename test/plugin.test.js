@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url"
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
 import { applyMenuAction } from "../dist/plugin-actions.js"
 import { buildPluginHooks as buildPluginHooksRaw } from "../dist/plugin-hooks.js"
+import { COPILOT_PROVIDER_DESCRIPTOR } from "../dist/providers/descriptor.js"
+import { getProviderDescriptorByKey, getProviderDescriptorByProviderID, listProviderDescriptors } from "../dist/providers/registry.js"
 import { buildCandidateAccountLoads } from "../dist/routing-state.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
 
@@ -6692,4 +6694,58 @@ test("package root only exposes plugin entry and internal subpath exposes helper
   assert.equal("loadOfficialCopilotConfig" in root, false)
   assert.equal(typeof internal.buildPluginHooks, "function")
   assert.equal(typeof internal.loadOfficialCopilotConfig, "function")
+})
+
+test("provider descriptor includes required copilot fields", () => {
+  assert.equal(COPILOT_PROVIDER_DESCRIPTOR.key, "copilot")
+  assert.deepEqual(COPILOT_PROVIDER_DESCRIPTOR.providerIDs, [
+    "github-copilot",
+    "github-copilot-enterprise",
+  ])
+  assert.equal(COPILOT_PROVIDER_DESCRIPTOR.storeNamespace, "copilot")
+  assert.ok(Array.isArray(COPILOT_PROVIDER_DESCRIPTOR.commands))
+  assert.ok(Array.isArray(COPILOT_PROVIDER_DESCRIPTOR.menuEntries))
+  assert.equal(typeof COPILOT_PROVIDER_DESCRIPTOR.capabilities, "object")
+})
+
+test("provider registry currently exposes copilot only", () => {
+  const descriptors = listProviderDescriptors()
+  assert.equal(descriptors.length, 1)
+  assert.equal(descriptors[0]?.key, "copilot")
+  assert.equal(getProviderDescriptorByKey("copilot")?.key, "copilot")
+  assert.equal(getProviderDescriptorByProviderID("github-copilot")?.key, "copilot")
+  assert.equal(getProviderDescriptorByProviderID("github-copilot-enterprise")?.key, "copilot")
+  assert.equal(getProviderDescriptorByProviderID("openai"), undefined)
+})
+
+test("provider registry exposes current Copilot descriptor while Codex stays opt-in", async () => {
+  const registry = await import(`../dist/provider-registry.js?provider-registry-${Date.now()}`)
+
+  assert.equal(typeof registry.createProviderRegistry, "function")
+
+  const providers = registry.createProviderRegistry({
+    buildPluginHooks,
+  })
+  assert.equal(typeof providers?.then, "undefined")
+
+  assert.equal(typeof providers?.copilot?.descriptor, "object")
+  assert.equal(providers?.copilot?.descriptor?.auth?.provider, "github-copilot")
+  assert.equal(providers?.codex?.descriptor?.enabledByDefault, false)
+})
+
+test("provider descriptor contract keeps Copilot assembled and Codex disabled before explicit enable", async () => {
+  const descriptors = await import(`../dist/provider-descriptor.js?provider-descriptor-${Date.now()}`)
+
+  assert.equal(typeof descriptors.createCopilotProviderDescriptor, "function")
+  assert.equal(typeof descriptors.createCodexProviderDescriptor, "function")
+
+  const copilot = descriptors.createCopilotProviderDescriptor({
+    buildPluginHooks,
+  })
+  const codex = descriptors.createCodexProviderDescriptor({
+    enabled: false,
+  })
+
+  assert.equal(copilot.auth.provider, "github-copilot")
+  assert.equal(codex.enabledByDefault, false)
 })

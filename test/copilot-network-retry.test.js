@@ -56,6 +56,37 @@ test("normalizes retryable copilot network errors into retryable API-call-shaped
   )
 })
 
+test("normalizes retryable copilot Request-body transport errors with preserved requestBodyValues", async () => {
+  let attempts = 0
+  const { createCopilotRetryingFetch } = await import(`../dist/copilot-network-retry.js?request-body-values-${Date.now()}`)
+  const wrapped = createCopilotRetryingFetch(async () => {
+    attempts += 1
+    throw new Error("unknown certificate")
+  })
+
+  const request = new Request("https://api.githubcopilot.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  })
+
+  await assert.rejects(
+    wrapped(request),
+    (error) => {
+      assert.equal(attempts, 1)
+      assertRetryableApiCallError(error, {
+        message: /copilot retryable error \[transport\]: unknown certificate/i,
+        statusCode: undefined,
+      })
+      assertWrappedRetryableMessage(error, "transport", /unknown certificate/i)
+      assert.deepEqual(error.requestBodyValues, { messages: [{ role: "user", content: "hi" }] })
+      return true
+    },
+  )
+})
+
 test("leaves sse read timeout transport errors untouched for copilot urls", async () => {
   let attempts = 0
   const { createCopilotRetryingFetch } = await import("../dist/copilot-network-retry.js")
@@ -3839,4 +3870,61 @@ test("writes debug logs into temp file when enabled", async () => {
     delete process.env.OPENCODE_COPILOT_RETRY_DEBUG_FILE
     await rm(logFile, { force: true })
   }
+})
+
+test("shared retry engine contract can host Copilot retry policy", async () => {
+  const sharedRetry = await import(`../dist/network-retry-engine.js?shared-retry-engine-${Date.now()}`)
+  const copilotPolicy = await import(`../dist/retry/copilot-policy.js?copilot-policy-${Date.now()}`)
+
+  assert.equal(typeof sharedRetry.createNetworkRetryEngine, "function")
+  assert.equal(typeof copilotPolicy.createCopilotRetryPolicy, "function")
+
+  const policy = copilotPolicy.createCopilotRetryPolicy()
+  const wrapped = sharedRetry.createNetworkRetryEngine({
+    policy,
+  })(async () => {
+    throw new Error("unknown certificate")
+  })
+
+  await assert.rejects(
+    wrapped("https://api.githubcopilot.com/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    }),
+    (error) => {
+      assert.equal(error?.name, "AI_APICallError")
+      assert.equal(error?.isRetryable, true)
+      assert.match(String(error?.message ?? ""), /copilot retryable error \[transport\]/i)
+      return true
+    },
+  )
+})
+
+test("copilot retry policy owns host/path/classifier/repair strategy for shared engine", async () => {
+  const copilotPolicy = await import(`../dist/retry/copilot-policy.js?copilot-retry-policy-contract-${Date.now()}`)
+
+  assert.equal(typeof copilotPolicy.createCopilotRetryPolicy, "function")
+
+  const policy = copilotPolicy.createCopilotRetryPolicy()
+  assert.equal(typeof policy.matchesRequest, "function")
+  assert.equal(typeof policy.classifyFailure, "function")
+  assert.equal(typeof policy.buildRepairPlan, "function")
+  assert.equal(typeof policy.shouldRunResponseRepair, "function")
+
+  assert.equal(policy.matchesRequest("https://api.githubcopilot.com/chat/completions"), true)
+  assert.equal(policy.matchesRequest("https://example.com/chat/completions"), false)
+  assert.equal(policy.shouldRunResponseRepair("https://api.githubcopilot.com/responses"), true)
+  assert.equal(policy.shouldRunResponseRepair("https://api.githubcopilot.com/chat/completions"), false)
+
+  const classified = await policy.classifyFailure({
+    error: new Error("unknown certificate"),
+    request: {
+      url: "https://api.githubcopilot.com/chat/completions",
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    },
+  })
+
+  assert.equal(classified.retryable, true)
+  assert.equal(classified.category, "transport")
 })

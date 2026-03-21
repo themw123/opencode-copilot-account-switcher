@@ -4,10 +4,10 @@ import {
   createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
   getLoopSafetyProviderScope,
-  isCopilotProvider,
   type LoopSafetyProviderScope,
   type CopilotPluginHooks,
 } from "./loop-safety-plugin.js"
+import { COPILOT_PROVIDER_DESCRIPTOR } from "./providers/descriptor.js"
 import {
   createCopilotRetryingFetch,
   cleanupLongIdsForAccountSwitch,
@@ -125,6 +125,10 @@ type RetryStoreContext = {
   networkRetryEnabled?: boolean
   lastAccountSwitchAt?: number
   syntheticAgentInitiatorEnabled?: boolean
+}
+
+function isCopilotProviderID(providerID: string) {
+  return COPILOT_PROVIDER_DESCRIPTOR.providerIDs.includes(providerID)
 }
 
 type DebugPart = {
@@ -1208,7 +1212,7 @@ export function buildPluginHooks(input: {
   })
 
   const chatHeaders: ChatHeadersHook = async (hookInput, output) => {
-    if (!isCopilotProvider(hookInput.model.providerID)) return
+    if (!isCopilotProviderID(hookInput.model.providerID)) return
     const headersBeforeOfficial = { ...output.headers }
     await (await officialChatHeaders)(hookInput, output)
 
@@ -1321,7 +1325,7 @@ export function buildPluginHooks(input: {
   return {
     auth: {
       ...input.auth,
-      provider: input.auth.provider ?? "github-copilot",
+      provider: input.auth.provider ?? COPILOT_PROVIDER_DESCRIPTOR.providerIDs[0] ?? "github-copilot",
       methods: input.auth.methods,
       loader,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
