@@ -1542,6 +1542,8 @@ export function buildPluginHooks(input: {
         return
       }
 
+      if (hookInput.tool === "task") return
+
       if (!injectArmed) return
 
       const begin = "[COPILOT_INJECT_V1_BEGIN]"

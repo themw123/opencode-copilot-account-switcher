@@ -354,29 +354,21 @@ export async function handleCompactCommand(input: {
 }): Promise<never> {
   const session = (input.client as { session?: SessionClient } | undefined)?.session
   const summarize = session?.summarize
-  const model = input.model ?? getLatestAssistantModel(await getSessionMessages(session, input.sessionID))
-
-  if (!model) {
+  if (!summarize) {
     await showToast({
       client: input.client as ToastClient | undefined,
-      message: "No assistant model context available for compact.",
+      message: "Session summarize is unavailable for compact.",
       variant: "warning",
     })
     throw new SessionControlCommandHandledError()
   }
 
-  if (summarize) {
-    await summarize({
-      auto: true,
-      model,
-    })
-    throw new SessionControlCommandHandledError()
-  }
-
-  await showToast({
-    client: input.client as ToastClient | undefined,
-    message: "Session summarize is unavailable for compact.",
-    variant: "warning",
+  const model = input.model ?? getLatestAssistantModel(await getSessionMessages(session, input.sessionID))
+  await summarize(model ? {
+    auto: true,
+    model,
+  } : {
+    auto: true,
   })
 
   throw new SessionControlCommandHandledError()

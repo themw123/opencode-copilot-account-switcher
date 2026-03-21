@@ -365,7 +365,7 @@ test("inject normalizes empty or non-string output before append", async () => {
 
   const emptyOutput = { title: "x", output: undefined, metadata: {} }
   await plugin["tool.execute.after"]?.(
-    { tool: "task", sessionID: "s1", callID: "c1", args: {} },
+    { tool: "read", sessionID: "s1", callID: "c1", args: {} },
     emptyOutput,
   )
   assert.match(String(emptyOutput.output), /\[COPILOT_INJECT_V1_BEGIN\]/)
@@ -376,6 +376,30 @@ test("inject normalizes empty or non-string output before append", async () => {
     numberOutput,
   )
   assert.match(String(numberOutput.output), /^123/)
+})
+
+test("inject skips task output and waits for the next regular tool output", async () => {
+  const plugin = buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+    loadStore: async () => ({ accounts: {}, loopSafetyEnabled: false }),
+    client: {},
+  })
+
+  await armInject(plugin)
+
+  const taskOutput = { title: "task", output: "subagent result", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "task", sessionID: "s1", callID: "task1", args: {} },
+    taskOutput,
+  )
+  assert.doesNotMatch(String(taskOutput.output), /\[COPILOT_INJECT_V1_BEGIN\]/)
+
+  const nextOutput = { title: "bash", output: "regular tool", metadata: {} }
+  await plugin["tool.execute.after"]?.(
+    { tool: "bash", sessionID: "s1", callID: "c2", args: {} },
+    nextOutput,
+  )
+  assert.match(String(nextOutput.output), /\[COPILOT_INJECT_V1_BEGIN\]/)
 })
 
 test("inject toasts on every actual append", async () => {

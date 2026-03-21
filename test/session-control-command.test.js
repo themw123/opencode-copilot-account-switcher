@@ -90,7 +90,7 @@ test("/copilot-compact falls back to nearest assistant model", async () => {
   assert.equal(summarizeCalls[0]?.model, "claude-3-7")
 })
 
-test("/copilot-compact warns when no model context is available", async () => {
+test("/copilot-compact warns when session summarize is unavailable", async () => {
   const toasts = []
   const plugin = buildPluginHooks({
     client: {
@@ -115,10 +115,10 @@ test("/copilot-compact warns when no model context is available", async () => {
 
   assert.equal(toasts.length, 1)
   assert.equal(toasts[0]?.body?.variant, "warning")
-  assert.match(String(toasts[0]?.body?.message ?? ""), /model context|assistant model/i)
+  assert.match(String(toasts[0]?.body?.message ?? ""), /summarize is unavailable|compact/i)
 })
 
-test("/copilot-compact does not summarize when model context is missing", async () => {
+test("/copilot-compact summarizes without explicit model when model context is missing", async () => {
   const summarizeCalls = []
   const toasts = []
   const plugin = buildPluginHooks({
@@ -145,9 +145,10 @@ test("/copilot-compact does not summarize when model context is missing", async 
     (error) => error?.name === "SessionControlCommandHandledError",
   )
 
-  assert.equal(summarizeCalls.length, 0)
-  assert.equal(toasts.length, 1)
-  assert.equal(toasts[0]?.body?.variant, "warning")
+  assert.equal(summarizeCalls.length, 1)
+  assert.equal(summarizeCalls[0]?.auto, true)
+  assert.equal(Object.hasOwn(summarizeCalls[0] ?? {}, "model"), false)
+  assert.equal(toasts.length, 0)
 })
 
 test("/copilot-stop-tool warns when there is no running tool", async () => {

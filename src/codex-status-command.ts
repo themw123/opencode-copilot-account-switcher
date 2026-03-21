@@ -1,6 +1,7 @@
 import { resolveCodexAuthSource, type OpenAIOAuthAuth } from "./codex-auth-source.js"
 import { fetchCodexStatus, type CodexStatusFetcherResult, type CodexStatusSnapshot } from "./codex-status-fetcher.js"
 import { readCodexStore, writeCodexStore, type CodexStoreFile } from "./codex-store.js"
+import { readAuth, type AccountEntry } from "./store.js"
 
 type ToastVariant = "info" | "success" | "warning" | "error"
 
@@ -39,6 +40,8 @@ type ToastClient = {
 type AuthPayload = {
   openai?: OpenAIOAuthAuth
 } & Record<string, unknown>
+
+type AuthEntries = Record<string, AccountEntry>
 
 export class CodexStatusCommandHandledError extends Error {
   constructor() {
@@ -129,20 +132,51 @@ function hasCachedStore(store: CodexStoreFile) {
 }
 
 async function defaultLoadAuth(client?: ToastClient): Promise<AuthPayload | undefined> {
+  return defaultLoadAuthWithFallback({
+    client,
+    readAuthEntries: readAuth,
+  })
+}
+
+function mapAuthEntryToOpenAI(entry: AccountEntry | undefined): OpenAIOAuthAuth | undefined {
+  if (!entry) return undefined
+  return {
+    type: "oauth",
+    refresh: entry.refresh,
+    access: entry.access,
+    expires: entry.expires,
+  }
+}
+
+async function defaultLoadAuthWithFallback(input: {
+  client?: ToastClient
+  readAuthEntries: () => Promise<AuthEntries>
+}): Promise<AuthPayload | undefined> {
+  const client = input.client
   const authClient = client?.auth
   const getAuth = client?.auth?.get
-  if (!getAuth) return undefined
 
-  try {
-    const result = await getAuth.call(authClient, { path: { id: "openai" }, throwOnError: true })
-    const withData = asRecord(result)?.data
-    const payload = asRecord(withData) ?? asRecord(result)
-    if (!payload) return undefined
-    return {
-      openai: payload as OpenAIOAuthAuth,
+  if (getAuth) {
+    try {
+      const result = await getAuth.call(authClient, { path: { id: "openai" }, throwOnError: true })
+      const withData = asRecord(result)?.data
+      const payload = asRecord(withData) ?? asRecord(result)
+      if (payload) {
+        return {
+          openai: payload as OpenAIOAuthAuth,
+        }
+      }
+    } catch {
+      // fall through to auth.json fallback
     }
-  } catch {
-    return undefined
+  }
+
+  const authEntries = await input.readAuthEntries().catch(() => ({} as AuthEntries))
+  const openai = mapAuthEntryToOpenAI(authEntries.openai)
+  if (!openai) return undefined
+
+  return {
+    openai,
   }
 }
 
@@ -190,6 +224,7 @@ function patchAuth(auth: AuthPayload | undefined, patch: {
 export async function handleCodexStatusCommand(input: {
   client?: ToastClient
   loadAuth?: () => Promise<AuthPayload | undefined>
+  readAuthEntries?: () => Promise<AuthEntries>
   persistAuth?: (auth: AuthPayload) => Promise<void>
   fetchStatus?: (input: {
     oauth: OpenAIOAuthAuth
@@ -198,7 +233,10 @@ export async function handleCodexStatusCommand(input: {
   readStore?: () => Promise<CodexStoreFile>
   writeStore?: (store: CodexStoreFile) => Promise<void>
 }): Promise<never> {
-  const loadAuth = input.loadAuth ?? (() => defaultLoadAuth(input.client))
+  const loadAuth = input.loadAuth ?? (() => defaultLoadAuthWithFallback({
+    client: input.client,
+    readAuthEntries: input.readAuthEntries ?? readAuth,
+  }))
   const persistAuth = input.persistAuth ?? ((nextAuth) => defaultPersistAuth(input.client, nextAuth))
   const fetchStatus = input.fetchStatus ?? ((next) => fetchCodexStatus(next))
   const readStore = input.readStore ?? (() => readCodexStore())

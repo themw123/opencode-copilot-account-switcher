@@ -210,6 +210,64 @@ test("codex status command shows auth-missing error and exits with controlled in
   assert.equal(hasAuthMissingErrorToast, true)
 })
 
+test("codex status command falls back to auth.json-style openai auth when client auth lookup is unavailable", async () => {
+  const calls = []
+  const fetchCalls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+        auth: {
+          get: async () => {
+            throw new Error("client auth unavailable")
+          },
+        },
+      },
+      readAuthEntries: async () => ({
+        openai: {
+          access: "file_access",
+          refresh: "file_refresh",
+          expires: 1700000000000,
+        },
+      }),
+      fetchStatus: async (input) => {
+        fetchCalls.push(input)
+        return {
+          ok: true,
+          status: {
+            identity: {
+              accountId: "acct_from_file",
+              email: "codex@example.com",
+              plan: "pro",
+            },
+            windows: {
+              primary: {
+                entitlement: 100,
+                remaining: 75,
+              },
+              secondary: {},
+            },
+            credits: {},
+            updatedAt: 1700000000000,
+          },
+        }
+      },
+      readStore: async () => ({}),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  assert.equal(fetchCalls.length, 1)
+  assert.equal(fetchCalls[0]?.oauth?.access, "file_access")
+  assert.equal(fetchCalls[0]?.oauth?.refresh, "file_refresh")
+  assert.equal(calls.at(-1)?.body?.variant, "success")
+})
+
 test("codex status command writes auth patch and store on successful refresh", async () => {
   const calls = []
   const persistedAuth = []
