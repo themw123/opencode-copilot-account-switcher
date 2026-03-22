@@ -51,10 +51,34 @@ export type TokenResponse = {
 
 export type IdTokenClaims = {
   chatgpt_account_id?: string
-  organizations?: Array<{ id: string }>
+  organizations?: Array<{
+    id?: string
+    name?: string
+    display_name?: string
+    workspace_name?: string
+    slug?: string
+  }>
+  organization?: {
+    id?: string
+    name?: string
+    display_name?: string
+    workspace_name?: string
+    slug?: string
+  }
+  workspace?: {
+    id?: string
+    name?: string
+    display_name?: string
+    workspace_name?: string
+    slug?: string
+  }
+  workspace_name?: string
   email?: string
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string
+    workspace_name?: string
+    workspace_id?: string
+    organization_id?: string
   }
 }
 
@@ -64,6 +88,7 @@ export type CodexOAuthAccount = {
   expires?: number
   accountId?: string
   email?: string
+  workspaceName?: string
 }
 
 type DeviceAuthResponse = {
@@ -142,6 +167,40 @@ export function extractAccountId(tokens: TokenResponse): string | undefined {
   if (!tokens.access_token) return undefined
   const claims = parseJwtClaims(tokens.access_token)
   return claims ? extractAccountIdFromClaims(claims) : undefined
+}
+
+function pickWorkspaceLikeLabel(input: {
+  id?: string
+  name?: string
+  display_name?: string
+  workspace_name?: string
+  slug?: string
+} | undefined): string | undefined {
+  if (!input) return undefined
+  return input.workspace_name ?? input.name ?? input.display_name ?? input.slug ?? input.id
+}
+
+export function extractWorkspaceNameFromClaims(claims: IdTokenClaims): string | undefined {
+  return (
+    claims.workspace_name
+    || claims["https://api.openai.com/auth"]?.workspace_name
+    || claims["https://api.openai.com/auth"]?.workspace_id
+    || claims["https://api.openai.com/auth"]?.organization_id
+    || pickWorkspaceLikeLabel(claims.workspace)
+    || pickWorkspaceLikeLabel(claims.organization)
+    || pickWorkspaceLikeLabel(claims.organizations?.[0])
+  )
+}
+
+export function extractWorkspaceName(tokens: TokenResponse): string | undefined {
+  if (tokens.id_token) {
+    const claims = parseJwtClaims(tokens.id_token)
+    const workspaceName = claims && extractWorkspaceNameFromClaims(claims)
+    if (workspaceName) return workspaceName
+  }
+  if (!tokens.access_token) return undefined
+  const claims = parseJwtClaims(tokens.access_token)
+  return claims ? extractWorkspaceNameFromClaims(claims) : undefined
 }
 
 function extractEmail(tokens: TokenResponse): string | undefined {
@@ -383,12 +442,14 @@ function normalizeTokens(tokens: TokenResponse, now: () => number): CodexOAuthAc
   const refresh = tokens.refresh_token
   const access = tokens.access_token
   if (!refresh && !access) return undefined
+  const workspaceName = extractWorkspaceName(tokens)
   return {
     refresh,
     access,
     expires: now() + (tokens.expires_in ?? 3600) * 1000,
     accountId: extractAccountId(tokens),
     email: extractEmail(tokens),
+    ...(workspaceName ? { workspaceName } : {}),
   }
 }
 

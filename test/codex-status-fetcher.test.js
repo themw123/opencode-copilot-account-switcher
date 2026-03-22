@@ -220,6 +220,40 @@ test("returns structured error when token refresh throws", async () => {
   assert.match(result.error.message, /refresh service unavailable/i)
 })
 
+test("returns invalid_account only when refresh token flow reports structured 400", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    fetchImpl: async () => jsonResponse({ error: "unauthorized" }, 401),
+    refreshTokens: async () => {
+      throw {
+        kind: "invalid_account",
+        status: 400,
+        message: "oauth refresh token invalid for account",
+      }
+    },
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error.kind, "invalid_account")
+  assert.equal(result.error.status, 400)
+  assert.match(result.error.message, /invalid/i)
+})
+
+test("keeps normal usage 400 responses as network_error", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "a", refresh: "r" },
+    fetchImpl: async () => jsonResponse({ error: "bad_request" }, 400),
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error.kind, "network_error")
+  assert.match(result.error.message, /status 400/i)
+})
+
 test("keeps missing quota fields as undefined instead of fabricating values", async () => {
   const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
 

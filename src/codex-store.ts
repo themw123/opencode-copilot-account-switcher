@@ -23,6 +23,7 @@ export type CodexAccountSnapshot = {
 export type CodexAccountEntry = {
   name?: string
   providerId?: string
+  workspaceName?: string
   refresh?: string
   access?: string
   expires?: number
@@ -93,6 +94,7 @@ function pickEntry(input: unknown): CodexAccountEntry | undefined {
   const next: CodexAccountEntry = {}
   if (pickString(source.name)) next.name = pickString(source.name)
   if (pickString(source.providerId)) next.providerId = pickString(source.providerId)
+  if (pickString(source.workspaceName)) next.workspaceName = pickString(source.workspaceName)
   if (pickString(source.refresh)) next.refresh = pickString(source.refresh)
   if (pickString(source.access)) next.access = pickString(source.access)
   if (pickNumber(source.expires) !== undefined) next.expires = pickNumber(source.expires)

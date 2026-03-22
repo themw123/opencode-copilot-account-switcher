@@ -31,6 +31,11 @@ export type CodexStatusSnapshot = {
 
 export type CodexStatusError =
   | {
+      kind: "invalid_account"
+      status: 400
+      message: string
+    }
+  | {
       kind: "rate_limited"
       status: 429
       message: string
@@ -79,6 +84,19 @@ type AuthPatch = {
   refresh?: string
   expires?: number
   accountId?: string
+}
+
+function isInvalidAccountRefreshError(error: unknown): error is {
+  kind: "invalid_account"
+  status: 400
+  message: string
+} {
+  if (!error || typeof error !== "object") return false
+  const value = error as { kind?: unknown; status?: unknown; message?: unknown }
+  return value.kind === "invalid_account"
+    && value.status === 400
+    && typeof value.message === "string"
+    && value.message.length > 0
 }
 
 function asRecord(input: unknown): JsonRecord | undefined {
@@ -253,6 +271,12 @@ export async function fetchCodexStatus(input: {
       try {
         refreshed = await input.refreshTokens(oauth)
       } catch (error) {
+        if (isInvalidAccountRefreshError(error)) {
+          return {
+            ok: false,
+            error,
+          }
+        }
         return {
           ok: false,
           error: {

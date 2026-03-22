@@ -393,3 +393,62 @@ test("codex store keeps new-shape lastSnapshotRefresh when legacy metadata has n
   assert.equal(store.active, "current")
   assert.equal(store.lastSnapshotRefresh, 1700005555666)
 })
+
+test("codex store preserves workspaceName in new-shape accounts", async () => {
+  const { readCodexStore, writeCodexStore } = await loadCodexStoreOrFail()
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "codex-store-workspace-"))
+  const file = path.join(dir, "codex-store.json")
+
+  await writeCodexStore(
+    {
+      accounts: {
+        acct_workspace: {
+          name: "acct_workspace",
+          providerId: "codex",
+          accountId: "acct_workspace",
+          workspaceName: "acme-workspace",
+          email: "workspace@example.com",
+        },
+      },
+      active: "acct_workspace",
+    },
+    { filePath: file },
+  )
+
+  const store = await readCodexStore(file)
+  const raw = JSON.parse(await readFile(file, "utf8"))
+
+  assert.equal(store.accounts.acct_workspace.workspaceName, "acme-workspace")
+  assert.equal(raw.accounts.acct_workspace.workspaceName, "acme-workspace")
+})
+
+test("codex store keeps compatibility when workspaceName is missing", async () => {
+  const { readCodexStore } = await loadCodexStoreOrFail()
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "codex-store-workspace-compat-"))
+  const file = path.join(dir, "codex-store.json")
+
+  await writeFile(
+    file,
+    JSON.stringify(
+      {
+        accounts: {
+          acct_old: {
+            name: "acct_old",
+            providerId: "codex",
+            accountId: "acct_old",
+            email: "old@example.com",
+          },
+        },
+        active: "acct_old",
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  )
+
+  const store = await readCodexStore(file)
+  assert.equal(store.accounts.acct_old.workspaceName, undefined)
+})
