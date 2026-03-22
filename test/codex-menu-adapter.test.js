@@ -612,6 +612,127 @@ test("codex adapter refreshSnapshots exposes week-only replacement warning metad
   assert.equal(store.accounts.acct_week_only.snapshot?.recoveryWarning?.replacement, "acct_week_only")
 })
 
+test("codex adapter refreshSnapshots writes week-only warning even when replacement is refreshed before invalid account", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const store = {
+    accounts: {
+      acct_week_first: {
+        name: "acct_week_first",
+        providerId: "openai",
+        refresh: "refresh_week_first",
+        access: "access_week_first",
+        accountId: "acct_week_first",
+      },
+      acct_invalid_later: {
+        name: "acct_invalid_later",
+        providerId: "openai",
+        refresh: "refresh_invalid_later",
+        access: "access_invalid_later",
+        accountId: "acct_invalid_later",
+      },
+    },
+    active: "acct_invalid_later",
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: createClient([]),
+    now: () => 1700000003650,
+    fetchStatus: async ({ oauth }) => {
+      if (oauth.access === "access_week_first") {
+        return {
+          ok: true,
+          status: {
+            identity: {
+              accountId: "acct_week_first",
+              email: "week-first@example.com",
+              plan: "team",
+            },
+            windows: {
+              primary: { entitlement: 100, remaining: 0, used: 100, resetAt: 1700005600000 },
+              secondary: { entitlement: 100, remaining: 12, used: 88, resetAt: 1700605600000 },
+            },
+            credits: {},
+            updatedAt: 1700000003650,
+          },
+        }
+      }
+
+      return {
+        ok: false,
+        error: {
+          kind: "invalid_account",
+          status: 400,
+          message: "invalid account",
+        },
+      }
+    },
+  })
+
+  await adapter.refreshSnapshots(store)
+
+  assert.equal(store.active, "acct_week_first")
+  assert.equal(Object.hasOwn(store.accounts, "acct_invalid_later"), false)
+  assert.equal(store.accounts.acct_week_first.snapshot?.recoveryWarning?.code, "week_recovery_only")
+  assert.equal(store.accounts.acct_week_first.snapshot?.recoveryWarning?.removed, "acct_invalid_later")
+  assert.equal(store.accounts.acct_week_first.snapshot?.recoveryWarning?.replacement, "acct_week_first")
+})
+
+test("codex adapter refreshSnapshots clears stale week-only recovery warning when no longer applicable", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const store = {
+    accounts: {
+      acct_clear_warning: {
+        name: "acct_clear_warning",
+        providerId: "openai",
+        refresh: "refresh_clear_warning",
+        access: "access_clear_warning",
+        accountId: "acct_clear_warning",
+        snapshot: {
+          recoveryWarning: {
+            code: "week_recovery_only",
+            removed: "acct_old",
+            replacement: "acct_clear_warning",
+          },
+          usage5h: { entitlement: 100, remaining: 0, used: 100, resetAt: 1700005600000 },
+          usageWeek: { entitlement: 100, remaining: 8, used: 92, resetAt: 1700605600000 },
+          updatedAt: 1700000003600,
+        },
+      },
+    },
+    active: "acct_clear_warning",
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: createClient([]),
+    now: () => 1700000003660,
+    fetchStatus: async () => ({
+      ok: true,
+      status: {
+        identity: {
+          accountId: "acct_clear_warning",
+          email: "clear@example.com",
+          plan: "team",
+        },
+        windows: {
+          primary: { entitlement: 100, remaining: 7, used: 93, resetAt: 1700005600000 },
+          secondary: { entitlement: 100, remaining: 12, used: 88, resetAt: 1700605600000 },
+        },
+        credits: {},
+        updatedAt: 1700000003660,
+      },
+    }),
+  })
+
+  await adapter.refreshSnapshots(store)
+
+  assert.equal(store.accounts.acct_clear_warning.snapshot?.recoveryWarning, undefined)
+  assert.equal(store.accounts.acct_clear_warning.snapshot?.usage5h?.remaining, 7)
+})
+
 test("codex adapter refreshSnapshots keeps account on non-400 invalid fetch errors", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
   const setCalls = []

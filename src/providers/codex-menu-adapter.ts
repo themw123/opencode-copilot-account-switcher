@@ -42,6 +42,12 @@ type OAuthAccount = {
   email?: string
 }
 
+type RecoveryWarningMeta = {
+  code: "week_recovery_only"
+  removed: string
+  replacement: string
+}
+
 type AdapterDependencies = {
   client: AuthClient
   now?: () => number
@@ -107,6 +113,13 @@ function toMenuQuota(entry: CodexAccountEntry) {
   }
 }
 
+function withoutRecoveryWarning(snapshot: CodexAccountEntry["snapshot"]) {
+  if (!snapshot) return undefined
+  const next = { ...snapshot } as CodexAccountEntry["snapshot"] & { recoveryWarning?: RecoveryWarningMeta }
+  delete next.recoveryWarning
+  return next
+}
+
 async function promptText(message: string) {
   const rl = createInterface({ input, output })
   try {
@@ -130,7 +143,7 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
 
   const refreshSnapshots = async (store: CodexStoreFile) => {
     const names = Object.keys(store.accounts)
-    const pendingRecoveryWarnings = new Map<string, { removed: string; replacement: string }>()
+    const pendingRecoveryWarnings = new Map<string, RecoveryWarningMeta>()
     for (const name of names) {
       const entry = store.accounts[name]
       if (!entry) continue
@@ -171,6 +184,7 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
             const fiveHourRemaining = replacement?.snapshot?.usage5h?.remaining ?? 0
             if (weekRemaining > 0 && fiveHourRemaining <= 0) {
               pendingRecoveryWarnings.set(recovered.replacement, {
+                code: "week_recovery_only",
                 removed: recovered.removed,
                 replacement: recovered.replacement,
               })
@@ -196,7 +210,6 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         fallback: name,
       }), name)
       const existing = store.accounts[nextName] ?? {}
-      const pendingRecoveryWarning = pendingRecoveryWarnings.get(nextName)
 
       const nextEntry: CodexAccountEntry = {
         ...existing,
@@ -211,14 +224,7 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         accountId: result.status.identity.accountId ?? result.authPatch?.accountId ?? entry.accountId,
         email: result.status.identity.email ?? entry.email,
         snapshot: {
-          ...(entry.snapshot ?? {}),
-          ...(pendingRecoveryWarning ? {
-            recoveryWarning: {
-              code: "week_recovery_only",
-              removed: pendingRecoveryWarning.removed,
-              replacement: pendingRecoveryWarning.replacement,
-            },
-          } : {}),
+          ...(withoutRecoveryWarning(entry.snapshot) ?? {}),
           plan: result.status.identity.plan ?? entry.snapshot?.plan,
           usage5h: {
             entitlement: result.status.windows.primary.entitlement,
@@ -241,6 +247,24 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
       store.accounts[nextName] = nextEntry
       store.lastSnapshotRefresh = result.status.updatedAt
       if (store.active === name || !store.active) store.active = nextName
+    }
+
+    for (const [name, entry] of Object.entries(store.accounts)) {
+      const warning = pendingRecoveryWarnings.get(name)
+      const snapshot = withoutRecoveryWarning(entry.snapshot)
+      store.accounts[name] = {
+        ...entry,
+        ...(snapshot ? { snapshot } : {}),
+      }
+      if (!warning) continue
+      const nextSnapshot = {
+        ...(store.accounts[name].snapshot ?? {}),
+      } as CodexAccountEntry["snapshot"] & { recoveryWarning?: RecoveryWarningMeta }
+      nextSnapshot.recoveryWarning = warning
+      store.accounts[name] = {
+        ...store.accounts[name],
+        snapshot: nextSnapshot,
+      }
     }
   }
 
