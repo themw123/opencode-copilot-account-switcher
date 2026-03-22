@@ -319,6 +319,30 @@ test("runCodexOAuth normalizes browser tokens with upstream account-id claims", 
   })
 })
 
+test("runCodexOAuth workspaceName prefers auth workspace fields over organizations fallback", async () => {
+  const { runCodexOAuth } = await loadCodexOAuthOrFail()
+
+  const result = await runCodexOAuth({
+    now: () => 1700000001500,
+    selectMode: async () => "browser",
+    runBrowserAuth: async () => ({
+      id_token: createTestJwt({
+        email: "priority@example.com",
+        organizations: [{ id: "acct_org_fallback" }],
+        "https://api.openai.com/auth": {
+          workspace_name: "workspace_from_auth",
+        },
+      }),
+      access_token: "access_priority",
+      refresh_token: "refresh_priority",
+      expires_in: 3600,
+    }),
+  })
+
+  assert.equal(result?.workspaceName, "workspace_from_auth")
+  assert.equal(result?.accountId, "acct_org_fallback")
+})
+
 test("runCodexOAuth normalizes headless device tokens with organization fallback", async () => {
   const { runCodexOAuth } = await loadCodexOAuthOrFail()
 
@@ -344,6 +368,27 @@ test("runCodexOAuth normalizes headless device tokens with organization fallback
     email: "device@example.com",
     workspaceName: "acct_device",
   })
+})
+
+test("runCodexOAuth extracts workspaceName from access token when id token lacks it", async () => {
+  const { runCodexOAuth } = await loadCodexOAuthOrFail()
+
+  const result = await runCodexOAuth({
+    now: () => 1700000002100,
+    selectMode: async () => "headless",
+    runDeviceAuth: async () => ({
+      id_token: createTestJwt({
+        email: "access-fallback@example.com",
+      }),
+      access_token: createTestJwt({
+        workspace_name: "workspace_from_access",
+      }),
+      refresh_token: "refresh_access_fallback",
+      expires_in: 3600,
+    }),
+  })
+
+  assert.equal(result?.workspaceName, "workspace_from_access")
 })
 
 test("runCodexOAuth headless mode honors timeout instead of polling forever", async () => {

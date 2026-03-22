@@ -99,6 +99,47 @@ function isInvalidAccountRefreshError(error: unknown): error is {
     && value.message.length > 0
 }
 
+function readErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined
+  const value = (error as { status?: unknown }).status
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message.length > 0) return message
+  }
+  return String(error)
+}
+
+function mapRefreshTokenError(error: unknown): {
+  kind: "invalid_account"
+  status: 400
+  message: string
+} | {
+  kind: "network_error"
+  message: string
+} {
+  if (isInvalidAccountRefreshError(error)) return error
+  const message = readErrorMessage(error)
+  const status = readErrorStatus(error)
+  const hasRefresh400Message = /refresh/i.test(message) && /\b400\b/.test(message)
+  if (status === 400 || hasRefresh400Message) {
+    return {
+      kind: "invalid_account",
+      status: 400,
+      message,
+    }
+  }
+  return {
+    kind: "network_error",
+    message,
+  }
+}
+
 function asRecord(input: unknown): JsonRecord | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined
   return input as JsonRecord
@@ -271,18 +312,10 @@ export async function fetchCodexStatus(input: {
       try {
         refreshed = await input.refreshTokens(oauth)
       } catch (error) {
-        if (isInvalidAccountRefreshError(error)) {
-          return {
-            ok: false,
-            error,
-          }
-        }
+        const mappedError = mapRefreshTokenError(error)
         return {
           ok: false,
-          error: {
-            kind: "network_error",
-            message: error instanceof Error ? error.message : String(error),
-          },
+          error: mappedError,
         }
       }
       if (!refreshed || !refreshed.access) {

@@ -241,6 +241,70 @@ test("returns invalid_account only when refresh token flow reports structured 40
   assert.match(result.error.message, /invalid/i)
 })
 
+test("maps refresh token Error('...400') into invalid_account", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    fetchImpl: async () => jsonResponse({ error: "unauthorized" }, 401),
+    refreshTokens: async () => {
+      throw new Error("Token refresh failed: 400")
+    },
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error.kind, "invalid_account")
+  assert.equal(result.error.status, 400)
+  assert.match(result.error.message, /refresh failed: 400/i)
+})
+
+test("maps refresh token status=400 object errors into invalid_account", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    fetchImpl: async () => jsonResponse({ error: "unauthorized" }, 401),
+    refreshTokens: async () => {
+      throw {
+        status: 400,
+        message: "refresh token rejected",
+      }
+    },
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error.kind, "invalid_account")
+  assert.equal(result.error.status, 400)
+  assert.match(result.error.message, /refresh token rejected/i)
+})
+
+test("does not map refresh token non-400 errors into invalid_account", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  const unauthorizedRefresh = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    fetchImpl: async () => jsonResponse({ error: "unauthorized" }, 401),
+    refreshTokens: async () => {
+      throw {
+        status: 401,
+        message: "refresh unauthorized",
+      }
+    },
+  })
+  assert.equal(unauthorizedRefresh.ok, false)
+  assert.equal(unauthorizedRefresh.error.kind, "network_error")
+
+  const serverRefresh = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "expired_access", refresh: "refresh_token_1" },
+    fetchImpl: async () => jsonResponse({ error: "unauthorized" }, 401),
+    refreshTokens: async () => {
+      throw new Error("Token refresh failed: 500")
+    },
+  })
+  assert.equal(serverRefresh.ok, false)
+  assert.equal(serverRefresh.error.kind, "network_error")
+})
+
 test("keeps normal usage 400 responses as network_error", async () => {
   const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
 
