@@ -467,6 +467,189 @@ test("codex adapter refreshSnapshots keeps active account aligned after identity
   assert.equal(Object.hasOwn(store.accounts, "acct_renamed"), true)
 })
 
+test("codex adapter refreshSnapshots removes invalid account on invalid_account and switches openai auth", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const setCalls = []
+  const store = {
+    accounts: {
+      acct_invalid: {
+        name: "acct_invalid",
+        providerId: "openai",
+        refresh: "refresh_invalid",
+        access: "access_invalid",
+        accountId: "acct_invalid",
+      },
+      acct_backup: {
+        name: "acct_backup",
+        providerId: "openai",
+        refresh: "refresh_backup",
+        access: "access_backup",
+        accountId: "acct_backup",
+        snapshot: {
+          usage5h: { remaining: 10, resetAt: 1700003600000 },
+          usageWeek: { remaining: 20, resetAt: 1700600000000 },
+        },
+      },
+    },
+    active: "acct_invalid",
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: createClient(setCalls),
+    now: () => 1700000003500,
+    fetchStatus: async ({ oauth }) => {
+      if (oauth.access === "access_invalid") {
+        return {
+          ok: false,
+          error: {
+            kind: "invalid_account",
+            status: 400,
+            message: "refresh token invalid",
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_backup",
+            email: "backup@example.com",
+            plan: "pro",
+            workspaceName: "backup-workspace",
+          },
+          windows: {
+            primary: { entitlement: 100, remaining: 70, used: 30, resetAt: 1700003600000 },
+            secondary: { entitlement: 100, remaining: 50, used: 50, resetAt: 1700600000000 },
+          },
+          credits: {},
+          updatedAt: 1700000003500,
+        },
+      }
+    },
+  })
+
+  await adapter.refreshSnapshots(store)
+
+  assert.equal(Object.hasOwn(store.accounts, "acct_invalid"), false)
+  assert.equal(store.active, "acct_backup")
+  assert.equal(setCalls.length, 1)
+  assert.equal(setCalls[0]?.path?.id, "openai")
+  assert.equal(setCalls[0]?.body?.accountId, "acct_backup")
+  assert.equal(store.accounts.acct_backup.workspaceName, "backup-workspace")
+})
+
+test("codex adapter refreshSnapshots exposes week-only replacement warning metadata", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const store = {
+    accounts: {
+      acct_invalid: {
+        name: "acct_invalid",
+        providerId: "openai",
+        refresh: "refresh_invalid",
+        access: "access_invalid",
+        accountId: "acct_invalid",
+      },
+      acct_week_only: {
+        name: "acct_week_only",
+        providerId: "openai",
+        refresh: "refresh_week",
+        access: "access_week",
+        accountId: "acct_week_only",
+        snapshot: {
+          usage5h: { remaining: 0, resetAt: 1700005600000 },
+          usageWeek: { remaining: 8, resetAt: 1700605600000 },
+        },
+      },
+    },
+    active: "acct_invalid",
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: createClient([]),
+    now: () => 1700000003600,
+    fetchStatus: async ({ oauth }) => {
+      if (oauth.access === "access_invalid") {
+        return {
+          ok: false,
+          error: {
+            kind: "invalid_account",
+            status: 400,
+            message: "invalid account",
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_week_only",
+            email: "week@example.com",
+            plan: "team",
+          },
+          windows: {
+            primary: { entitlement: 100, remaining: 0, used: 100, resetAt: 1700005600000 },
+            secondary: { entitlement: 100, remaining: 8, used: 92, resetAt: 1700605600000 },
+          },
+          credits: {},
+          updatedAt: 1700000003600,
+        },
+      }
+    },
+  })
+
+  await adapter.refreshSnapshots(store)
+
+  assert.equal(store.active, "acct_week_only")
+  assert.equal(Object.hasOwn(store.accounts, "acct_invalid"), false)
+  assert.equal(store.accounts.acct_week_only.snapshot?.recoveryWarning?.code, "week_recovery_only")
+  assert.equal(store.accounts.acct_week_only.snapshot?.recoveryWarning?.removed, "acct_invalid")
+  assert.equal(store.accounts.acct_week_only.snapshot?.recoveryWarning?.replacement, "acct_week_only")
+})
+
+test("codex adapter refreshSnapshots keeps account on non-400 invalid fetch errors", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const setCalls = []
+  const store = {
+    accounts: {
+      acct_error: {
+        name: "acct_error",
+        providerId: "openai",
+        refresh: "refresh_error",
+        access: "access_error",
+        accountId: "acct_error",
+      },
+    },
+    active: "acct_error",
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: createClient(setCalls),
+    now: () => 1700000003700,
+    fetchStatus: async () => ({
+      ok: false,
+      error: {
+        kind: "network_error",
+        message: "codex usage request failed with status 503",
+      },
+    }),
+  })
+
+  await adapter.refreshSnapshots(store)
+
+  assert.equal(Object.hasOwn(store.accounts, "acct_error"), true)
+  assert.equal(store.active, "acct_error")
+  assert.equal(store.accounts.acct_error.snapshot?.error, "codex usage request failed with status 503")
+  assert.equal(setCalls.length, 0)
+})
+
 test("codex adapter refreshSnapshots records fetch exceptions as snapshot errors", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
   const store = {

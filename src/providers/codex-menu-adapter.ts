@@ -9,6 +9,7 @@ import {
   type CodexAccountEntry,
   type CodexStoreFile,
 } from "../codex-store.js"
+import { recoverInvalidCodexAccount } from "../codex-invalid-account.js"
 import type { ProviderMenuAdapter } from "../menu-runtime.js"
 import { readAuth, type AccountEntry } from "../store.js"
 
@@ -129,8 +130,10 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
 
   const refreshSnapshots = async (store: CodexStoreFile) => {
     const names = Object.keys(store.accounts)
+    const pendingRecoveryWarnings = new Map<string, { removed: string; replacement: string }>()
     for (const name of names) {
       const entry = store.accounts[name]
+      if (!entry) continue
       const oauth = toOAuth(entry)
       if (!oauth.access && !oauth.refresh) {
         store.accounts[name] = {
@@ -152,6 +155,30 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         },
       }))
       if (!result.ok) {
+        if (result.error.kind === "invalid_account") {
+          const recovered = await recoverInvalidCodexAccount({
+            store,
+            invalidAccountName: name,
+            setAuth: async (next) => {
+              await inputDeps.client.auth.set(next)
+            },
+          })
+          store.accounts = recovered.store.accounts
+          store.active = recovered.store.active
+          if (recovered.replacement) {
+            const replacement = store.accounts[recovered.replacement]
+            const weekRemaining = replacement?.snapshot?.usageWeek?.remaining ?? 0
+            const fiveHourRemaining = replacement?.snapshot?.usage5h?.remaining ?? 0
+            if (weekRemaining > 0 && fiveHourRemaining <= 0) {
+              pendingRecoveryWarnings.set(recovered.replacement, {
+                removed: recovered.removed,
+                replacement: recovered.replacement,
+              })
+            }
+          }
+          continue
+        }
+
         store.accounts[name] = {
           ...entry,
           snapshot: {
@@ -169,6 +196,7 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         fallback: name,
       }), name)
       const existing = store.accounts[nextName] ?? {}
+      const pendingRecoveryWarning = pendingRecoveryWarnings.get(nextName)
 
       const nextEntry: CodexAccountEntry = {
         ...existing,
@@ -179,10 +207,18 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         ...(result.authPatch?.accountId !== undefined ? { accountId: result.authPatch.accountId } : {}),
         name: nextName,
         providerId: "openai",
+        workspaceName: (result.status.identity as { workspaceName?: string }).workspaceName ?? entry.workspaceName,
         accountId: result.status.identity.accountId ?? result.authPatch?.accountId ?? entry.accountId,
         email: result.status.identity.email ?? entry.email,
         snapshot: {
           ...(entry.snapshot ?? {}),
+          ...(pendingRecoveryWarning ? {
+            recoveryWarning: {
+              code: "week_recovery_only",
+              removed: pendingRecoveryWarning.removed,
+              replacement: pendingRecoveryWarning.replacement,
+            },
+          } : {}),
           plan: result.status.identity.plan ?? entry.snapshot?.plan,
           usage5h: {
             entitlement: result.status.windows.primary.entitlement,
