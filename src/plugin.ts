@@ -216,7 +216,10 @@ export async function activateAddedAccount(input: {
   })
 }
 
-export const CopilotAccountSwitcher: Plugin = async (input) => {
+async function createAccountSwitcherPlugin(
+  input: Parameters<Plugin>[0],
+  provider: "github-copilot" | "openai",
+) {
   const client = input.client
   const directory = input.directory
   const serverUrl = (input as { serverUrl?: URL }).serverUrl
@@ -244,7 +247,7 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
       }),
     },
   }
-  const methods = [
+  const copilotMethods = [
     {
       type: "oauth" as const,
       label: "Manage GitHub Copilot accounts",
@@ -268,6 +271,9 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
         }
       },
     },
+  ]
+
+  const codexMethods = [
     {
       type: "oauth" as const,
       label: "Manage OpenAI Codex accounts",
@@ -392,11 +398,19 @@ export const CopilotAccountSwitcher: Plugin = async (input) => {
 
   return buildPluginHooks({
     auth: {
-      provider: "github-copilot",
-      methods,
+      provider,
+      methods: provider === "github-copilot" ? copilotMethods : codexMethods,
     },
     client,
     directory,
     serverUrl,
   })
+}
+
+export const CopilotAccountSwitcher: Plugin = async (input) => {
+  return createAccountSwitcherPlugin(input, "github-copilot")
+}
+
+export const OpenAICodexAccountSwitcher: Plugin = async (input) => {
+  return createAccountSwitcherPlugin(input, "openai")
 }

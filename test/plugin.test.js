@@ -7335,6 +7335,42 @@ test("provider registry exposes both Copilot and Codex descriptors", async () =>
   assert.equal(providers?.codex?.descriptor?.enabledByDefault, true)
 })
 
+test("github-copilot auth methods no longer include Codex entry", async () => {
+  const { CopilotAccountSwitcher } = await import(`../dist/plugin.js?copilot-auth-${Date.now()}`)
+
+  const plugin = await CopilotAccountSwitcher({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+    },
+    directory: process.cwd(),
+  })
+
+  assert.equal(plugin.auth?.provider, "github-copilot")
+  assert.deepEqual(plugin.auth?.methods?.map((method) => method.label), [
+    "Manage GitHub Copilot accounts",
+  ])
+})
+
+test("openai auth provider is wired to direct Codex menu entry", async () => {
+  const { OpenAICodexAccountSwitcher } = await import(`../dist/plugin.js?codex-auth-${Date.now()}`)
+
+  const plugin = await OpenAICodexAccountSwitcher({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+    },
+    directory: process.cwd(),
+  })
+
+  assert.equal(plugin.auth?.provider, "openai")
+  assert.deepEqual(plugin.auth?.methods?.map((method) => method.label), [
+    "Manage OpenAI Codex accounts",
+  ])
+})
+
 test("provider descriptor contract keeps Copilot assembled and Codex enabled", async () => {
   const descriptors = await import(`../dist/provider-descriptor.js?provider-descriptor-${Date.now()}`)
 
