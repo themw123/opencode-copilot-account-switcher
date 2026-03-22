@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { buildAccountActionItems, buildMenuItems, getMenuCopy } from "../dist/ui/menu.js"
+import { buildAccountActionItems, buildMenuItems, getMenuCopy, showMenuWithDeps } from "../dist/ui/menu.js"
 
 test("getMenuCopy returns Chinese copy by default", () => {
   const copy = getMenuCopy()
@@ -472,4 +472,68 @@ test("buildAccountActionItems keeps Codex account submenu free of Copilot-only m
   assert.equal(labels.includes("View models"), false)
   assert.equal(labels.includes("Switch to this account"), true)
   assert.equal(labels.includes("Remove this account"), true)
+})
+
+test("showMenu routes account click into account submenu before returning runtime action", async () => {
+  const account = { name: "alpha", index: 0 }
+  const selected = []
+  const submenu = []
+  const menuSelections = [
+    { type: "switch", account },
+    { type: "cancel" },
+  ]
+
+  const result = await showMenuWithDeps([account], { provider: "copilot" }, {
+    select: async () => {
+      const next = menuSelections.shift() ?? { type: "cancel" }
+      selected.push(next.type)
+      return next
+    },
+    showAccountActions: async (nextAccount, input) => {
+      submenu.push({ name: nextAccount.name, provider: input.provider })
+      return "back"
+    },
+    confirm: async () => true,
+  })
+
+  assert.deepEqual(selected, ["switch", "cancel"])
+  assert.deepEqual(submenu, [{ name: "alpha", provider: "copilot" }])
+  assert.deepEqual(result, { type: "cancel" })
+})
+
+test("showMenu maps account submenu remove to remove action", async () => {
+  const account = { name: "alpha", index: 0 }
+
+  const result = await showMenuWithDeps([account], { provider: "copilot" }, {
+    select: async () => ({ type: "switch", account }),
+    showAccountActions: async () => "remove",
+    confirm: async () => true,
+  })
+
+  assert.deepEqual(result, { type: "remove", account })
+})
+
+test("showMenu keeps provider-specific account submenu dispatch for codex and copilot", async () => {
+  const account = { name: "alpha", index: 0 }
+  const providers = []
+
+  const run = async (provider) => {
+    const menuSelections = [
+      { type: "switch", account },
+      { type: "cancel" },
+    ]
+    return showMenuWithDeps([account], { provider }, {
+      select: async () => menuSelections.shift() ?? { type: "cancel" },
+      showAccountActions: async (_account, input) => {
+        providers.push(input.provider)
+        return "back"
+      },
+      confirm: async () => true,
+    })
+  }
+
+  await run("copilot")
+  await run("codex")
+
+  assert.deepEqual(providers, ["copilot", "codex"])
 })

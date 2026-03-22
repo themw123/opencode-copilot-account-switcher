@@ -437,6 +437,34 @@ export async function showMenu(
     language?: MenuLanguage
   } = {},
 ): Promise<MenuAction> {
+  return showMenuWithDeps(accounts, input)
+}
+
+export async function showMenuWithDeps(
+  accounts: AccountInfo[],
+  input: {
+    provider?: MenuProvider
+    refresh?: { enabled: boolean; minutes: number }
+    lastQuotaRefresh?: number
+    modelAccountAssignmentCount?: number
+    defaultAccountGroupCount?: number
+    loopSafetyEnabled?: boolean
+    loopSafetyProviderScope?: "copilot-only" | "all-models"
+    networkRetryEnabled?: boolean
+    syntheticAgentInitiatorEnabled?: boolean
+    experimentalSlashCommandsEnabled?: boolean
+    capabilities?: Partial<MenuCapabilities>
+    language?: MenuLanguage
+  } = {},
+  deps: {
+    select?: typeof select
+    confirm?: typeof confirm
+    showAccountActions?: typeof showAccountActions
+  } = {},
+): Promise<MenuAction> {
+  const selectMenu = deps.select ?? select
+  const confirmAction = deps.confirm ?? confirm
+  const showAccountActionMenu = deps.showAccountActions ?? showAccountActions
   let currentLanguage = input.language ?? "zh"
 
   while (true) {
@@ -457,7 +485,7 @@ export async function showMenu(
       capabilities: input.capabilities,
       language: currentLanguage,
     })
-    const result = await select(items, {
+    const result = await selectMenu(items, {
       message: copy.menuTitle,
       subtitle: copy.menuSubtitle,
       clearScreen: true,
@@ -468,8 +496,13 @@ export async function showMenu(
       currentLanguage = currentLanguage === "zh" ? "en" : "zh"
       continue
     }
+    if (result.type === "switch") {
+      const next = await showAccountActionMenu(result.account, { provider })
+      if (next === "back") continue
+      return { type: next, account: result.account }
+    }
     if (result.type === "remove-all") {
-      const ok = await confirm("Remove ALL accounts? This cannot be undone.")
+      const ok = await confirmAction("Remove ALL accounts? This cannot be undone.")
       if (!ok) continue
     }
     return result
