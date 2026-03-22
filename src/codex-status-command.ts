@@ -379,10 +379,8 @@ export async function handleCodexStatusCommand(input: {
         if (recovered.replacement) {
           const replacementEntry = recovered.store.accounts[recovered.replacement]
           const replacementDisplay = getCodexDisplayName(replacementEntry, recovered.replacement)
-          const replacementWeekRemaining = replacementEntry?.snapshot?.usageWeek?.remaining ?? 0
-          const replacement5hRemaining = replacementEntry?.snapshot?.usage5h?.remaining ?? 0
           messageLines.push(`已切换到${replacementDisplay}`)
-          if (recovered.weekRecoveryOnly || (replacementWeekRemaining > 0 && replacement5hRemaining <= 0)) {
+          if (recovered.weekRecoveryOnly) {
             messageLines.push("请检查账号状态")
           }
         }

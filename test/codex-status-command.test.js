@@ -835,6 +835,71 @@ test("codex status command warns when replacement account only has week recovery
   assert.match(warningText, /请检查账号状态/)
 })
 
+test("codex status command does not append account-check hint when replacement week quota is exhausted", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+        auth: {
+          set: async () => {},
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "invalid_access",
+          accountId: "acct_invalid_id",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "invalid_account",
+          status: 400,
+          message: "refresh token invalid",
+        },
+      }),
+      readStore: async () => ({
+        active: "acct_invalid",
+        accounts: {
+          acct_invalid: {
+            name: "acct_invalid",
+            providerId: "codex",
+            accountId: "acct_invalid_id",
+            workspaceName: "workspace-invalid",
+            refresh: "refresh-invalid",
+            access: "access-invalid",
+          },
+          acct_exhausted: {
+            name: "acct_exhausted",
+            providerId: "codex",
+            accountId: "acct_exhausted_id",
+            workspaceName: "workspace-exhausted",
+            refresh: "refresh-exhausted",
+            access: "access-exhausted",
+            snapshot: {
+              usage5h: { entitlement: 100, remaining: 0 },
+              usageWeek: { entitlement: 100, remaining: 0 },
+            },
+          },
+        },
+      }),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const warningToast = calls.filter((item) => item?.body?.variant === "warning").at(-1)
+  const warningText = String(warningToast?.body?.message ?? "")
+  assert.match(warningText, /无效账号workspace-invalid已移除，请及时检查核对/)
+  assert.doesNotMatch(warningText, /请检查账号状态/)
+})
+
 test("codex status command renders cached snapshot when reading legacy store shape", async () => {
   const calls = []
   const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()

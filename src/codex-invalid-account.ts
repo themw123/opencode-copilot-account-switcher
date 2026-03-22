@@ -115,7 +115,8 @@ export async function recoverInvalidCodexAccount(input: {
   const switched = Boolean(replacement)
   const weekRecoveryOnly = Boolean(
     replacement
-    && getWeekRemaining(replacement.entry) <= 0,
+    && getWeekRemaining(replacement.entry) > 0
+    && get5hRemaining(replacement.entry) <= 0,
   )
 
   if (replacement) {

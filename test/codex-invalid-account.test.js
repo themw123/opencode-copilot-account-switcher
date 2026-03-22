@@ -111,7 +111,7 @@ test("recoverInvalidCodexAccount removes invalid account, switches to replacemen
   })
 })
 
-test("recoverInvalidCodexAccount marks weekRecoveryOnly when all week quotas are exhausted and avoids auth persistence without replacement", async () => {
+test("recoverInvalidCodexAccount marks weekRecoveryOnly only when replacement has week quota but no 5h quota", async () => {
   const { recoverInvalidCodexAccount } = await loadCodexInvalidAccountOrFail()
 
   const setAuthCalls = []
@@ -121,7 +121,7 @@ test("recoverInvalidCodexAccount marks weekRecoveryOnly when all week quotas are
       accounts: {
         invalid: entry({ name: "invalid" }),
         a: entry({ name: "a", snapshot: { usageWeek: { remaining: 0, resetAt: 2000 } } }),
-        b: entry({ name: "b", snapshot: { usageWeek: { remaining: 0, resetAt: 1000 } } }),
+        b: entry({ name: "b", snapshot: { usageWeek: { remaining: 6, resetAt: 1000 }, usage5h: { remaining: 0, resetAt: 500 } } }),
       },
     },
     invalidAccountName: "invalid",
@@ -135,6 +135,27 @@ test("recoverInvalidCodexAccount marks weekRecoveryOnly when all week quotas are
   assert.equal(weekOnly.weekRecoveryOnly, true)
   assert.equal(weekOnly.noCandidates, false)
   assert.equal(setAuthCalls.length, 1)
+
+  const exhaustedWeek = await recoverInvalidCodexAccount({
+    store: {
+      active: "invalid",
+      accounts: {
+        invalid: entry({ name: "invalid" }),
+        x: entry({ name: "x", snapshot: { usageWeek: { remaining: 0, resetAt: 200 } } }),
+        y: entry({ name: "y", snapshot: { usageWeek: { remaining: 0, resetAt: 100 } } }),
+      },
+    },
+    invalidAccountName: "invalid",
+    setAuth: async (payload) => {
+      setAuthCalls.push(payload)
+    },
+  })
+
+  assert.equal(exhaustedWeek.replacement, "y")
+  assert.equal(exhaustedWeek.switched, true)
+  assert.equal(exhaustedWeek.weekRecoveryOnly, false)
+  assert.equal(exhaustedWeek.noCandidates, false)
+  assert.equal(setAuthCalls.length, 2)
 
   const noCandidate = await recoverInvalidCodexAccount({
     store: {
@@ -153,5 +174,5 @@ test("recoverInvalidCodexAccount marks weekRecoveryOnly when all week quotas are
   assert.equal(noCandidate.switched, false)
   assert.equal(noCandidate.weekRecoveryOnly, false)
   assert.equal(noCandidate.noCandidates, true)
-  assert.equal(setAuthCalls.length, 1)
+  assert.equal(setAuthCalls.length, 2)
 })
