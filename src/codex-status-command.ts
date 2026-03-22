@@ -99,28 +99,16 @@ function value(value: string | number | undefined) {
   return value === undefined ? "n/a" : String(value)
 }
 
-function pickDisplayName(input: {
-  workspaceName?: string
-  name?: string
-  email?: string
-  accountId?: string
-}) {
-  return input.workspaceName
-    ?? input.name
-    ?? input.email
-    ?? input.accountId
-}
-
 function pickWorkspaceLabel(input: {
   workspaceName?: string
+  name?: string
   email?: string
   accountId?: string
-  name?: string
 }) {
   return input.workspaceName
+    ?? input.name
     ?? input.email
     ?? input.accountId
-    ?? input.name
 }
 
 function renderWindow(label: string, window: {

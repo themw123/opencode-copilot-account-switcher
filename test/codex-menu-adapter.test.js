@@ -343,6 +343,30 @@ test("runCodexOAuth workspaceName prefers auth workspace fields over organizatio
   assert.equal(result?.accountId, "acct_org_fallback")
 })
 
+test("runCodexOAuth workspaceName prefers visible display labels over ids in claims", async () => {
+  const { runCodexOAuth } = await loadCodexOAuthOrFail()
+
+  const result = await runCodexOAuth({
+    now: () => 1700000001550,
+    selectMode: async () => "browser",
+    runBrowserAuth: async () => ({
+      id_token: createTestJwt({
+        email: "label-priority@example.com",
+        organization: {
+          id: "org_id_should_not_win",
+          name: "org-name-raw",
+          display_name: "org-display-visible",
+        },
+      }),
+      access_token: "access_label_priority",
+      refresh_token: "refresh_label_priority",
+      expires_in: 3600,
+    }),
+  })
+
+  assert.equal(result?.workspaceName, "org-display-visible")
+})
+
 test("runCodexOAuth normalizes headless device tokens with organization fallback", async () => {
   const { runCodexOAuth } = await loadCodexOAuthOrFail()
 

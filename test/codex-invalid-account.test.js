@@ -35,6 +35,18 @@ test("getCodexDisplayName follows workspace/name/email/accountId/fallback priori
   assert.equal(getCodexDisplayName(entry({}), "fallback-e"), "fallback-e")
 })
 
+test("getCodexDisplayName prefers workspace display label over technical identifiers", async () => {
+  const { getCodexDisplayName } = await loadCodexInvalidAccountOrFail()
+
+  assert.equal(
+    getCodexDisplayName(
+      entry({ workspaceName: "workspace-visible", email: "user@example.com", accountId: "acct_tech" }),
+      "fallback",
+    ),
+    "workspace-visible",
+  )
+})
+
 test("sortCodexRecoveryCandidates prioritizes week>0 and earliest 5h resetAt when any 5h remains", async () => {
   const { sortCodexRecoveryCandidates } = await loadCodexInvalidAccountOrFail()
 

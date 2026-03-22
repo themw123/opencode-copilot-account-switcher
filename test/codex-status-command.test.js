@@ -491,7 +491,7 @@ test("codex status command falls back to cached store when fetch fails", async (
   assert.match(failureText, /fetch failed|network/i)
   const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
   assert.match(summaryText, /^账号:\s*acct_cached/)
-  assert.match(summaryText, /^Workspace:\s*cached@example\.com/m)
+  assert.match(summaryText, /^Workspace:\s*acct_cached/m)
   assert.match(summaryText, /^5h:\s*180\/200/m)
   assert.match(summaryText, /^week:\s*n\/a/m)
   assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
@@ -563,7 +563,7 @@ test("codex status command fetch failure prefers cached snapshot for the request
   assert.equal(warningToasts.length >= 2, true)
   const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
   assert.match(summaryText, /^账号:\s*acct_requested/m)
-  assert.match(summaryText, /^Workspace:\s*requested@example\.com/m)
+  assert.match(summaryText, /^Workspace:\s*requestedAccount/m)
   assert.match(summaryText, /^5h:\s*155\/200/m)
   assert.doesNotMatch(summaryText, /active@example.com|acct_active/)
   assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
@@ -628,6 +628,59 @@ test("codex status command renders only account workspace 5h and week lines", as
   assert.match(lines[2], /^5h:\s*/)
   assert.match(lines[3], /^week:\s*/)
   assert.doesNotMatch(successText, /Codex status updated|\[identity\]|\[usage\]|credits|fetch failed|cached snapshot/i)
+})
+
+test("codex status command prefers workspace display name for Workspace label", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+          accountId: "acct_summary",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_summary",
+            email: "summary@example.com",
+            workspaceName: "workspace-visible",
+          },
+          windows: {
+            primary: {
+              entitlement: 100,
+              remaining: 42,
+            },
+            secondary: {
+              entitlement: 100,
+              remaining: 7,
+            },
+          },
+          credits: {},
+          updatedAt: 1700000007877,
+        },
+      }),
+      readStore: async () => ({}),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const successToast = calls.find((item) => item?.body?.variant === "success")
+  const successText = String(successToast?.body?.message ?? "")
+  assert.match(successText, /^Workspace:\s*workspace-visible/m)
+  assert.doesNotMatch(successText, /^Workspace:\s*summary@example\.com/m)
+  assert.doesNotMatch(successText, /^Workspace:\s*acct_summary/m)
 })
 
 test("codex status command removes invalid account on refresh-400 and switches to replacement", async () => {
@@ -949,10 +1002,60 @@ test("codex status command renders cached snapshot when reading legacy store sha
   assert.equal(warningToasts.length >= 2, true)
   const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
   assert.match(summaryText, /^账号:\s*acct_legacy_cached/m)
-  assert.match(summaryText, /^Workspace:\s*legacy-cached@example\.com/m)
+  assert.match(summaryText, /^Workspace:\s*acct_legacy_cached/m)
   assert.match(summaryText, /^5h:\s*44% left/m)
   assert.match(summaryText, /^week:\s*n\/a/m)
   assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
+})
+
+test("codex status command cached Workspace label follows display-name priority", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+          accountId: "acct_named",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "network_error",
+          message: "network unavailable",
+        },
+      }),
+      readStore: async () => ({
+        active: "acct_named",
+        accounts: {
+          acct_named: {
+            name: "human-friendly-name",
+            providerId: "codex",
+            accountId: "acct_named",
+            email: "named@example.com",
+            snapshot: {
+              usage5h: { entitlement: 100, remaining: 12 },
+            },
+          },
+        },
+      }),
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const warningToasts = calls.filter((item) => item?.body?.variant === "warning")
+  const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
+  assert.match(summaryText, /^Workspace:\s*human-friendly-name/m)
+  assert.doesNotMatch(summaryText, /^Workspace:\s*named@example\.com/m)
+  assert.doesNotMatch(summaryText, /^Workspace:\s*acct_named/m)
 })
 
 test("codex status command renders 5h and weekly percentage labels for percentage-based windows", async () => {

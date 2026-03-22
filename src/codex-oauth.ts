@@ -177,7 +177,7 @@ function pickWorkspaceLikeLabel(input: {
   slug?: string
 } | undefined): string | undefined {
   if (!input) return undefined
-  return input.workspace_name ?? input.name ?? input.display_name ?? input.slug ?? input.id
+  return input.workspace_name ?? input.display_name ?? input.name ?? input.slug ?? input.id
 }
 
 export function extractWorkspaceNameFromClaims(claims: IdTokenClaims): string | undefined {
