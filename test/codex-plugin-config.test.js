@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import { buildPluginHooks as buildPluginHooksRaw } from "../dist/plugin-hooks.js"
+import { buildAccountActionItems, buildMenuItems } from "../dist/ui/menu.js"
 
 function buildPluginHooks(input = {}) {
   return buildPluginHooksRaw({
@@ -130,4 +131,66 @@ test("codex-status hook does not use copilot quota refresh path", async () => {
     ),
     /codex delegated/,
   )
+})
+
+test("codex menu path does not expose Copilot-only menu actions", async () => {
+  const items = buildMenuItems({
+    provider: "codex",
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+  })
+
+  const labels = items.map((item) => item.label)
+  assert.equal(labels.includes("从 auth.json 导入"), false)
+  assert.equal(labels.includes("同步账号身份信息"), false)
+  assert.equal(labels.includes("同步可用模型列表"), false)
+  assert.equal(labels.includes("配置默认账号组"), false)
+  assert.equal(labels.includes("为模型配置账号组"), false)
+  assert.equal(labels.includes("Guided Loop Safety：已开启"), false)
+  assert.equal(labels.includes("Copilot Network Retry：已开启"), false)
+  assert.equal(labels.includes("添加账号"), true)
+  assert.equal(labels.includes("刷新快照"), true)
+})
+
+test("showAccountActions keeps Codex account submenu free of Copilot-only wording", () => {
+  const account = {
+    name: "codex@example.com",
+    index: 0,
+    plan: "team",
+    quota: {
+      premium: { remaining: 42, entitlement: 100 },
+      chat: { remaining: 6, entitlement: 100 },
+    },
+  }
+
+  const items = buildAccountActionItems(account, { provider: "codex" })
+  const labels = items.map((item) => item.label)
+  assert.equal(labels.includes("View models"), false)
+  assert.equal(labels.includes("Switch to this account"), true)
+  assert.equal(labels.includes("Remove this account"), true)
+})
+
+test("codex set-interval empty input should not coerce to one minute", async () => {
+  const { createCodexMenuAdapter } = await import("../dist/providers/codex-menu-adapter.js")
+  const store = {
+    accounts: {},
+    active: undefined,
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+    },
+    promptText: async () => "",
+  })
+
+  const changed = await adapter.applyAction(store, { type: "provider", name: "set-interval" })
+  assert.equal(changed, false)
+  assert.equal(store.refreshMinutes, 15)
 })

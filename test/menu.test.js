@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { buildMenuItems, getMenuCopy } from "../dist/ui/menu.js"
+import { buildAccountActionItems, buildMenuItems, getMenuCopy } from "../dist/ui/menu.js"
 
 test("getMenuCopy returns Chinese copy by default", () => {
   const copy = getMenuCopy()
@@ -15,6 +15,16 @@ test("getMenuCopy returns English copy when requested", () => {
 
   assert.equal(copy.menuTitle, "GitHub Copilot accounts")
   assert.equal(copy.switchLanguageLabel, "切换到中文")
+})
+
+test("getMenuCopy returns Codex-specific titles without Copilot-only wording", () => {
+  const enCopy = getMenuCopy("en", "codex")
+  const zhCopy = getMenuCopy("zh", "codex")
+
+  assert.equal(enCopy.menuTitle, "OpenAI Codex accounts")
+  assert.equal(zhCopy.menuTitle, "OpenAI Codex 账号")
+  assert.doesNotMatch(enCopy.retryOff, /Copilot/i)
+  assert.doesNotMatch(zhCopy.retryOff, /Copilot/i)
 })
 
 test("buildMenuItems shows Guided Loop Safety off state when disabled", () => {
@@ -397,4 +407,69 @@ test("experimental slash commands hint includes compact and stop-tool commands",
   assert.ok(toggle)
   assert.match(toggle?.hint ?? "", /copilot-compact/)
   assert.match(toggle?.hint ?? "", /copilot-stop-tool/)
+})
+
+test("buildMenuItems hides Copilot-only actions for Codex provider", () => {
+  const items = buildMenuItems({
+    provider: "codex",
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    loopSafetyProviderScope: "copilot-only",
+    experimentalSlashCommandsEnabled: true,
+    networkRetryEnabled: false,
+    language: "en",
+  })
+
+  const labels = items.map((item) => item.label)
+  assert.equal(labels.includes("Guided Loop Safety: Off"), false)
+  assert.equal(labels.includes("Policy default scope: Copilot only"), false)
+  assert.equal(labels.includes("Experimental slash commands: On"), false)
+  assert.equal(labels.includes("Copilot Network Retry: Off"), false)
+  assert.equal(labels.includes("Assign account groups per model"), false)
+  assert.equal(labels.includes("Sync available models"), false)
+})
+
+test("buildMenuItems ignores Copilot-only capability overrides for Codex provider", () => {
+  const items = buildMenuItems({
+    provider: "codex",
+    capabilities: {
+      checkModels: true,
+      assignModels: true,
+      loopSafety: true,
+      networkRetry: true,
+    },
+    accounts: [],
+    refresh: { enabled: false, minutes: 15 },
+    lastQuotaRefresh: undefined,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: true,
+    language: "en",
+  })
+
+  const labels = items.map((item) => item.label)
+  assert.equal(labels.includes("Guided Loop Safety: Off"), false)
+  assert.equal(labels.includes("Network Retry: On"), false)
+  assert.equal(labels.includes("Assign account groups per model"), false)
+  assert.equal(labels.includes("Sync available models"), false)
+})
+
+test("buildAccountActionItems keeps Codex account submenu free of Copilot-only model wording", () => {
+  const items = buildAccountActionItems({
+    name: "codex-main",
+    index: 0,
+    plan: "team",
+    modelList: {
+      available: ["gpt-5"],
+      disabled: [],
+    },
+  }, {
+    provider: "codex",
+  })
+
+  const labels = items.map((item) => item.label)
+  assert.equal(labels.includes("View models"), false)
+  assert.equal(labels.includes("Switch to this account"), true)
+  assert.equal(labels.includes("Remove this account"), true)
 })

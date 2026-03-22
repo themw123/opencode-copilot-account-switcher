@@ -338,12 +338,13 @@ test("codex status command writes auth patch and store on successful refresh", a
   assert.equal(persistedAuth[0]?.openai?.accountId, "acct_123")
 
   assert.equal(persistedStores.length, 1)
-  assert.equal(persistedStores[0]?.activeProvider, "codex")
-  assert.equal(persistedStores[0]?.activeAccountId, "acct_123")
-  assert.equal(persistedStores[0]?.activeEmail, "codex@example.com")
-  assert.equal(persistedStores[0]?.lastStatusRefresh, 1700000000123)
-  assert.equal(persistedStores[0]?.status?.premium?.entitlement, 100)
-  assert.equal(persistedStores[0]?.status?.premium?.remaining, 42)
+  assert.equal(persistedStores[0]?.active, "acct_123")
+  assert.equal(persistedStores[0]?.lastSnapshotRefresh, 1700000000123)
+  assert.equal(persistedStores[0]?.accounts?.acct_123?.providerId, "codex")
+  assert.equal(persistedStores[0]?.accounts?.acct_123?.accountId, "acct_123")
+  assert.equal(persistedStores[0]?.accounts?.acct_123?.email, "codex@example.com")
+  assert.equal(persistedStores[0]?.accounts?.acct_123?.snapshot?.usage5h?.entitlement, 100)
+  assert.equal(persistedStores[0]?.accounts?.acct_123?.snapshot?.usage5h?.remaining, 42)
 
   const infoToast = calls.find((item) => item?.body?.variant === "info")
   assert.match(String(infoToast?.body?.message ?? ""), /fetching|codex|status/i)
@@ -352,6 +353,82 @@ test("codex status command writes auth patch and store on successful refresh", a
   const successText = String(successToast?.body?.message ?? "")
   assert.match(successText, /identity|usage|account|plan|primary/i)
   assert.match(successText, /42|100|21|50/)
+})
+
+test("codex status command uses codex-store helper shape and writes snapshot into active account", async () => {
+  const persistedStores = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+          accountId: "acct_openai",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_new",
+            email: "new@example.com",
+            plan: "pro",
+          },
+          windows: {
+            primary: {
+              entitlement: 100,
+              remaining: 90,
+            },
+            secondary: {
+              entitlement: 100,
+              remaining: 70,
+            },
+          },
+          credits: {},
+          updatedAt: 1700011111000,
+        },
+      }),
+      readStore: async () => ({
+        activeProvider: "codex",
+        activeAccountId: "acct_legacy",
+        activeEmail: "legacy@example.com",
+        account: {
+          id: "acct_legacy",
+          email: "legacy@example.com",
+          plan: "plus",
+        },
+        status: {
+          premium: {
+            entitlement: 100,
+            remaining: 20,
+          },
+        },
+      }),
+      writeStore: async (nextStore) => {
+        persistedStores.push(nextStore)
+      },
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  assert.equal(persistedStores.length, 1)
+  const written = persistedStores[0]
+  assert.equal(written.active, "acct_new")
+  assert.equal(written.lastSnapshotRefresh, 1700011111000)
+  assert.equal(Object.hasOwn(written, "activeAccountId"), false)
+  assert.equal(Object.hasOwn(written, "activeEmail"), false)
+  assert.equal(Object.hasOwn(written, "account"), false)
+  assert.equal(Object.hasOwn(written, "status"), false)
+  assert.equal(written.accounts.acct_new.accountId, "acct_new")
+  assert.equal(written.accounts.acct_new.email, "new@example.com")
+  assert.equal(written.accounts.acct_new.snapshot.plan, "pro")
+  assert.equal(written.accounts.acct_new.snapshot.usage5h.entitlement, 100)
+  assert.equal(written.accounts.acct_new.snapshot.usage5h.remaining, 90)
+  assert.equal(written.accounts.acct_new.snapshot.usageWeek.entitlement, 100)
+  assert.equal(written.accounts.acct_new.snapshot.usageWeek.remaining, 70)
+  assert.equal(written.accounts.acct_new.snapshot.updatedAt, 1700011111000)
 })
 
 test("codex status command falls back to cached store when fetch fails", async () => {
@@ -408,6 +485,125 @@ test("codex status command falls back to cached store when fetch fails", async (
   const warningText = String(warningToast?.body?.message ?? "")
   assert.match(warningText, /cache|cached|fallback|network/i)
   assert.match(warningText, /acct_cached|cached@example.com|180\/200|180|200/)
+})
+
+test("codex status command fetch failure prefers cached snapshot for the requested account over store.active", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+          accountId: "acct_requested",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "network_error",
+          message: "network temporarily unavailable",
+        },
+      }),
+      readStore: async () => ({
+        accounts: {
+          activeAccount: {
+            name: "activeAccount",
+            providerId: "codex",
+            accountId: "acct_active",
+            email: "active@example.com",
+            snapshot: {
+              plan: "team",
+              usage5h: {
+                entitlement: 100,
+                remaining: 33,
+              },
+            },
+          },
+          requestedAccount: {
+            name: "requestedAccount",
+            providerId: "codex",
+            accountId: "acct_requested",
+            email: "requested@example.com",
+            snapshot: {
+              plan: "plus",
+              usage5h: {
+                entitlement: 200,
+                remaining: 155,
+              },
+            },
+          },
+        },
+        active: "activeAccount",
+        lastSnapshotRefresh: 1700004444555,
+      }),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const warningToast = calls.find((item) => item?.body?.variant === "warning")
+  const warningText = String(warningToast?.body?.message ?? "")
+  assert.match(warningText, /acct_requested|requested@example.com|155\/200|155|200/)
+  assert.doesNotMatch(warningText, /active@example.com|acct_active/)
+})
+
+test("codex status command renders cached snapshot when reading legacy store shape", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "network_error",
+          message: "network unavailable",
+        },
+      }),
+      readStore: async () => ({
+        activeProvider: "codex",
+        activeAccountId: "acct_legacy_cached",
+        activeEmail: "legacy-cached@example.com",
+        lastStatusRefresh: 1699990000000,
+        account: {
+          id: "acct_legacy_cached",
+          email: "legacy-cached@example.com",
+          plan: "plus",
+        },
+        status: {
+          premium: {
+            entitlement: 100,
+            remaining: 44,
+          },
+        },
+      }),
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const warningToast = calls.find((item) => item?.body?.variant === "warning")
+  const warningText = String(warningToast?.body?.message ?? "")
+  assert.match(warningText, /cached|cache|snapshot/i)
+  assert.match(warningText, /acct_legacy_cached|legacy-cached@example.com|44|100/i)
 })
 
 test("codex status command renders 5h and weekly percentage labels for percentage-based windows", async () => {

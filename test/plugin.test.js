@@ -6428,6 +6428,332 @@ test("activateAddedAccount records switch metadata only after switch succeeds", 
   ])
 })
 
+test("copilot menu runtime keeps import-auth bootstrap semantics", async () => {
+  const { runProviderMenu } = await import("../dist/menu-runtime.js")
+  const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
+
+  const store = {
+    accounts: {},
+    active: undefined,
+    autoRefresh: false,
+    refreshMinutes: 15,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    syntheticAgentInitiatorEnabled: false,
+  }
+  const writes = []
+  const adapter = createCopilotMenuAdapter({
+    client: { auth: { set: async () => {} } },
+    readStore: async () => store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+    readAuth: async () => ({
+      "github-copilot": {
+        name: "auth:github-copilot",
+        refresh: "refresh-token",
+        access: "access-token",
+        expires: 0,
+        user: "student",
+        source: "auth",
+        providerId: "github-copilot",
+      },
+    }),
+    fetchUser: async () => ({ login: "student" }),
+  })
+
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => ({ type: "cancel" }),
+  })
+
+  assert.equal(store.active, "auth:github-copilot")
+  assert.equal(store.accounts["auth:github-copilot"]?.name, "auth:github-copilot")
+  assert.equal(writes.length, 0)
+})
+
+test("copilot menu runtime switch-account keeps persistAccountSwitch semantics", async () => {
+  const { runProviderMenu } = await import("../dist/menu-runtime.js")
+  const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
+
+  const authSetCalls = []
+  const writes = []
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "github.com:backup"],
+    accounts: {
+      main: { name: "main", refresh: "main-r", access: "main-a", expires: 0, user: "main" },
+      "github.com:backup": { name: "github.com:backup", refresh: "backup-r", access: "backup-a", expires: 0, user: "backup" },
+    },
+    autoRefresh: false,
+    refreshMinutes: 15,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    syntheticAgentInitiatorEnabled: false,
+  }
+  const adapter = createCopilotMenuAdapter({
+    client: {
+      auth: {
+        set: async (input) => {
+          authSetCalls.push(input)
+        },
+      },
+    },
+    readStore: async () => store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+    readAuth: async () => ({}),
+    showAccountActions: async () => "switch",
+    now: () => 1_717_171_717_171,
+  })
+  const accounts = await adapter.toMenuInfo(store)
+  const backup = accounts.find((account) => account.id === "github.com:backup")
+  const actions = [
+    { type: "switch", account: backup },
+    { type: "cancel" },
+  ]
+
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+  })
+
+  assert.equal(backup?.name, "backup")
+  assert.equal(authSetCalls.length, 1)
+  assert.equal(store.active, "github.com:backup")
+  assert.equal(store.accounts["github.com:backup"].lastUsed, 1_717_171_717_171)
+  assert.deepEqual(writes, [
+    {
+      reason: "persist-account-switch",
+      source: "persistAccountSwitch",
+      actionType: "switch",
+    },
+  ])
+})
+
+test("copilot menu runtime shared add action keeps activateAddedAccount flow", async () => {
+  const { runProviderMenu } = await import("../dist/menu-runtime.js")
+  const { activateAddedAccount } = await import("../dist/plugin.js")
+  const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
+
+  const authSetCalls = []
+  const writes = []
+  const store = {
+    accounts: {},
+    active: undefined,
+    autoRefresh: false,
+    refreshMinutes: 15,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    syntheticAgentInitiatorEnabled: false,
+  }
+  const adapter = createCopilotMenuAdapter({
+    client: {
+      auth: {
+        set: async (input) => {
+          authSetCalls.push(input)
+        },
+      },
+    },
+    readStore: async () => store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+    readAuth: async () => ({}),
+    authorizeNewAccount: async () => ({
+      name: "new-account",
+      refresh: "new-r",
+      access: "new-a",
+      expires: 0,
+      user: "new",
+      source: "manual",
+    }),
+    activateAddedAccount,
+    now: () => 1_717_171_717_171,
+  })
+  const actions = [
+    { type: "add" },
+    { type: "cancel" },
+  ]
+
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+  })
+
+  assert.equal(authSetCalls.length, 1)
+  assert.equal(store.active, "new-account")
+  assert.deepEqual(writes, [
+    {
+      reason: "activate-added-account",
+      source: "activateAddedAccount",
+      actionType: "add",
+    },
+    {
+      reason: "persist-account-switch",
+      source: "persistAccountSwitch",
+      actionType: "switch",
+    },
+  ])
+})
+
+test("copilot menu runtime shared remove actions keep debug metadata", async () => {
+  const { runProviderMenu } = await import("../dist/menu-runtime.js")
+  const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
+
+  const writes = []
+  const store = {
+    active: "main",
+    activeAccountNames: ["main", "github.com:backup"],
+    accounts: {
+      main: { name: "main", refresh: "main-r", access: "main-a", expires: 0, user: "main" },
+      "github.com:backup": { name: "github.com:backup", refresh: "backup-r", access: "backup-a", expires: 0, user: "backup" },
+    },
+    autoRefresh: false,
+    refreshMinutes: 15,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    syntheticAgentInitiatorEnabled: false,
+  }
+  const adapter = createCopilotMenuAdapter({
+    client: { auth: { set: async () => {} } },
+    readStore: async () => store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+    readAuth: async () => ({}),
+  })
+  const accounts = await adapter.toMenuInfo(store)
+  const backup = accounts.find((account) => account.id === "github.com:backup")
+  const actions = [
+    { type: "remove", account: backup },
+    { type: "remove-all" },
+    { type: "cancel" },
+  ]
+
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+  })
+
+  assert.deepEqual(store.accounts, {})
+  assert.deepEqual(writes, [
+    {
+      reason: "remove-account",
+      source: "plugin.runMenu",
+      actionType: "remove",
+    },
+    {
+      reason: "remove-all",
+      source: "plugin.runMenu",
+      actionType: "remove-all",
+    },
+  ])
+})
+
+test("copilot menu runtime quota refresh and models refresh keep debug metadata", async () => {
+  const { runProviderMenu } = await import("../dist/menu-runtime.js")
+  const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
+
+  const writes = []
+  const store = {
+    active: "main",
+    accounts: {
+      main: { name: "main", refresh: "main-r", access: "main-a", expires: 0, user: "main" },
+    },
+    autoRefresh: false,
+    refreshMinutes: 15,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    syntheticAgentInitiatorEnabled: false,
+  }
+  const adapter = createCopilotMenuAdapter({
+    client: { auth: { set: async () => {} } },
+    readStore: async () => store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+    readAuth: async () => ({}),
+    fetchQuota: async () => ({ plan: "pro" }),
+    fetchModels: async () => ({ available: ["gpt-5"], disabled: [] }),
+    now: () => 1_717_171_717_171,
+  })
+  const actions = [
+    { type: "provider", name: "quota-refresh" },
+    { type: "provider", name: "check-models" },
+    { type: "cancel" },
+  ]
+
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+  })
+
+  assert.deepEqual(writes, [
+    {
+      reason: "quota-refresh",
+      source: "plugin.runMenu",
+      actionType: "quota",
+    },
+    {
+      reason: "check-models",
+      source: "plugin.runMenu",
+      actionType: "check-models",
+    },
+  ])
+})
+
+test("copilot menu runtime toggle actions keep write semantics", async () => {
+  const { runProviderMenu } = await import("../dist/menu-runtime.js")
+  const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
+
+  const writes = []
+  const store = {
+    active: "main",
+    accounts: {
+      main: { name: "main", refresh: "main-r", access: "main-a", expires: 0, user: "main" },
+    },
+    autoRefresh: false,
+    refreshMinutes: 15,
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    syntheticAgentInitiatorEnabled: false,
+  }
+  const adapter = createCopilotMenuAdapter({
+    client: { auth: { set: async () => {} } },
+    readStore: async () => store,
+    writeStore: async (_next, meta) => {
+      writes.push(meta)
+    },
+    readAuth: async () => ({}),
+  })
+  const actions = [
+    { type: "provider", name: "toggle-network-retry" },
+    { type: "cancel" },
+  ]
+
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+  })
+
+  assert.equal(store.networkRetryEnabled, true)
+  assert.deepEqual(writes, [
+    {
+      reason: "toggle-network-retry",
+      source: "applyMenuAction",
+      actionType: "toggle-network-retry",
+    },
+  ])
+})
+
 test("plugin auth loader default clearAccountSwitchContext reloads and persists matching switch timestamp", async () => {
   const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const staleStore = {
@@ -6613,6 +6939,19 @@ test("plugin switch flow prints retry hint after account switch", async () => {
 
   assert.match(pluginSource, /input\[\*\]\.id too long/)
   assert.match(pluginSource, /enable Copilot Network Retry from the menu/i)
+})
+
+test("plugin menu bridges common account actions through shared runtime", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.match(pluginSource, /if \(action\.type === "add"\)\s*return \{ type: "add" \}/)
+  assert.match(pluginSource, /if \(action\.type === "switch"\)\s*return \{ type: "switch", account: action\.account \}/)
+  assert.match(pluginSource, /if \(action\.type === "remove"\)\s*return \{ type: "remove", account: action\.account \}/)
+  assert.match(pluginSource, /if \(action\.type === "remove-all"\)\s*return \{ type: "remove-all" \}/)
+  assert.doesNotMatch(pluginSource, /name: "add-account"/)
+  assert.doesNotMatch(pluginSource, /name: "switch-account"/)
+  assert.doesNotMatch(pluginSource, /name: "remove-account"/)
+  assert.doesNotMatch(pluginSource, /name: "remove-all"/)
 })
 
 test("plugin source does not force promptAccountEntry on empty store bootstrap", async () => {
@@ -6961,25 +7300,26 @@ test("provider descriptor includes required copilot fields", () => {
 
 test("provider registry global lookup remains copilot-scoped for providerID matching", () => {
   const descriptors = listProviderDescriptors()
-  assert.equal(descriptors.length, 1)
+  assert.equal(descriptors.length, 2)
   assert.equal(descriptors[0]?.key, "copilot")
+  assert.equal(descriptors[1]?.key, "codex")
   assert.equal(getProviderDescriptorByKey("copilot")?.key, "copilot")
-  assert.equal(getProviderDescriptorByKey("codex"), undefined)
+  assert.equal(getProviderDescriptorByKey("codex")?.key, "codex")
   assert.equal(getProviderDescriptorByProviderID("github-copilot")?.key, "copilot")
   assert.equal(getProviderDescriptorByProviderID("github-copilot-enterprise")?.key, "copilot")
-  assert.equal(getProviderDescriptorByProviderID("openai"), undefined)
+  assert.equal(getProviderDescriptorByProviderID("openai")?.key, "codex")
 })
 
-test("codex descriptor declares codex-status command capability", () => {
+test("codex descriptor declares independent menu capabilities", () => {
   assert.equal(CODEX_PROVIDER_DESCRIPTOR.key, "codex")
   assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.providerIDs, ["openai"])
   assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.commands, ["codex-status"])
-  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.menuEntries, [])
-  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.capabilities, ["slash-commands"])
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.menuEntries, ["switch-account", "add-account", "refresh-snapshot"])
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.capabilities, ["auth", "slash-commands"])
   assert.equal(CODEX_PROVIDER_DESCRIPTOR.storeNamespace, "codex")
 })
 
-test("provider registry exposes current Copilot descriptor while Codex stays opt-in", async () => {
+test("provider registry exposes both Copilot and Codex descriptors", async () => {
   const registry = await import(`../dist/provider-registry.js?provider-registry-${Date.now()}`)
 
   assert.equal(typeof registry.createProviderRegistry, "function")
@@ -6991,10 +7331,11 @@ test("provider registry exposes current Copilot descriptor while Codex stays opt
 
   assert.equal(typeof providers?.copilot?.descriptor, "object")
   assert.equal(providers?.copilot?.descriptor?.auth?.provider, "github-copilot")
-  assert.equal(providers?.codex?.descriptor?.enabledByDefault, false)
+  assert.equal(providers?.codex?.descriptor?.auth?.provider, "openai")
+  assert.equal(providers?.codex?.descriptor?.enabledByDefault, true)
 })
 
-test("provider descriptor contract keeps Copilot assembled and Codex disabled before explicit enable", async () => {
+test("provider descriptor contract keeps Copilot assembled and Codex enabled", async () => {
   const descriptors = await import(`../dist/provider-descriptor.js?provider-descriptor-${Date.now()}`)
 
   assert.equal(typeof descriptors.CODEX_PROVIDER_DESCRIPTOR, "object")
@@ -7005,14 +7346,14 @@ test("provider descriptor contract keeps Copilot assembled and Codex disabled be
     buildPluginHooks,
   })
   const codex = descriptors.createCodexProviderDescriptor({
-    enabled: false,
+    enabled: true,
   })
 
   assert.equal(copilot.auth.provider, "github-copilot")
   assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.providerIDs, ["openai"])
   assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.commands, ["codex-status"])
-  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.menuEntries, [])
-  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.capabilities, ["slash-commands"])
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.menuEntries, ["switch-account", "add-account", "refresh-snapshot"])
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.capabilities, ["auth", "slash-commands"])
   assert.equal(descriptors.CODEX_PROVIDER_DESCRIPTOR.storeNamespace, "codex")
-  assert.equal(codex.enabledByDefault, false)
+  assert.equal(codex.enabledByDefault, true)
 })

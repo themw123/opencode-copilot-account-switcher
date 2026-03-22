@@ -49,7 +49,129 @@ export type MenuAction =
 
 export type MenuLanguage = "zh" | "en"
 
-export function getMenuCopy(language: MenuLanguage = "zh") {
+export type MenuProvider = "copilot" | "codex"
+
+type MenuCapabilities = {
+  importAuth: boolean
+  quota: boolean
+  refreshIdentity: boolean
+  checkModels: boolean
+  defaultAccountGroup: boolean
+  assignModels: boolean
+  loopSafety: boolean
+  policyScope: boolean
+  experimentalSlashCommands: boolean
+  networkRetry: boolean
+  syntheticAgentInitiator: boolean
+}
+
+function defaultMenuCapabilities(provider: MenuProvider): MenuCapabilities {
+  if (provider === "codex") {
+    return {
+      importAuth: false,
+      quota: true,
+      refreshIdentity: false,
+      checkModels: false,
+      defaultAccountGroup: false,
+      assignModels: false,
+      loopSafety: false,
+      policyScope: false,
+      experimentalSlashCommands: false,
+      networkRetry: false,
+      syntheticAgentInitiator: false,
+    }
+  }
+  return {
+    importAuth: true,
+    quota: true,
+    refreshIdentity: true,
+    checkModels: true,
+    defaultAccountGroup: true,
+    assignModels: true,
+    loopSafety: true,
+    policyScope: true,
+    experimentalSlashCommands: true,
+    networkRetry: true,
+    syntheticAgentInitiator: true,
+  }
+}
+
+export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvider = "copilot") {
+  if (provider === "codex") {
+    if (language === "en") {
+      return {
+        menuTitle: "OpenAI Codex accounts",
+        menuSubtitle: "Select an action or account",
+        switchLanguageLabel: "切换到中文",
+        actionsHeading: "Actions",
+        addAccount: "Add account",
+        addAccountHint: "OpenAI OAuth login",
+        importAuth: "Import from auth.json",
+        checkQuotas: "Refresh snapshots",
+        refreshIdentity: "Sync account identity",
+        checkModels: "Sync available models",
+        defaultAccountGroup: "Default account group",
+        assignModels: "Assign account groups per model",
+        autoRefreshOn: "Auto refresh: On",
+        autoRefreshOff: "Auto refresh: Off",
+        setRefresh: "Set refresh interval",
+        loopSafetyOn: "Guided Loop Safety: On",
+        loopSafetyOff: "Guided Loop Safety: Off",
+        loopSafetyHint: "Reduce unnecessary handoff replies while work can continue",
+        policyScopeCopilotOnly: "Policy default scope: Current provider only",
+        policyScopeAllModels: "Policy default scope: All models",
+        policyScopeHint: "Choose whether Guided Loop Safety applies only to the current provider by default or to all models",
+        experimentalSlashCommandsOn: "Experimental slash commands: On",
+        experimentalSlashCommandsOff: "Experimental slash commands: Off",
+        experimentalSlashCommandsHint: "Experimental provider-specific slash commands",
+        retryOn: "Network Retry: On",
+        retryOff: "Network Retry: Off",
+        retryHint: "Helps recover some requests after retries or malformed responses",
+        syntheticInitiatorOn: "Send synthetic messages as agent: On",
+        syntheticInitiatorOff: "Send synthetic messages as agent: Off",
+        syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
+        accountsHeading: "Accounts",
+        dangerHeading: "Danger zone",
+        removeAll: "Remove all accounts",
+      }
+    }
+    return {
+      menuTitle: "OpenAI Codex 账号",
+      menuSubtitle: "请选择操作或账号",
+      switchLanguageLabel: "Switch to English",
+      actionsHeading: "操作",
+      addAccount: "添加账号",
+      addAccountHint: "OpenAI OAuth 登录",
+      importAuth: "从 auth.json 导入",
+      checkQuotas: "刷新快照",
+      refreshIdentity: "同步账号身份信息",
+      checkModels: "同步可用模型列表",
+      defaultAccountGroup: "配置默认账号组",
+      assignModels: "为模型配置账号组",
+      autoRefreshOn: "自动刷新：已开启",
+      autoRefreshOff: "自动刷新：已关闭",
+      setRefresh: "设置刷新间隔",
+      loopSafetyOn: "Guided Loop Safety：已开启",
+      loopSafetyOff: "Guided Loop Safety：已关闭",
+      loopSafetyHint: "让模型更少无谓汇报，没做完前优先继续干活",
+      policyScopeCopilotOnly: "Policy 默认注入范围：仅当前 provider",
+      policyScopeAllModels: "Policy 默认注入范围：所有模型",
+      policyScopeHint: "决定 Guided Loop Safety 默认只作用于当前 provider，还是扩展到所有模型",
+      experimentalSlashCommandsOn: "实验性 Slash Commands：已开启",
+      experimentalSlashCommandsOff: "实验性 Slash Commands：已关闭",
+      experimentalSlashCommandsHint: "当前 provider 的实验性 Slash Commands 开关",
+      retryOn: "Network Retry：已开启",
+      retryOff: "Network Retry：已关闭",
+      retryHint: "请求异常时可自动重试并修复部分请求",
+      syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
+      syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
+      syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
+      accountsHeading: "账号",
+      dangerHeading: "危险操作",
+      removeAll: "删除全部账号",
+    }
+  }
+
   if (language === "en") {
     return {
       menuTitle: "GitHub Copilot accounts",
@@ -148,6 +270,7 @@ function getStatusBadge(status: AccountStatus | undefined): string {
 }
 
 export function buildMenuItems(input: {
+  provider?: MenuProvider
   accounts: AccountInfo[]
   refresh?: { enabled: boolean; minutes: number }
   lastQuotaRefresh?: number
@@ -158,70 +281,114 @@ export function buildMenuItems(input: {
   networkRetryEnabled: boolean
   syntheticAgentInitiatorEnabled?: boolean
   experimentalSlashCommandsEnabled?: boolean
+  capabilities?: Partial<MenuCapabilities>
   language?: MenuLanguage
 }): MenuItem<MenuAction>[] {
-  const copy = getMenuCopy(input.language)
+  const provider = input.provider ?? "copilot"
+  const copy = getMenuCopy(input.language, provider)
+  const capabilities = {
+    ...defaultMenuCapabilities(provider),
+    ...input.capabilities,
+  }
+  if (provider === "codex") {
+    capabilities.refreshIdentity = false
+    capabilities.checkModels = false
+    capabilities.defaultAccountGroup = false
+    capabilities.assignModels = false
+    capabilities.loopSafety = false
+    capabilities.policyScope = false
+    capabilities.experimentalSlashCommands = false
+    capabilities.networkRetry = false
+    capabilities.syntheticAgentInitiator = false
+  }
   const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
   const loopSafetyProviderScope = input.loopSafetyProviderScope ?? "copilot-only"
   const experimentalSlashCommandsEnabled = input.experimentalSlashCommandsEnabled !== false
 
-  return [
+  const actions: MenuItem<MenuAction>[] = [
     { label: copy.actionsHeading, value: { type: "cancel" }, kind: "heading" },
     { label: copy.switchLanguageLabel, value: { type: "toggle-language" }, color: "cyan" },
     { label: copy.addAccount, value: { type: "add" }, color: "cyan", hint: copy.addAccountHint },
-    { label: copy.importAuth, value: { type: "import" }, color: "cyan" },
-    { label: copy.checkQuotas, value: { type: "quota" }, color: "cyan", hint: quotaHint },
-    { label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" },
-    { label: copy.checkModels, value: { type: "check-models" }, color: "cyan" },
-    {
+  ]
+
+  if (capabilities.importAuth) {
+    actions.push({ label: copy.importAuth, value: { type: "import" }, color: "cyan" })
+  }
+  if (capabilities.quota) {
+    actions.push({ label: copy.checkQuotas, value: { type: "quota" }, color: "cyan", hint: quotaHint })
+  }
+  if (capabilities.refreshIdentity) {
+    actions.push({ label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" })
+  }
+  if (capabilities.checkModels) {
+    actions.push({ label: copy.checkModels, value: { type: "check-models" }, color: "cyan" })
+  }
+  if (capabilities.defaultAccountGroup) {
+    actions.push({
       label: copy.defaultAccountGroup,
       value: { type: "configure-default-group" },
       color: "cyan",
       hint: input.defaultAccountGroupCount !== undefined ? `${input.defaultAccountGroupCount} selected` : undefined,
-    },
-    {
+    })
+  }
+  if (capabilities.assignModels) {
+    actions.push({
       label: copy.assignModels,
       value: { type: "assign-models" },
       color: "cyan",
       hint: input.modelAccountAssignmentCount ? `${input.modelAccountAssignmentCount} groups` : undefined,
-    },
-    {
-      label: input.refresh?.enabled ? copy.autoRefreshOn : copy.autoRefreshOff,
-      value: { type: "toggle-refresh" },
-      color: "cyan",
-      hint: input.refresh ? `${input.refresh.minutes}m` : undefined,
-    },
-    { label: copy.setRefresh, value: { type: "set-interval" }, color: "cyan" },
-    {
+    })
+  }
+  actions.push({
+    label: input.refresh?.enabled ? copy.autoRefreshOn : copy.autoRefreshOff,
+    value: { type: "toggle-refresh" },
+    color: "cyan",
+    hint: input.refresh ? `${input.refresh.minutes}m` : undefined,
+  })
+  actions.push({ label: copy.setRefresh, value: { type: "set-interval" }, color: "cyan" })
+  if (capabilities.loopSafety) {
+    actions.push({
       label: input.loopSafetyEnabled ? copy.loopSafetyOn : copy.loopSafetyOff,
       value: { type: "toggle-loop-safety" },
       color: "cyan",
       hint: copy.loopSafetyHint,
-    },
-    {
+    })
+  }
+  if (capabilities.policyScope) {
+    actions.push({
       label: loopSafetyProviderScope === "all-models" ? copy.policyScopeAllModels : copy.policyScopeCopilotOnly,
       value: { type: "toggle-loop-safety-provider-scope" },
       color: "cyan",
       hint: copy.policyScopeHint,
-    },
-    {
+    })
+  }
+  if (capabilities.experimentalSlashCommands) {
+    actions.push({
       label: experimentalSlashCommandsEnabled ? copy.experimentalSlashCommandsOn : copy.experimentalSlashCommandsOff,
       value: { type: "toggle-experimental-slash-commands" },
       color: "cyan",
       hint: copy.experimentalSlashCommandsHint,
-    },
-    {
+    })
+  }
+  if (capabilities.networkRetry) {
+    actions.push({
       label: input.networkRetryEnabled ? copy.retryOn : copy.retryOff,
       value: { type: "toggle-network-retry" },
       color: "cyan",
       hint: copy.retryHint,
-    },
-    {
+    })
+  }
+  if (capabilities.syntheticAgentInitiator) {
+    actions.push({
       label: input.syntheticAgentInitiatorEnabled ? copy.syntheticInitiatorOn : copy.syntheticInitiatorOff,
       value: { type: "toggle-synthetic-agent-initiator" },
       color: "cyan",
       hint: copy.syntheticInitiatorHint,
-    },
+    })
+  }
+
+  return [
+    ...actions,
     { label: "", value: { type: "cancel" }, separator: true },
     { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
     ...input.accounts.map((account) => {
@@ -256,6 +423,7 @@ export function buildMenuItems(input: {
 export async function showMenu(
   accounts: AccountInfo[],
   input: {
+    provider?: MenuProvider
     refresh?: { enabled: boolean; minutes: number }
     lastQuotaRefresh?: number
     modelAccountAssignmentCount?: number
@@ -265,14 +433,17 @@ export async function showMenu(
     networkRetryEnabled?: boolean
     syntheticAgentInitiatorEnabled?: boolean
     experimentalSlashCommandsEnabled?: boolean
+    capabilities?: Partial<MenuCapabilities>
     language?: MenuLanguage
   } = {},
 ): Promise<MenuAction> {
   let currentLanguage = input.language ?? "zh"
 
   while (true) {
-    const copy = getMenuCopy(currentLanguage)
+    const provider = input.provider ?? "copilot"
+    const copy = getMenuCopy(currentLanguage, provider)
     const items = buildMenuItems({
+      provider,
       accounts,
       refresh: input.refresh,
       lastQuotaRefresh: input.lastQuotaRefresh,
@@ -283,6 +454,7 @@ export async function showMenu(
       networkRetryEnabled: input.networkRetryEnabled === true,
       syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled === true,
       experimentalSlashCommandsEnabled: input.experimentalSlashCommandsEnabled,
+      capabilities: input.capabilities,
       language: currentLanguage,
     })
     const result = await select(items, {
@@ -304,7 +476,26 @@ export async function showMenu(
   }
 }
 
-export async function showAccountActions(account: AccountInfo): Promise<"switch" | "remove" | "back"> {
+export function buildAccountActionItems(account: AccountInfo, input: {
+  provider?: MenuProvider
+} = {}): MenuItem<"switch" | "remove" | "back" | "models">[] {
+  const provider = input.provider ?? "copilot"
+  const modelAction = provider === "copilot" && (account.modelList || account.modelsError)
+    ? [{ label: "View models", value: "models" as const, color: "cyan" as const }]
+    : []
+
+  return [
+    { label: "Back", value: "back" as const },
+    ...modelAction,
+    { label: "Switch to this account", value: "switch" as const, color: "cyan" as const },
+    { label: "Remove this account", value: "remove" as const, color: "red" as const },
+  ]
+}
+
+export async function showAccountActions(account: AccountInfo, input: {
+  provider?: MenuProvider
+} = {}): Promise<"switch" | "remove" | "back"> {
+  const provider = input.provider ?? "copilot"
   const badge = getStatusBadge(account.status)
   const header = `${account.name}${badge ? " " + badge : ""}`
   const info = [
@@ -312,25 +503,17 @@ export async function showAccountActions(account: AccountInfo): Promise<"switch"
     account.plan ? `Plan: ${account.plan}` : undefined,
     account.sku ? `SKU: ${account.sku}` : undefined,
     account.reset ? `Reset: ${account.reset}` : undefined,
-    account.models ? `Models: ${account.models.enabled}/${account.models.enabled + account.models.disabled}` : undefined,
+    provider === "copilot" && account.models ? `Models: ${account.models.enabled}/${account.models.enabled + account.models.disabled}` : undefined,
     account.orgs?.length ? `Orgs: ${account.orgs.slice(0, 2).join(",")}` : undefined,
-    account.modelsError ? `Models error: ${account.modelsError}` : undefined,
+    provider === "copilot" && account.modelsError ? `Models error: ${account.modelsError}` : undefined,
   ]
     .filter(Boolean)
     .join("\n")
   const subtitle = info
 
   while (true) {
-    const modelAction = account.modelList || account.modelsError
-      ? [{ label: "View models", value: "models" as const, color: "cyan" as const }]
-      : []
     const result = await select(
-      [
-        { label: "Back", value: "back" as const },
-        ...modelAction,
-        { label: "Switch to this account", value: "switch" as const, color: "cyan" as const },
-        { label: "Remove this account", value: "remove" as const, color: "red" as const },
-      ],
+      buildAccountActionItems(account, { provider }),
       { message: header, subtitle, clearScreen: true, autoSelectSingle: false },
     )
 

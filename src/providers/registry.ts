@@ -1,9 +1,10 @@
-import { COPILOT_PROVIDER_DESCRIPTOR, type ProviderDescriptor } from "./descriptor.js"
+import { CODEX_PROVIDER_DESCRIPTOR, COPILOT_PROVIDER_DESCRIPTOR, type ProviderDescriptor } from "./descriptor.js"
 import { createCodexProviderDescriptor, createCopilotProviderDescriptor } from "./descriptor.js"
 import type { buildPluginHooks as buildPluginHooksFn } from "../plugin-hooks.js"
 
 const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   COPILOT_PROVIDER_DESCRIPTOR,
+  CODEX_PROVIDER_DESCRIPTOR,
 ]
 
 export function listProviderDescriptors(): ProviderDescriptor[] {
@@ -32,7 +33,7 @@ export function createProviderRegistry(input: {
       descriptor: createCopilotProviderDescriptor({ buildPluginHooks: input.buildPluginHooks }),
     },
     codex: {
-      descriptor: createCodexProviderDescriptor({ enabled: false }),
+      descriptor: createCodexProviderDescriptor({ enabled: true }),
     },
   }
 }

@@ -71,8 +71,13 @@ export const CODEX_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
   commands: [
     "codex-status",
   ],
-  menuEntries: [],
+  menuEntries: [
+    "switch-account",
+    "add-account",
+    "refresh-snapshot",
+  ],
   capabilities: [
+    "auth",
     "slash-commands",
   ],
 }
@@ -98,6 +103,6 @@ export function createCodexProviderDescriptor(input: {
     auth: {
       provider: "openai",
     },
-    enabledByDefault: input.enabled === true,
+    enabledByDefault: input.enabled !== false,
   }
 }

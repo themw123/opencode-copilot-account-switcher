@@ -1,6 +1,12 @@
 import { resolveCodexAuthSource, type OpenAIOAuthAuth } from "./codex-auth-source.js"
 import { fetchCodexStatus, type CodexStatusFetcherResult, type CodexStatusSnapshot } from "./codex-status-fetcher.js"
-import { readCodexStore, writeCodexStore, type CodexStoreFile } from "./codex-store.js"
+import {
+  getActiveCodexAccount,
+  normalizeCodexStore,
+  readCodexStore,
+  writeCodexStore,
+  type CodexStoreFile,
+} from "./codex-store.js"
 import { readAuth, type AccountEntry } from "./store.js"
 
 type ToastVariant = "info" | "success" | "warning" | "error"
@@ -117,27 +123,66 @@ function renderStatus(status: CodexStatusSnapshot) {
 }
 
 function renderCachedStatus(store: CodexStoreFile) {
+  const active = getActiveCodexAccount(store)
+  const entry = active?.entry
+  const snapshot = entry?.snapshot
   return [
     "[identity]",
-    `account: ${value(store.account?.id ?? store.activeAccountId)}`,
-    `email: ${value(store.account?.email ?? store.activeEmail)}`,
-    `plan: ${value(store.account?.plan)}`,
+    `account: ${value(entry?.accountId ?? active?.name)}`,
+    `email: ${value(entry?.email)}`,
+    `plan: ${value(snapshot?.plan)}`,
     "[usage]",
-    renderWindow("5h", store.status?.premium ?? {}),
+    renderWindow("5h", snapshot?.usage5h ?? {}),
+    "week: n/a",
+    "credits: n/a",
+  ].join("\n")
+}
+
+function getCachedAccountForSource(store: CodexStoreFile, input: {
+  accountId?: string
+}) {
+  const accountId = input.accountId
+  if (accountId) {
+    const match = Object.entries(store.accounts).find(([, entry]) => entry.accountId === accountId)
+    if (match) {
+      return {
+        name: match[0],
+        entry: match[1],
+      }
+    }
+  }
+  return getActiveCodexAccount(store)
+}
+
+function renderCachedStatusForAccount(store: CodexStoreFile, input: {
+  accountId?: string
+}) {
+  const active = getCachedAccountForSource(store, input)
+  const entry = active?.entry
+  const snapshot = entry?.snapshot
+  return [
+    "[identity]",
+    `account: ${value(entry?.accountId ?? active?.name)}`,
+    `email: ${value(entry?.email)}`,
+    `plan: ${value(snapshot?.plan)}`,
+    "[usage]",
+    renderWindow("5h", snapshot?.usage5h ?? {}),
     "week: n/a",
     "credits: n/a",
   ].join("\n")
 }
 
 function hasCachedStore(store: CodexStoreFile) {
+  const active = getActiveCodexAccount(store)
+  const entry = active?.entry
+  const usage5h = entry?.snapshot?.usage5h
   return Boolean(
-    store.activeAccountId
-    || store.activeEmail
-    || store.account?.id
-    || store.account?.email
-    || store.account?.plan
-    || store.status?.premium?.entitlement !== undefined
-    || store.status?.premium?.remaining !== undefined,
+    active
+    || entry?.accountId
+    || entry?.email
+    || entry?.snapshot?.plan
+    || usage5h?.entitlement !== undefined
+    || usage5h?.remaining !== undefined,
   )
 }
 
@@ -282,11 +327,12 @@ export async function handleCodexStatusCommand(input: {
   } as CodexStatusFetcherResult))
 
   if (!fetched.ok) {
-    const cached = await readStore().catch(() => ({}))
+    const cachedRaw = await readStore().catch(() => ({}))
+    const cached = normalizeCodexStore(cachedRaw)
     if (hasCachedStore(cached)) {
       await showToast({
         client: input.client,
-        message: `Codex status fetch failed (${fetched.error.message}); showing cached snapshot.\n${renderCachedStatus(cached)}`,
+        message: `Codex status fetch failed (${fetched.error.message}); showing cached snapshot.\n${renderCachedStatusForAccount(cached, { accountId: source.accountId })}`,
         variant: "warning",
       })
     } else {
@@ -310,22 +356,46 @@ export async function handleCodexStatusCommand(input: {
     })
   }
 
-  const previousStore = await readStore().catch(() => ({} as CodexStoreFile))
+  const previousRaw = await readStore().catch(() => ({} as CodexStoreFile))
+  const previousStore = normalizeCodexStore(previousRaw)
+  const previousActive = getActiveCodexAccount(previousStore)
+  const nextActive = fetched.status.identity.accountId
+    ?? source.accountId
+    ?? previousActive?.entry.accountId
+    ?? previousActive?.name
+    ?? "default"
+  const previousEntry = previousStore.accounts[nextActive] ?? {}
+
   const nextStore: CodexStoreFile = {
     ...previousStore,
-    activeProvider: "codex",
-    activeAccountId: fetched.status.identity.accountId ?? source.accountId ?? previousStore.activeAccountId,
-    activeEmail: fetched.status.identity.email ?? previousStore.activeEmail,
-    lastStatusRefresh: fetched.status.updatedAt,
-    account: {
-      id: fetched.status.identity.accountId ?? previousStore.account?.id,
-      email: fetched.status.identity.email ?? previousStore.account?.email,
-      plan: fetched.status.identity.plan ?? previousStore.account?.plan,
-    },
-    status: {
-      premium: {
-        entitlement: fetched.status.windows.primary.entitlement,
-        remaining: fetched.status.windows.primary.remaining,
+    active: nextActive,
+    lastSnapshotRefresh: fetched.status.updatedAt,
+    accounts: {
+      ...previousStore.accounts,
+      [nextActive]: {
+        ...previousEntry,
+        name: previousEntry.name ?? nextActive,
+        providerId: previousEntry.providerId ?? "codex",
+        accountId: fetched.status.identity.accountId ?? previousEntry.accountId ?? source.accountId,
+        email: fetched.status.identity.email ?? previousEntry.email,
+        lastUsed: fetched.status.updatedAt,
+        snapshot: {
+          ...(previousEntry.snapshot ?? {}),
+          plan: fetched.status.identity.plan ?? previousEntry.snapshot?.plan,
+          usage5h: {
+            entitlement: fetched.status.windows.primary.entitlement,
+            remaining: fetched.status.windows.primary.remaining,
+            used: fetched.status.windows.primary.used,
+            resetAt: fetched.status.windows.primary.resetAt,
+          },
+          usageWeek: {
+            entitlement: fetched.status.windows.secondary.entitlement,
+            remaining: fetched.status.windows.secondary.remaining,
+            used: fetched.status.windows.secondary.used,
+            resetAt: fetched.status.windows.secondary.resetAt,
+          },
+          updatedAt: fetched.status.updatedAt,
+        },
       },
     },
   }
