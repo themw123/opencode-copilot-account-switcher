@@ -342,6 +342,7 @@ test("runCodexOAuth normalizes headless device tokens with organization fallback
     expires: 1700007202000,
     accountId: "acct_device",
     email: "device@example.com",
+    workspaceName: "acct_device",
   })
 })
 
