@@ -57,7 +57,7 @@ test("codex status command ends with controlled interrupt after success toast", 
   const hasSuccessToast = calls.some((item) => {
     const variant = String(item?.body?.variant ?? "")
     const message = String(item?.body?.message ?? "")
-    return variant === "success" && /codex|status|usage|updated|成功/i.test(message)
+    return variant === "success" && /^账号:\s*/.test(message)
   })
   assert.equal(hasSuccessToast, true)
 })
@@ -351,8 +351,12 @@ test("codex status command writes auth patch and store on successful refresh", a
 
   const successToast = calls.find((item) => item?.body?.variant === "success")
   const successText = String(successToast?.body?.message ?? "")
-  assert.match(successText, /identity|usage|account|plan|primary/i)
-  assert.match(successText, /42|100|21|50/)
+  const successLines = successText.split("\n")
+  assert.equal(successLines.length, 4)
+  assert.match(successLines[0], /^账号:\s*acct_123/)
+  assert.match(successLines[1], /^Workspace:\s*codex@example\.com/)
+  assert.match(successLines[2], /^5h:\s*42% left/)
+  assert.match(successLines[3], /^week:\s*3\/10/)
 })
 
 test("codex status command uses codex-store helper shape and writes snapshot into active account", async () => {
@@ -481,10 +485,16 @@ test("codex status command falls back to cached store when fetch fails", async (
   )
 
   assert.equal(persistedStores.length, 0)
-  const warningToast = calls.find((item) => item?.body?.variant === "warning")
-  const warningText = String(warningToast?.body?.message ?? "")
-  assert.match(warningText, /cache|cached|fallback|network/i)
-  assert.match(warningText, /acct_cached|cached@example.com|180\/200|180|200/)
+  const warningToasts = calls.filter((item) => item?.body?.variant === "warning")
+  assert.equal(warningToasts.length >= 2, true)
+  const failureText = String(warningToasts[0]?.body?.message ?? "")
+  assert.match(failureText, /fetch failed|network/i)
+  const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
+  assert.match(summaryText, /^账号:\s*acct_cached/)
+  assert.match(summaryText, /^Workspace:\s*cached@example\.com/m)
+  assert.match(summaryText, /^5h:\s*180\/200/m)
+  assert.match(summaryText, /^week:\s*n\/a/m)
+  assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
 })
 
 test("codex status command fetch failure prefers cached snapshot for the requested account over store.active", async () => {
@@ -549,10 +559,280 @@ test("codex status command fetch failure prefers cached snapshot for the request
     (error) => error?.name === "CodexStatusCommandHandledError",
   )
 
+  const warningToasts = calls.filter((item) => item?.body?.variant === "warning")
+  assert.equal(warningToasts.length >= 2, true)
+  const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
+  assert.match(summaryText, /^账号:\s*acct_requested/m)
+  assert.match(summaryText, /^Workspace:\s*requested@example\.com/m)
+  assert.match(summaryText, /^5h:\s*155\/200/m)
+  assert.doesNotMatch(summaryText, /active@example.com|acct_active/)
+  assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
+})
+
+test("codex status command renders only account workspace 5h and week lines", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+          accountId: "acct_summary",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: true,
+        status: {
+          identity: {
+            accountId: "acct_summary",
+            email: "summary@example.com",
+            plan: "team",
+            workspaceName: "workspace-summary",
+          },
+          windows: {
+            primary: {
+              entitlement: 100,
+              remaining: 42,
+            },
+            secondary: {
+              entitlement: 100,
+              remaining: 7,
+            },
+          },
+          credits: {
+            total: 100,
+            remaining: 88,
+          },
+          updatedAt: 1700000007777,
+        },
+      }),
+      readStore: async () => ({}),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const successToast = calls.find((item) => item?.body?.variant === "success")
+  const successText = String(successToast?.body?.message ?? "")
+  const lines = successText.split("\n")
+  assert.equal(lines.length, 4)
+  assert.match(lines[0], /^账号:\s*/)
+  assert.match(lines[1], /^Workspace:\s*/)
+  assert.match(lines[2], /^5h:\s*/)
+  assert.match(lines[3], /^week:\s*/)
+  assert.doesNotMatch(successText, /Codex status updated|\[identity\]|\[usage\]|credits|fetch failed|cached snapshot/i)
+})
+
+test("codex status command removes invalid account on refresh-400 and switches to replacement", async () => {
+  const calls = []
+  const authSetCalls = []
+  const persistedStores = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+        auth: {
+          set: async (input) => {
+            authSetCalls.push(input)
+          },
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "invalid_access",
+          accountId: "acct_invalid_id",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "invalid_account",
+          status: 400,
+          message: "refresh token invalid",
+        },
+      }),
+      readStore: async () => ({
+        active: "acct_invalid",
+        accounts: {
+          acct_invalid: {
+            name: "acct_invalid",
+            providerId: "codex",
+            accountId: "acct_invalid_id",
+            email: "invalid@example.com",
+            workspaceName: "workspace-invalid",
+            refresh: "refresh-invalid",
+            access: "access-invalid",
+          },
+          acct_replacement: {
+            name: "acct_replacement",
+            providerId: "codex",
+            accountId: "acct_replacement_id",
+            email: "replacement@example.com",
+            workspaceName: "workspace-replacement",
+            refresh: "refresh-replacement",
+            access: "access-replacement",
+            snapshot: {
+              usage5h: { remaining: 10 },
+              usageWeek: { remaining: 20 },
+            },
+          },
+        },
+      }),
+      writeStore: async (nextStore) => {
+        persistedStores.push(nextStore)
+      },
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  assert.equal(persistedStores.length, 1)
+  assert.equal(Object.hasOwn(persistedStores[0].accounts, "acct_invalid"), false)
+  assert.equal(persistedStores[0].active, "acct_replacement")
+  assert.equal(authSetCalls.length, 1)
+  assert.equal(authSetCalls[0]?.body?.accountId, "acct_replacement_id")
+
   const warningToast = calls.find((item) => item?.body?.variant === "warning")
   const warningText = String(warningToast?.body?.message ?? "")
-  assert.match(warningText, /acct_requested|requested@example.com|155\/200|155|200/)
-  assert.doesNotMatch(warningText, /active@example.com|acct_active/)
+  assert.match(warningText, /无效账号workspace-invalid已移除，请及时检查核对/)
+})
+
+test("codex status command does not switch accounts on non-400 fetch errors", async () => {
+  const calls = []
+  const authSetCalls = []
+  const persistedStores = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+        auth: {
+          set: async (input) => {
+            authSetCalls.push(input)
+          },
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "access",
+          accountId: "acct_cached",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "network_error",
+          message: "network temporary issue",
+        },
+      }),
+      readStore: async () => ({
+        active: "acct_cached",
+        accounts: {
+          acct_cached: {
+            name: "acct_cached",
+            providerId: "codex",
+            accountId: "acct_cached",
+            email: "cached@example.com",
+            workspaceName: "workspace-cached",
+            snapshot: {
+              usage5h: { entitlement: 100, remaining: 50 },
+              usageWeek: { entitlement: 100, remaining: 30 },
+            },
+          },
+        },
+      }),
+      writeStore: async (nextStore) => {
+        persistedStores.push(nextStore)
+      },
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  assert.equal(persistedStores.length, 0)
+  assert.equal(authSetCalls.length, 0)
+  const summaryToast = calls.filter((item) => item?.body?.variant === "warning").at(-1)
+  const summaryText = String(summaryToast?.body?.message ?? "")
+  assert.match(summaryText, /^账号:\s*/)
+  assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
+})
+
+test("codex status command warns when replacement account only has week recovery", async () => {
+  const calls = []
+  const { handleCodexStatusCommand } = await loadCodexStatusCommandOrFail()
+
+  await assert.rejects(
+    handleCodexStatusCommand({
+      client: {
+        tui: {
+          showToast: async (options) => calls.push(options),
+        },
+        auth: {
+          set: async () => {},
+        },
+      },
+      loadAuth: async () => ({
+        openai: {
+          type: "oauth",
+          access: "invalid_access",
+          accountId: "acct_invalid_id",
+        },
+      }),
+      fetchStatus: async () => ({
+        ok: false,
+        error: {
+          kind: "invalid_account",
+          status: 400,
+          message: "refresh token invalid",
+        },
+      }),
+      readStore: async () => ({
+        active: "acct_invalid",
+        accounts: {
+          acct_invalid: {
+            name: "acct_invalid",
+            providerId: "codex",
+            accountId: "acct_invalid_id",
+            workspaceName: "workspace-invalid",
+            refresh: "refresh-invalid",
+            access: "access-invalid",
+          },
+          acct_week_only: {
+            name: "acct_week_only",
+            providerId: "codex",
+            accountId: "acct_week_only_id",
+            workspaceName: "workspace-week-only",
+            refresh: "refresh-week",
+            access: "access-week",
+            snapshot: {
+              usage5h: { entitlement: 100, remaining: 0 },
+              usageWeek: { entitlement: 100, remaining: 8 },
+            },
+          },
+        },
+      }),
+      writeStore: async () => {},
+    }),
+    (error) => error?.name === "CodexStatusCommandHandledError",
+  )
+
+  const warningToast = calls.filter((item) => item?.body?.variant === "warning").at(-1)
+  const warningText = String(warningToast?.body?.message ?? "")
+  assert.match(warningText, /请检查账号状态/)
 })
 
 test("codex status command renders cached snapshot when reading legacy store shape", async () => {
@@ -600,10 +880,14 @@ test("codex status command renders cached snapshot when reading legacy store sha
     (error) => error?.name === "CodexStatusCommandHandledError",
   )
 
-  const warningToast = calls.find((item) => item?.body?.variant === "warning")
-  const warningText = String(warningToast?.body?.message ?? "")
-  assert.match(warningText, /cached|cache|snapshot/i)
-  assert.match(warningText, /acct_legacy_cached|legacy-cached@example.com|44|100/i)
+  const warningToasts = calls.filter((item) => item?.body?.variant === "warning")
+  assert.equal(warningToasts.length >= 2, true)
+  const summaryText = String(warningToasts.at(-1)?.body?.message ?? "")
+  assert.match(summaryText, /^账号:\s*acct_legacy_cached/m)
+  assert.match(summaryText, /^Workspace:\s*legacy-cached@example\.com/m)
+  assert.match(summaryText, /^5h:\s*44% left/m)
+  assert.match(summaryText, /^week:\s*n\/a/m)
+  assert.doesNotMatch(summaryText, /fetch failed|cached snapshot|Codex status updated|\[identity\]|credits/i)
 })
 
 test("codex status command renders 5h and weekly percentage labels for percentage-based windows", async () => {

@@ -7,6 +7,7 @@ import {
   writeCodexStore,
   type CodexStoreFile,
 } from "./codex-store.js"
+import { getCodexDisplayName, recoverInvalidCodexAccount } from "./codex-invalid-account.js"
 import { readAuth, type AccountEntry } from "./store.js"
 
 type ToastVariant = "info" | "success" | "warning" | "error"
@@ -98,6 +99,30 @@ function value(value: string | number | undefined) {
   return value === undefined ? "n/a" : String(value)
 }
 
+function pickDisplayName(input: {
+  workspaceName?: string
+  name?: string
+  email?: string
+  accountId?: string
+}) {
+  return input.workspaceName
+    ?? input.name
+    ?? input.email
+    ?? input.accountId
+}
+
+function pickWorkspaceLabel(input: {
+  workspaceName?: string
+  email?: string
+  accountId?: string
+  name?: string
+}) {
+  return input.workspaceName
+    ?? input.email
+    ?? input.accountId
+    ?? input.name
+}
+
 function renderWindow(label: string, window: {
   remaining?: number
   entitlement?: number
@@ -109,16 +134,16 @@ function renderWindow(label: string, window: {
 }
 
 function renderStatus(status: CodexStatusSnapshot) {
+  const identity = status.identity as { accountId?: string; email?: string; workspaceName?: string }
   return [
-    "Codex status updated.",
-    "[identity]",
-    `account: ${value(status.identity.accountId)}`,
-    `email: ${value(status.identity.email)}`,
-    `plan: ${value(status.identity.plan)}`,
-    "[usage]",
+    `账号: ${value(identity.accountId ?? identity.email)}`,
+    `Workspace: ${value(pickWorkspaceLabel({
+      workspaceName: identity.workspaceName,
+      email: identity.email,
+      accountId: identity.accountId,
+    }))}`,
     renderWindow("5h", status.windows.primary),
     renderWindow("week", status.windows.secondary),
-    `credits: ${ratio(status.credits.remaining, status.credits.total)}`,
   ].join("\n")
 }
 
@@ -127,14 +152,15 @@ function renderCachedStatus(store: CodexStoreFile) {
   const entry = active?.entry
   const snapshot = entry?.snapshot
   return [
-    "[identity]",
-    `account: ${value(entry?.accountId ?? active?.name)}`,
-    `email: ${value(entry?.email)}`,
-    `plan: ${value(snapshot?.plan)}`,
-    "[usage]",
+    `账号: ${value(entry?.accountId ?? active?.name ?? entry?.email)}`,
+    `Workspace: ${value(pickWorkspaceLabel({
+      workspaceName: entry?.workspaceName,
+      name: entry?.name ?? active?.name,
+      email: entry?.email,
+      accountId: entry?.accountId,
+    }))}`,
     renderWindow("5h", snapshot?.usage5h ?? {}),
-    "week: n/a",
-    "credits: n/a",
+    renderWindow("week", snapshot?.usageWeek ?? {}),
   ].join("\n")
 }
 
@@ -161,14 +187,15 @@ function renderCachedStatusForAccount(store: CodexStoreFile, input: {
   const entry = active?.entry
   const snapshot = entry?.snapshot
   return [
-    "[identity]",
-    `account: ${value(entry?.accountId ?? active?.name)}`,
-    `email: ${value(entry?.email)}`,
-    `plan: ${value(snapshot?.plan)}`,
-    "[usage]",
+    `账号: ${value(entry?.accountId ?? active?.name ?? entry?.email)}`,
+    `Workspace: ${value(pickWorkspaceLabel({
+      workspaceName: entry?.workspaceName,
+      name: entry?.name ?? active?.name,
+      email: entry?.email,
+      accountId: entry?.accountId,
+    }))}`,
     renderWindow("5h", snapshot?.usage5h ?? {}),
-    "week: n/a",
-    "credits: n/a",
+    renderWindow("week", snapshot?.usageWeek ?? {}),
   ].join("\n")
 }
 
@@ -327,12 +354,58 @@ export async function handleCodexStatusCommand(input: {
   } as CodexStatusFetcherResult))
 
   if (!fetched.ok) {
+    if (fetched.error.kind === "invalid_account") {
+      const currentRaw = await readStore().catch(() => ({}))
+      const currentStore = normalizeCodexStore(currentRaw)
+      const invalid = getCachedAccountForSource(currentStore, { accountId: source.accountId })
+      const invalidName = invalid?.name ?? currentStore.active
+      if (invalidName && currentStore.accounts[invalidName]) {
+        const recovered = await recoverInvalidCodexAccount({
+          store: currentStore,
+          invalidAccountName: invalidName,
+          setAuth: input.client?.auth?.set
+            ? async (next) => {
+              const authClient = input.client?.auth
+              const setAuth = input.client?.auth?.set
+              if (!setAuth) return
+              await setAuth.call(authClient, next)
+            }
+            : undefined,
+        })
+        await writeStore(recovered.store)
+
+        const removedDisplay = getCodexDisplayName(invalid?.entry, recovered.removed)
+        const messageLines = [`无效账号${removedDisplay}已移除，请及时检查核对`]
+        if (recovered.replacement) {
+          const replacementEntry = recovered.store.accounts[recovered.replacement]
+          const replacementDisplay = getCodexDisplayName(replacementEntry, recovered.replacement)
+          const replacementWeekRemaining = replacementEntry?.snapshot?.usageWeek?.remaining ?? 0
+          const replacement5hRemaining = replacementEntry?.snapshot?.usage5h?.remaining ?? 0
+          messageLines.push(`已切换到${replacementDisplay}`)
+          if (recovered.weekRecoveryOnly || (replacementWeekRemaining > 0 && replacement5hRemaining <= 0)) {
+            messageLines.push("请检查账号状态")
+          }
+        }
+        await showToast({
+          client: input.client,
+          message: messageLines.join("\n"),
+          variant: "warning",
+        })
+        throw new CodexStatusCommandHandledError()
+      }
+    }
+
     const cachedRaw = await readStore().catch(() => ({}))
     const cached = normalizeCodexStore(cachedRaw)
     if (hasCachedStore(cached)) {
       await showToast({
         client: input.client,
-        message: `Codex status fetch failed (${fetched.error.message}); showing cached snapshot.\n${renderCachedStatusForAccount(cached, { accountId: source.accountId })}`,
+        message: `Codex status fetch failed: ${fetched.error.message}`,
+        variant: "warning",
+      })
+      await showToast({
+        client: input.client,
+        message: renderCachedStatusForAccount(cached, { accountId: source.accountId }),
         variant: "warning",
       })
     } else {
@@ -378,6 +451,7 @@ export async function handleCodexStatusCommand(input: {
         providerId: previousEntry.providerId ?? "codex",
         accountId: fetched.status.identity.accountId ?? previousEntry.accountId ?? source.accountId,
         email: fetched.status.identity.email ?? previousEntry.email,
+        workspaceName: (fetched.status.identity as { workspaceName?: string }).workspaceName ?? previousEntry.workspaceName,
         lastUsed: fetched.status.updatedAt,
         snapshot: {
           ...(previousEntry.snapshot ?? {}),
