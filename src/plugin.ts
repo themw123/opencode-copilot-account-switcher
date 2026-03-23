@@ -8,15 +8,35 @@ import {
 import { runProviderMenu, type MenuAction as RuntimeMenuAction } from "./menu-runtime.js"
 import { persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
+import {
+  readCommonSettingsStore,
+  readCommonSettingsStoreSync,
+  writeCommonSettingsStore,
+  type CommonSettingsStore,
+} from "./common-settings-store.js"
 import { createCodexMenuAdapter } from "./providers/codex-menu-adapter.js"
 import { createCopilotMenuAdapter } from "./providers/copilot-menu-adapter.js"
+import { createProviderRegistry } from "./providers/registry.js"
 import { isTTY } from "./ui/ansi.js"
-import { showMenu, type AccountInfo } from "./ui/menu.js"
+import { showMenu, type AccountInfo, type MenuAction as UiMenuAction } from "./ui/menu.js"
 import { select, selectMany } from "./ui/select.js"
 import { readAuth, readStore, writeStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 
 function now() {
   return Date.now()
+}
+
+function toSharedRuntimeAction(action: UiMenuAction): RuntimeMenuAction | undefined {
+  if (action.type === "cancel") return { type: "cancel" }
+  if (action.type === "add") return { type: "add" }
+  if (action.type === "remove-all") return { type: "remove-all" }
+  if (action.type === "switch") return { type: "switch", account: action.account }
+  if (action.type === "remove") return { type: "remove", account: action.account }
+  if (action.type === "toggle-loop-safety") return { type: "provider", name: "toggle-loop-safety" }
+  if (action.type === "toggle-loop-safety-provider-scope") return { type: "provider", name: "toggle-loop-safety-provider-scope" }
+  if (action.type === "toggle-experimental-slash-commands") return { type: "provider", name: "toggle-experimental-slash-commands" }
+  if (action.type === "toggle-network-retry") return { type: "provider", name: "toggle-network-retry" }
+  return undefined
 }
 export async function configureDefaultAccountGroup(
   store: StoreFile,
@@ -318,24 +338,29 @@ async function createAccountSwitcherPlugin(
       logSwitchHint: () => {
         console.log("Switched account. If a later Copilot session hits input[*].id too long after switching, enable Copilot Network Retry from the menu.")
       },
+      readCommonSettings: readCommonSettingsStore,
+      writeCommonSettings: async (settings) => {
+        await writeCommonSettingsStore(settings)
+      },
     })
 
     const toRuntimeAction = async (accounts: AccountInfo[], store: StoreFile): Promise<RuntimeMenuAction> => {
+      const common = await readCommonSettingsStore().catch(() => undefined)
       const action = await showMenu(accounts, {
         provider: "copilot",
         refresh: { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 },
         lastQuotaRefresh: store.lastQuotaRefresh,
         modelAccountAssignmentCount: Object.keys(store.modelAccountAssignments ?? {}).length,
         defaultAccountGroupCount: store.activeAccountNames?.length ?? (store.active ? 1 : 0),
-        loopSafetyEnabled: store.loopSafetyEnabled === true,
-        loopSafetyProviderScope: store.loopSafetyProviderScope,
-        experimentalSlashCommandsEnabled: store.experimentalSlashCommandsEnabled,
-        networkRetryEnabled: store.networkRetryEnabled === true,
+        loopSafetyEnabled: common?.loopSafetyEnabled ?? store.loopSafetyEnabled === true,
+        loopSafetyProviderScope: common?.loopSafetyProviderScope ?? store.loopSafetyProviderScope,
+        experimentalSlashCommandsEnabled: common?.experimentalSlashCommandsEnabled ?? store.experimentalSlashCommandsEnabled,
+        networkRetryEnabled: common?.networkRetryEnabled ?? store.networkRetryEnabled === true,
         syntheticAgentInitiatorEnabled: store.syntheticAgentInitiatorEnabled === true,
       })
 
-      if (action.type === "cancel") return { type: "cancel" }
-      if (action.type === "add") return { type: "add" }
+      const shared = toSharedRuntimeAction(action)
+      if (shared) return shared
       if (action.type === "import") return { type: "provider", name: "import-auth" }
       if (action.type === "refresh-identity") return { type: "provider", name: "refresh-identity" }
       if (action.type === "toggle-refresh") return { type: "provider", name: "toggle-refresh" }
@@ -344,13 +369,6 @@ async function createAccountSwitcherPlugin(
       if (action.type === "check-models") return { type: "provider", name: "check-models" }
       if (action.type === "configure-default-group") return { type: "provider", name: "configure-default-group" }
       if (action.type === "assign-models") return { type: "provider", name: "assign-models" }
-      if (action.type === "remove-all") return { type: "remove-all" }
-      if (action.type === "switch") return { type: "switch", account: action.account }
-      if (action.type === "remove") return { type: "remove", account: action.account }
-      if (action.type === "toggle-loop-safety") return { type: "provider", name: "toggle-loop-safety" }
-      if (action.type === "toggle-loop-safety-provider-scope") return { type: "provider", name: "toggle-loop-safety-provider-scope" }
-      if (action.type === "toggle-experimental-slash-commands") return { type: "provider", name: "toggle-experimental-slash-commands" }
-      if (action.type === "toggle-network-retry") return { type: "provider", name: "toggle-network-retry" }
       if (action.type === "toggle-synthetic-agent-initiator") return { type: "provider", name: "toggle-synthetic-agent-initiator" }
       return { type: "cancel" }
     }
@@ -370,22 +388,28 @@ async function createAccountSwitcherPlugin(
 
     const adapter = createCodexMenuAdapter({
       client: codexClient,
+      readCommonSettings: readCommonSettingsStore,
+      writeCommonSettings: async (settings) => {
+        await writeCommonSettingsStore(settings)
+      },
     })
 
     const toRuntimeAction = async (accounts: AccountInfo[], store: Awaited<ReturnType<typeof adapter.loadStore>>): Promise<RuntimeMenuAction> => {
+      const common: CommonSettingsStore | undefined = await readCommonSettingsStore().catch(() => undefined)
       const action = await showMenu(accounts, {
         provider: "codex",
         refresh: { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 },
+        loopSafetyEnabled: common?.loopSafetyEnabled ?? true,
+        loopSafetyProviderScope: common?.loopSafetyProviderScope,
+        experimentalSlashCommandsEnabled: common?.experimentalSlashCommandsEnabled,
+        networkRetryEnabled: common?.networkRetryEnabled === true,
       })
 
-      if (action.type === "cancel") return { type: "cancel" }
-      if (action.type === "add") return { type: "add" }
+      const shared = toSharedRuntimeAction(action)
+      if (shared) return shared
       if (action.type === "quota") return { type: "provider", name: "refresh-snapshot" }
       if (action.type === "toggle-refresh") return { type: "provider", name: "toggle-refresh" }
       if (action.type === "set-interval") return { type: "provider", name: "set-interval" }
-      if (action.type === "remove-all") return { type: "remove-all" }
-      if (action.type === "switch") return { type: "switch", account: action.account }
-      if (action.type === "remove") return { type: "remove", account: action.account }
       return { type: "cancel" }
     }
 
@@ -396,7 +420,12 @@ async function createAccountSwitcherPlugin(
     })
   }
 
-  return buildPluginHooks({
+  const registry = createProviderRegistry({
+    buildPluginHooks,
+  })
+  const assembled = provider === "github-copilot" ? registry.copilot.descriptor : registry.codex.descriptor
+
+  return assembled.buildPluginHooks({
     auth: {
       provider,
       methods: provider === "github-copilot" ? copilotMethods : codexMethods,
@@ -404,6 +433,8 @@ async function createAccountSwitcherPlugin(
     client,
     directory,
     serverUrl,
+    loadCommonSettings: readCommonSettingsStore,
+    loadCommonSettingsSync: readCommonSettingsStoreSync,
   })
 }
 

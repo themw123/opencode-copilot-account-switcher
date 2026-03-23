@@ -1758,6 +1758,206 @@ test("plugin auth loader wraps official fetch when network retry is enabled", as
   assert.equal(options?.fetch, wrappedFetch)
 })
 
+test("openai provider loader uses codex official adapter and codex retry enhancer when retry enabled", async () => {
+  const calls = {
+    codexOfficial: 0,
+    codexRetry: 0,
+    copilotOfficial: 0,
+    copilotFinalize: 0,
+    copilotRouting: 0,
+  }
+  const codexOfficialFetch = async () => new Response("{}", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })
+
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "openai",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCommonSettings: async () => ({
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => {
+      calls.codexOfficial += 1
+      return {
+        apiKey: "",
+        fetch: codexOfficialFetch,
+      }
+    },
+    createRetryFetch: (nextFetch) => {
+      calls.codexRetry += 1
+      assert.equal(nextFetch, codexOfficialFetch)
+      return async (request, init) => nextFetch(request, init)
+    },
+    finalizeRequestForSelection: async () => {
+      calls.copilotFinalize += 1
+      return undefined
+    },
+    loadCandidateAccountLoads: async () => {
+      calls.copilotRouting += 1
+      return undefined
+    },
+    loadOfficialChatHeaders: async () => {
+      calls.copilotOfficial += 1
+      return async () => {}
+    },
+  })
+
+  const options = await plugin.auth?.loader?.(
+    async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }),
+    { models: {} },
+  )
+
+  await options?.fetch?.("https://api.openai.com/v1/responses", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-5" }),
+  })
+
+  assert.equal(calls.codexOfficial, 1)
+  assert.equal(calls.codexRetry, 1)
+  assert.equal(calls.copilotOfficial, 0)
+  assert.equal(calls.copilotFinalize, 0)
+  assert.equal(calls.copilotRouting, 0)
+})
+
+test("openai provider chain never executes copilot routing or auth-loader semantics", async () => {
+  const plugin = buildPluginHooks({
+    auth: {
+      provider: "openai",
+      methods: [],
+    },
+    loadStore: async () => ({
+      active: "main",
+      accounts: {
+        main: {
+          name: "main",
+          refresh: "refresh",
+          access: "access",
+          expires: 0,
+        },
+      },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: true,
+      activeAccountNames: ["main"],
+      modelAccountAssignments: { "gpt-5": ["main"] },
+    }),
+    loadCommonSettings: async () => ({
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      apiKey: "",
+      fetch: async () => new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    }),
+    finalizeRequestForSelection: async () => {
+      throw new Error("copilot finalize should not run")
+    },
+    loadCandidateAccountLoads: async () => {
+      throw new Error("copilot routing should not run")
+    },
+    appendRouteDecisionEventImpl: async () => {
+      throw new Error("copilot route decision should not run")
+    },
+    appendSessionTouchEventImpl: async () => {
+      throw new Error("copilot touch event should not run")
+    },
+    triggerBillingCompensation: async () => {
+      throw new Error("copilot billing compensation should not run")
+    },
+  })
+
+  const options = await plugin.auth?.loader?.(
+    async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }),
+    { models: {} },
+  )
+
+  await assert.doesNotReject(async () => options?.fetch?.("https://api.openai.com/v1/responses", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-5" }),
+  }))
+})
+
+test("networkRetryEnabled from common settings enables retry for both copilot and openai providers", async () => {
+  const calls = {
+    copilotRetry: 0,
+    codexRetry: 0,
+  }
+
+  const copilot = buildPluginHooks({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCommonSettings: async () => ({
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      apiKey: "",
+      fetch: async () => new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    }),
+    createRetryFetch: (nextFetch) => {
+      calls.copilotRetry += 1
+      return nextFetch
+    },
+  })
+
+  await copilot.auth?.loader?.(
+    async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }),
+    { models: {} },
+  )
+
+  const codex = buildPluginHooks({
+    auth: {
+      provider: "openai",
+      methods: [],
+    },
+    loadStore: async () => ({
+      accounts: {},
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
+    loadCommonSettings: async () => ({
+      networkRetryEnabled: true,
+    }),
+    loadOfficialConfig: async () => ({
+      apiKey: "",
+      fetch: async () => new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    }),
+    createRetryFetch: (nextFetch) => {
+      calls.codexRetry += 1
+      return nextFetch
+    },
+  })
+
+  await codex.auth?.loader?.(
+    async () => ({ type: "oauth", refresh: "r", access: "a", expires: 0 }),
+    { models: {} },
+  )
+
+  assert.equal(calls.copilotRetry, 1)
+  assert.equal(calls.codexRetry, 1)
+})
+
 test("plugin auth loader suppresses first-use agent initiator once and restores agent initiator on later requests", async () => {
   const outgoing = []
   const plugin = buildPluginHooks({
@@ -6104,10 +6304,14 @@ test("user-reselect toast and outbound x-initiator stay aligned for routed user 
   assert.equal(outgoing.at(-1)?.headers["x-initiator"], "user")
 })
 
-test("plugin menu toggle path persists loopSafetyEnabled", async () => {
-  const writes = []
+test("plugin menu common toggle path persists loopSafetyEnabled via common settings store", async () => {
+  const storeWrites = []
+  const commonWrites = []
   const store = {
     accounts: {},
+    loopSafetyEnabled: false,
+  }
+  const commonSettings = {
     loopSafetyEnabled: false,
   }
 
@@ -6115,20 +6319,44 @@ test("plugin menu toggle path persists loopSafetyEnabled", async () => {
     action: { type: "toggle-loop-safety" },
     store,
     writeStore: async (next) => {
-      writes.push(next.loopSafetyEnabled)
+      storeWrites.push(next.loopSafetyEnabled)
+    },
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (next) => {
+      commonSettings.loopSafetyEnabled = next.loopSafetyEnabled
+      commonWrites.push(next.loopSafetyEnabled)
     },
   })
 
   assert.equal(handled, true)
-  assert.equal(store.loopSafetyEnabled, true)
-  assert.deepEqual(writes, [true])
+  assert.equal(store.loopSafetyEnabled, false)
+  assert.equal(commonSettings.loopSafetyEnabled, true)
+  assert.deepEqual(storeWrites, [])
+  assert.deepEqual(commonWrites, [true])
 })
 
-test("plugin menu toggle path persists networkRetryEnabled", async () => {
-  const writes = []
+test("plugin menu common toggle path requires common settings store for networkRetryEnabled", async () => {
   const store = {
     accounts: {},
     loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+  }
+
+  await assert.rejects(() => applyMenuAction({
+    action: { type: "toggle-network-retry" },
+    store,
+    writeStore: async () => {},
+  }), /requires common settings store/i)
+})
+
+test("plugin menu common toggle path persists networkRetryEnabled via common settings store", async () => {
+  const storeWrites = []
+  const commonWrites = []
+  const store = {
+    accounts: {},
+    networkRetryEnabled: false,
+  }
+  const commonSettings = {
     networkRetryEnabled: false,
   }
 
@@ -6136,13 +6364,20 @@ test("plugin menu toggle path persists networkRetryEnabled", async () => {
     action: { type: "toggle-network-retry" },
     store,
     writeStore: async (next) => {
-      writes.push(next.networkRetryEnabled)
+      storeWrites.push(next.networkRetryEnabled)
+    },
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (next) => {
+      commonSettings.networkRetryEnabled = next.networkRetryEnabled
+      commonWrites.push(next.networkRetryEnabled)
     },
   })
 
   assert.equal(handled, true)
-  assert.equal(store.networkRetryEnabled, true)
-  assert.deepEqual(writes, [true])
+  assert.equal(store.networkRetryEnabled, false)
+  assert.equal(commonSettings.networkRetryEnabled, true)
+  assert.deepEqual(storeWrites, [])
+  assert.deepEqual(commonWrites, [true])
 })
 
 test("plugin menu toggle path persists synthetic initiator state", async () => {
@@ -6167,11 +6402,28 @@ test("plugin menu toggle path persists synthetic initiator state", async () => {
   assert.deepEqual(writes, [true])
 })
 
-test("plugin menu toggle path persists loopSafetyProviderScope", async () => {
-  const writes = []
+test("plugin menu common toggle path requires common settings store for loopSafetyProviderScope", async () => {
   const store = {
     accounts: {},
     loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+  }
+
+  await assert.rejects(() => applyMenuAction({
+    action: { type: "toggle-loop-safety-provider-scope" },
+    store,
+    writeStore: async () => {},
+  }), /requires common settings store/i)
+})
+
+test("plugin menu common toggle path persists loopSafetyProviderScope via common settings store", async () => {
+  const storeWrites = []
+  const commonWrites = []
+  const store = {
+    accounts: {},
+    loopSafetyProviderScope: "copilot-only",
+  }
+  const commonSettings = {
     loopSafetyProviderScope: "copilot-only",
   }
 
@@ -6179,20 +6431,31 @@ test("plugin menu toggle path persists loopSafetyProviderScope", async () => {
     action: { type: "toggle-loop-safety-provider-scope" },
     store,
     writeStore: async (next) => {
-      writes.push(next.loopSafetyProviderScope)
+      storeWrites.push(next.loopSafetyProviderScope)
+    },
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (next) => {
+      commonSettings.loopSafetyProviderScope = next.loopSafetyProviderScope
+      commonWrites.push(next.loopSafetyProviderScope)
     },
   })
 
   assert.equal(handled, true)
-  assert.equal(store.loopSafetyProviderScope, "all-models")
-  assert.deepEqual(writes, ["all-models"])
+  assert.equal(store.loopSafetyProviderScope, "copilot-only")
+  assert.equal(commonSettings.loopSafetyProviderScope, "all-models")
+  assert.deepEqual(storeWrites, [])
+  assert.deepEqual(commonWrites, ["all-models"])
 })
 
-test("plugin menu toggle path toggles loopSafetyProviderScope back to copilot-only", async () => {
-  const writes = []
+test("plugin menu common toggle path toggles loopSafetyProviderScope back to copilot-only via common settings store", async () => {
+  const storeWrites = []
+  const commonWrites = []
   const store = {
     accounts: {},
     loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+  }
+  const commonSettings = {
     loopSafetyProviderScope: "all-models",
   }
 
@@ -6200,20 +6463,44 @@ test("plugin menu toggle path toggles loopSafetyProviderScope back to copilot-on
     action: { type: "toggle-loop-safety-provider-scope" },
     store,
     writeStore: async (next) => {
-      writes.push(next.loopSafetyProviderScope)
+      storeWrites.push(next.loopSafetyProviderScope)
+    },
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (next) => {
+      commonSettings.loopSafetyProviderScope = next.loopSafetyProviderScope
+      commonWrites.push(next.loopSafetyProviderScope)
     },
   })
 
   assert.equal(handled, true)
   assert.equal(store.loopSafetyProviderScope, "copilot-only")
-  assert.deepEqual(writes, ["copilot-only"])
+  assert.equal(commonSettings.loopSafetyProviderScope, "copilot-only")
+  assert.deepEqual(storeWrites, [])
+  assert.deepEqual(commonWrites, ["copilot-only"])
 })
 
-test("plugin menu toggle path persists experimental slash commands state", async () => {
-  const writes = []
+test("plugin menu common toggle path requires common settings store for experimental slash commands", async () => {
   const store = {
     accounts: {},
     loopSafetyEnabled: true,
+    experimentalSlashCommandsEnabled: true,
+  }
+
+  await assert.rejects(() => applyMenuAction({
+    action: { type: "toggle-experimental-slash-commands" },
+    store,
+    writeStore: async () => {},
+  }), /requires common settings store/i)
+})
+
+test("plugin menu common toggle path persists experimental slash commands state via common settings store", async () => {
+  const storeWrites = []
+  const commonWrites = []
+  const store = {
+    accounts: {},
+    experimentalSlashCommandsEnabled: true,
+  }
+  const commonSettings = {
     experimentalSlashCommandsEnabled: true,
   }
 
@@ -6221,27 +6508,39 @@ test("plugin menu toggle path persists experimental slash commands state", async
     action: { type: "toggle-experimental-slash-commands" },
     store,
     writeStore: async (next) => {
-      writes.push(next.experimentalSlashCommandsEnabled)
+      storeWrites.push(next.experimentalSlashCommandsEnabled)
+    },
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (next) => {
+      commonSettings.experimentalSlashCommandsEnabled = next.experimentalSlashCommandsEnabled
+      commonWrites.push(next.experimentalSlashCommandsEnabled)
     },
   })
 
   assert.equal(handled, true)
-  assert.equal(store.experimentalSlashCommandsEnabled, false)
-  assert.deepEqual(writes, [false])
+  assert.equal(store.experimentalSlashCommandsEnabled, true)
+  assert.equal(commonSettings.experimentalSlashCommandsEnabled, false)
+  assert.deepEqual(storeWrites, [])
+  assert.deepEqual(commonWrites, [false])
 })
 
-test("plugin menu toggle path forwards debug reason for loop safety writes", async () => {
+test("plugin menu common toggle path forwards debug reason for loop safety writes", async () => {
   const writes = []
   const store = {
     accounts: {},
     loopSafetyEnabled: true,
     networkRetryEnabled: true,
   }
+  const commonSettings = {
+    loopSafetyEnabled: true,
+  }
 
   const handled = await applyMenuAction({
     action: { type: "toggle-loop-safety" },
     store,
-    writeStore: async (_next, meta) => {
+    writeStore: async () => {},
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (_next, meta) => {
       writes.push(meta)
     },
   })
@@ -6250,24 +6549,29 @@ test("plugin menu toggle path forwards debug reason for loop safety writes", asy
   assert.deepEqual(writes, [
     {
       reason: "toggle-loop-safety",
-      source: "applyMenuAction",
+      source: "applyCommonSettingsAction",
       actionType: "toggle-loop-safety",
     },
   ])
 })
 
-test("plugin menu toggle path forwards debug reason for policy scope writes", async () => {
+test("plugin menu common toggle path forwards debug reason for policy scope writes", async () => {
   const writes = []
   const store = {
     accounts: {},
     loopSafetyEnabled: true,
     loopSafetyProviderScope: "copilot-only",
   }
+  const commonSettings = {
+    loopSafetyProviderScope: "copilot-only",
+  }
 
   const handled = await applyMenuAction({
     action: { type: "toggle-loop-safety-provider-scope" },
     store,
-    writeStore: async (_next, meta) => {
+    writeStore: async () => {},
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (_next, meta) => {
       writes.push(meta)
     },
   })
@@ -6276,24 +6580,29 @@ test("plugin menu toggle path forwards debug reason for policy scope writes", as
   assert.deepEqual(writes, [
     {
       reason: "toggle-loop-safety-provider-scope",
-      source: "applyMenuAction",
+      source: "applyCommonSettingsAction",
       actionType: "toggle-loop-safety-provider-scope",
     },
   ])
 })
 
-test("plugin menu toggle path forwards debug reason for experimental slash command writes", async () => {
+test("plugin menu common toggle path forwards debug reason for experimental slash command writes", async () => {
   const writes = []
   const store = {
     accounts: {},
     loopSafetyEnabled: true,
     experimentalSlashCommandsEnabled: true,
   }
+  const commonSettings = {
+    experimentalSlashCommandsEnabled: true,
+  }
 
   const handled = await applyMenuAction({
     action: { type: "toggle-experimental-slash-commands" },
     store,
-    writeStore: async (_next, meta) => {
+    writeStore: async () => {},
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (_next, meta) => {
       writes.push(meta)
     },
   })
@@ -6302,7 +6611,7 @@ test("plugin menu toggle path forwards debug reason for experimental slash comma
   assert.deepEqual(writes, [
     {
       reason: "toggle-experimental-slash-commands",
-      source: "applyMenuAction",
+      source: "applyCommonSettingsAction",
       actionType: "toggle-experimental-slash-commands",
     },
   ])
@@ -6627,6 +6936,13 @@ test("copilot menu runtime shared remove actions keep debug metadata", async () 
       writes.push(meta)
     },
     readAuth: async () => ({}),
+    readCommonSettings: async () => ({
+      networkRetryEnabled: store.networkRetryEnabled,
+    }),
+    writeCommonSettings: async (settings, meta) => {
+      store.networkRetryEnabled = settings.networkRetryEnabled === true
+      writes.push(meta)
+    },
   })
   const accounts = await adapter.toMenuInfo(store)
   const backup = accounts.find((account) => account.id === "github.com:backup")
@@ -6714,6 +7030,9 @@ test("copilot menu runtime toggle actions keep write semantics", async () => {
   const { createCopilotMenuAdapter } = await import("../dist/providers/copilot-menu-adapter.js")
 
   const writes = []
+  const commonSettings = {
+    networkRetryEnabled: false,
+  }
   const store = {
     active: "main",
     accounts: {
@@ -6733,6 +7052,11 @@ test("copilot menu runtime toggle actions keep write semantics", async () => {
       writes.push(meta)
     },
     readAuth: async () => ({}),
+    readCommonSettings: async () => commonSettings,
+    writeCommonSettings: async (settings, meta) => {
+      commonSettings.networkRetryEnabled = settings.networkRetryEnabled === true
+      writes.push(meta)
+    },
   })
   const actions = [
     { type: "provider", name: "toggle-network-retry" },
@@ -6744,11 +7068,12 @@ test("copilot menu runtime toggle actions keep write semantics", async () => {
     showMenu: async () => actions.shift() ?? { type: "cancel" },
   })
 
-  assert.equal(store.networkRetryEnabled, true)
+  assert.equal(store.networkRetryEnabled, false)
+  assert.equal(commonSettings.networkRetryEnabled, true)
   assert.deepEqual(writes, [
     {
       reason: "toggle-network-retry",
-      source: "applyMenuAction",
+      source: "applyCommonSettingsAction",
       actionType: "toggle-network-retry",
     },
   ])
@@ -7315,7 +7640,7 @@ test("codex descriptor declares independent menu capabilities", () => {
   assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.providerIDs, ["openai"])
   assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.commands, ["codex-status"])
   assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.menuEntries, ["switch-account", "add-account", "refresh-snapshot"])
-  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.capabilities, ["auth", "slash-commands"])
+  assert.deepEqual(CODEX_PROVIDER_DESCRIPTOR.capabilities, ["auth", "chat-headers", "network-retry", "slash-commands"])
   assert.equal(CODEX_PROVIDER_DESCRIPTOR.storeNamespace, "codex")
 })
 
@@ -7333,6 +7658,53 @@ test("provider registry exposes both Copilot and Codex descriptors", async () =>
   assert.equal(providers?.copilot?.descriptor?.auth?.provider, "github-copilot")
   assert.equal(providers?.codex?.descriptor?.auth?.provider, "openai")
   assert.equal(providers?.codex?.descriptor?.enabledByDefault, true)
+})
+
+test("provider registry maps descriptor capabilities into buildPluginHooks runtime options", async () => {
+  let captured = []
+  const registry = await import(`../dist/provider-registry.js?provider-runtime-${Date.now()}`)
+
+  const providers = registry.createProviderRegistry({
+    buildPluginHooks: (input) => {
+      captured.push({
+        provider: input.auth.provider,
+        authLoaderMode: input.authLoaderMode,
+        enableModelRouting: input.enableModelRouting,
+        hasOfficialConfig: typeof input.loadOfficialConfig === "function",
+        hasOfficialChatHeaders: typeof input.loadOfficialChatHeaders === "function",
+        hasRetryFetch: typeof input.createRetryFetch === "function",
+      })
+      return {
+        auth: input.auth,
+      }
+    },
+  })
+
+  providers.copilot.descriptor.buildPluginHooks({
+    auth: { provider: "github-copilot", methods: [] },
+  })
+  providers.codex.descriptor.buildPluginHooks({
+    auth: { provider: "openai", methods: [] },
+  })
+
+  assert.deepEqual(captured, [
+    {
+      provider: "github-copilot",
+      authLoaderMode: "copilot",
+      enableModelRouting: true,
+      hasOfficialConfig: true,
+      hasOfficialChatHeaders: true,
+      hasRetryFetch: true,
+    },
+    {
+      provider: "openai",
+      authLoaderMode: "codex",
+      enableModelRouting: false,
+      hasOfficialConfig: true,
+      hasOfficialChatHeaders: true,
+      hasRetryFetch: true,
+    },
+  ])
 })
 
 test("github-copilot auth methods no longer include Codex entry", async () => {
@@ -7353,7 +7725,7 @@ test("github-copilot auth methods no longer include Codex entry", async () => {
   ])
 })
 
-test("openai auth provider is wired to direct Codex menu entry", async () => {
+test("openai auth provider is wired to Codex menu entry and codex auth loader", async () => {
   const { OpenAICodexAccountSwitcher } = await import(`../dist/plugin.js?codex-auth-${Date.now()}`)
 
   const plugin = await OpenAICodexAccountSwitcher({
@@ -7366,7 +7738,7 @@ test("openai auth provider is wired to direct Codex menu entry", async () => {
   })
 
   assert.equal(plugin.auth?.provider, "openai")
-  assert.equal(plugin.auth?.loader, undefined)
+  assert.equal(typeof plugin.auth?.loader, "function")
   assert.deepEqual(plugin.auth?.methods?.map((method) => method.label), [
     "Manage OpenAI Codex accounts",
   ])
@@ -7383,6 +7755,7 @@ test("provider descriptor contract keeps Copilot assembled and Codex enabled", a
     buildPluginHooks,
   })
   const codex = descriptors.createCodexProviderDescriptor({
+    buildPluginHooks,
     enabled: true,
   })
 
@@ -7390,7 +7763,7 @@ test("provider descriptor contract keeps Copilot assembled and Codex enabled", a
   assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.providerIDs, ["openai"])
   assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.commands, ["codex-status"])
   assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.menuEntries, ["switch-account", "add-account", "refresh-snapshot"])
-  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.capabilities, ["auth", "slash-commands"])
+  assert.deepEqual(descriptors.CODEX_PROVIDER_DESCRIPTOR.capabilities, ["auth", "chat-headers", "network-retry", "slash-commands"])
   assert.equal(descriptors.CODEX_PROVIDER_DESCRIPTOR.storeNamespace, "codex")
   assert.equal(codex.enabledByDefault, true)
 })

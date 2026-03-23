@@ -12,10 +12,16 @@ import {
 import { recoverInvalidCodexAccount } from "../codex-invalid-account.js"
 import type { ProviderMenuAdapter } from "../menu-runtime.js"
 import { readAuth, type AccountEntry } from "../store.js"
+import {
+  readCommonSettingsStore,
+  writeCommonSettingsStore,
+  type CommonSettingsStore,
+} from "../common-settings-store.js"
+import { applyCommonSettingsAction } from "../common-settings-actions.js"
 
 type WriteMeta = {
-  reason: string
-  source: string
+  reason?: string
+  source?: string
   actionType?: string
 }
 
@@ -67,6 +73,8 @@ type AdapterDependencies = {
     accountId?: string
   }) => Promise<CodexStatusFetcherResult>
   runCodexOAuth?: () => Promise<CodexOAuthAccount | undefined>
+  readCommonSettings?: () => Promise<CommonSettingsStore>
+  writeCommonSettings?: (settings: CommonSettingsStore, meta?: WriteMeta) => Promise<void>
 }
 
 function pickName(input: {
@@ -141,6 +149,14 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
   const loadAuth = inputDeps.readAuthEntries ?? readAuth
   const fetchStatus = inputDeps.fetchStatus ?? ((input) => fetchCodexStatus(input))
   const authorizeOpenAIOAuth = inputDeps.runCodexOAuth ?? runCodexOAuth
+  const readCommonSettings = inputDeps.readCommonSettings ?? readCommonSettingsStore
+  const writeCommonSettings = async (settings: CommonSettingsStore, meta?: WriteMeta) => {
+    if (inputDeps.writeCommonSettings) {
+      await inputDeps.writeCommonSettings(settings, meta)
+      return
+    }
+    await writeCommonSettingsStore(settings)
+  }
 
   const refreshSnapshots = async (store: CodexStoreFile) => {
     const names = Object.keys(store.accounts)
@@ -426,6 +442,19 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         if (!Number.isFinite(value)) return false
         store.refreshMinutes = Math.max(1, Math.min(180, value))
         return true
+      }
+      if (
+        action.name === "toggle-loop-safety"
+        || action.name === "toggle-loop-safety-provider-scope"
+        || action.name === "toggle-experimental-slash-commands"
+        || action.name === "toggle-network-retry"
+      ) {
+        await applyCommonSettingsAction({
+          action: { type: action.name },
+          readSettings: readCommonSettings,
+          writeSettings: writeCommonSettings,
+        })
+        return false
       }
       return false
     },

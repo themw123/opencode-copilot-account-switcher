@@ -1,9 +1,6 @@
 import path from "node:path"
-import os from "node:os"
 import { promises as fs } from "node:fs"
-import { xdgConfig } from "xdg-basedir"
-
-const filename = "codex-store.json"
+import { codexAccountsPath, legacyCodexStorePath } from "./store-paths.js"
 
 type CodexUsageWindow = {
   entitlement?: number
@@ -272,14 +269,17 @@ export function getActiveCodexAccount(store: CodexStoreFile): { name: string; en
 }
 
 export function codexStorePath(): string {
-  const base = xdgConfig ?? path.join(os.homedir(), ".config")
-  return path.join(base, "opencode", filename)
+  return codexAccountsPath()
 }
 
 export async function readCodexStore(filePath = codexStorePath()): Promise<CodexStoreFile> {
-  const raw = await fs.readFile(filePath, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return ""
-    throw error
+  const raw = await fs.readFile(filePath, "utf8").catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error
+    if (filePath !== codexStorePath()) return ""
+    return fs.readFile(legacyCodexStorePath(), "utf8").catch((legacyError: NodeJS.ErrnoException) => {
+      if (legacyError.code === "ENOENT") return ""
+      throw legacyError
+    })
   })
   return parseCodexStore(raw)
 }

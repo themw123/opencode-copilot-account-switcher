@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-import { parseStore, readAuth, readStore, readStoreSafe, writeStore } from "../dist/store.js"
+import { parseStore, readAuth, readStore, readStoreSafe, storePath, writeStore } from "../dist/store.js"
 
 async function withStoreDebugEnv(logFile, enabled, action) {
   const previousFile = process.env.OPENCODE_COPILOT_STORE_DEBUG_FILE
@@ -38,6 +38,13 @@ test("parseStore defaults loopSafetyEnabled to true when missing", () => {
 
   assert.equal(store.loopSafetyEnabled, true)
   assert.deepEqual(store.accounts, {})
+})
+
+test("storePath uses account-switcher copilot store path", () => {
+  const normalized = storePath().replace(/\\/g, "/")
+
+  assert.equal(path.basename(normalized), "copilot-accounts.json")
+  assert.match(normalized, /\/opencode\/account-switcher\/copilot-accounts\.json$/)
 })
 
 test("parseStore defaults networkRetryEnabled to false when missing", () => {

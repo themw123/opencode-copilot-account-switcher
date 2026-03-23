@@ -75,10 +75,10 @@ function defaultMenuCapabilities(provider: MenuProvider): MenuCapabilities {
       checkModels: false,
       defaultAccountGroup: false,
       assignModels: false,
-      loopSafety: false,
-      policyScope: false,
-      experimentalSlashCommands: false,
-      networkRetry: false,
+      loopSafety: true,
+      policyScope: true,
+      experimentalSlashCommands: true,
+      networkRetry: true,
       syntheticAgentInitiator: false,
     }
   }
@@ -105,6 +105,8 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
         menuSubtitle: "Select an action or account",
         switchLanguageLabel: "切换到中文",
         actionsHeading: "Actions",
+        commonSettingsHeading: "Common settings",
+        providerSettingsHeading: "Provider settings",
         addAccount: "Add account",
         addAccountHint: "OpenAI OAuth login",
         importAuth: "Import from auth.json",
@@ -141,6 +143,8 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       menuSubtitle: "请选择操作或账号",
       switchLanguageLabel: "Switch to English",
       actionsHeading: "操作",
+      commonSettingsHeading: "通用设置",
+      providerSettingsHeading: "Provider 专属设置",
       addAccount: "添加账号",
       addAccountHint: "OpenAI OAuth 登录",
       importAuth: "从 auth.json 导入",
@@ -179,6 +183,8 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       menuSubtitle: "Select an action or account",
       switchLanguageLabel: "切换到中文",
       actionsHeading: "Actions",
+      commonSettingsHeading: "Common settings",
+      providerSettingsHeading: "Provider settings",
       addAccount: "Add account",
       addAccountHint: "device login or manual",
       importAuth: "Import from auth.json",
@@ -200,9 +206,9 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       experimentalSlashCommandsOff: "Experimental slash commands: Off",
       experimentalSlashCommandsHint:
         "Controls whether /copilot-status, /copilot-compact, /copilot-stop-tool, /copilot-inject, and /copilot-policy-all-models are registered",
-      retryOn: "Copilot Network Retry: On",
-      retryOff: "Copilot Network Retry: Off",
-      retryHint: "Helps recover some requests after account switches or malformed retries",
+      retryOn: "Network Retry: On",
+      retryOff: "Network Retry: Off",
+      retryHint: "Helps recover some requests after retries or malformed responses",
       syntheticInitiatorOn: "Send synthetic messages as agent: On",
       syntheticInitiatorOff: "Send synthetic messages as agent: Off",
       syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
@@ -217,6 +223,8 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
     menuSubtitle: "请选择操作或账号",
     switchLanguageLabel: "Switch to English",
     actionsHeading: "操作",
+    commonSettingsHeading: "通用设置",
+    providerSettingsHeading: "Provider 专属设置",
     addAccount: "添加账号",
     addAccountHint: "设备登录或手动录入",
     importAuth: "从 auth.json 导入",
@@ -238,9 +246,9 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
     experimentalSlashCommandsOff: "实验性 Slash Commands：已关闭",
     experimentalSlashCommandsHint:
       "控制 /copilot-status、/copilot-compact、/copilot-stop-tool、/copilot-inject、/copilot-policy-all-models 是否注册",
-    retryOn: "Copilot Network Retry：已开启",
-    retryOff: "Copilot Network Retry：已关闭",
-    retryHint: "账号切换后若出现请求异常，可自动重试并修复部分请求",
+    retryOn: "Network Retry：已开启",
+    retryOff: "Network Retry：已关闭",
+    retryHint: "请求异常时可自动重试并修复部分请求",
     syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
     syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
     syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
@@ -296,36 +304,32 @@ export function buildMenuItems(input: {
     capabilities.checkModels = false
     capabilities.defaultAccountGroup = false
     capabilities.assignModels = false
-    capabilities.loopSafety = false
-    capabilities.policyScope = false
-    capabilities.experimentalSlashCommands = false
-    capabilities.networkRetry = false
     capabilities.syntheticAgentInitiator = false
   }
   const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
   const loopSafetyProviderScope = input.loopSafetyProviderScope ?? "copilot-only"
   const experimentalSlashCommandsEnabled = input.experimentalSlashCommandsEnabled !== false
 
-  const actions: MenuItem<MenuAction>[] = [
+  const providerActions: MenuItem<MenuAction>[] = [
     { label: copy.actionsHeading, value: { type: "cancel" }, kind: "heading" },
     { label: copy.switchLanguageLabel, value: { type: "toggle-language" }, color: "cyan" },
     { label: copy.addAccount, value: { type: "add" }, color: "cyan", hint: copy.addAccountHint },
   ]
 
   if (capabilities.importAuth) {
-    actions.push({ label: copy.importAuth, value: { type: "import" }, color: "cyan" })
+    providerActions.push({ label: copy.importAuth, value: { type: "import" }, color: "cyan" })
   }
   if (capabilities.quota) {
-    actions.push({ label: copy.checkQuotas, value: { type: "quota" }, color: "cyan", hint: quotaHint })
+    providerActions.push({ label: copy.checkQuotas, value: { type: "quota" }, color: "cyan", hint: quotaHint })
   }
   if (capabilities.refreshIdentity) {
-    actions.push({ label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" })
+    providerActions.push({ label: copy.refreshIdentity, value: { type: "refresh-identity" }, color: "cyan" })
   }
   if (capabilities.checkModels) {
-    actions.push({ label: copy.checkModels, value: { type: "check-models" }, color: "cyan" })
+    providerActions.push({ label: copy.checkModels, value: { type: "check-models" }, color: "cyan" })
   }
   if (capabilities.defaultAccountGroup) {
-    actions.push({
+    providerActions.push({
       label: copy.defaultAccountGroup,
       value: { type: "configure-default-group" },
       color: "cyan",
@@ -333,54 +337,59 @@ export function buildMenuItems(input: {
     })
   }
   if (capabilities.assignModels) {
-    actions.push({
+    providerActions.push({
       label: copy.assignModels,
       value: { type: "assign-models" },
       color: "cyan",
       hint: input.modelAccountAssignmentCount ? `${input.modelAccountAssignmentCount} groups` : undefined,
     })
   }
-  actions.push({
+
+  const commonSettings: MenuItem<MenuAction>[] = [
+    { label: copy.commonSettingsHeading, value: { type: "cancel" }, kind: "heading" },
+    {
+      label: input.loopSafetyEnabled ? copy.loopSafetyOn : copy.loopSafetyOff,
+      value: { type: "toggle-loop-safety" },
+      color: "cyan",
+      hint: copy.loopSafetyHint,
+      disabled: !capabilities.loopSafety,
+    },
+    {
+      label: loopSafetyProviderScope === "all-models" ? copy.policyScopeAllModels : copy.policyScopeCopilotOnly,
+      value: { type: "toggle-loop-safety-provider-scope" },
+      color: "cyan",
+      hint: copy.policyScopeHint,
+      disabled: !capabilities.policyScope,
+    },
+    {
+      label: experimentalSlashCommandsEnabled ? copy.experimentalSlashCommandsOn : copy.experimentalSlashCommandsOff,
+      value: { type: "toggle-experimental-slash-commands" },
+      color: "cyan",
+      hint: copy.experimentalSlashCommandsHint,
+      disabled: !capabilities.experimentalSlashCommands,
+    },
+    {
+      label: input.networkRetryEnabled ? copy.retryOn : copy.retryOff,
+      value: { type: "toggle-network-retry" },
+      color: "cyan",
+      hint: copy.retryHint,
+      disabled: !capabilities.networkRetry,
+    },
+  ]
+
+  const providerSettings: MenuItem<MenuAction>[] = [
+    { label: copy.providerSettingsHeading, value: { type: "cancel" }, kind: "heading" },
+  ]
+
+  providerSettings.push({
     label: input.refresh?.enabled ? copy.autoRefreshOn : copy.autoRefreshOff,
     value: { type: "toggle-refresh" },
     color: "cyan",
     hint: input.refresh ? `${input.refresh.minutes}m` : undefined,
   })
-  actions.push({ label: copy.setRefresh, value: { type: "set-interval" }, color: "cyan" })
-  if (capabilities.loopSafety) {
-    actions.push({
-      label: input.loopSafetyEnabled ? copy.loopSafetyOn : copy.loopSafetyOff,
-      value: { type: "toggle-loop-safety" },
-      color: "cyan",
-      hint: copy.loopSafetyHint,
-    })
-  }
-  if (capabilities.policyScope) {
-    actions.push({
-      label: loopSafetyProviderScope === "all-models" ? copy.policyScopeAllModels : copy.policyScopeCopilotOnly,
-      value: { type: "toggle-loop-safety-provider-scope" },
-      color: "cyan",
-      hint: copy.policyScopeHint,
-    })
-  }
-  if (capabilities.experimentalSlashCommands) {
-    actions.push({
-      label: experimentalSlashCommandsEnabled ? copy.experimentalSlashCommandsOn : copy.experimentalSlashCommandsOff,
-      value: { type: "toggle-experimental-slash-commands" },
-      color: "cyan",
-      hint: copy.experimentalSlashCommandsHint,
-    })
-  }
-  if (capabilities.networkRetry) {
-    actions.push({
-      label: input.networkRetryEnabled ? copy.retryOn : copy.retryOff,
-      value: { type: "toggle-network-retry" },
-      color: "cyan",
-      hint: copy.retryHint,
-    })
-  }
+  providerSettings.push({ label: copy.setRefresh, value: { type: "set-interval" }, color: "cyan" })
   if (capabilities.syntheticAgentInitiator) {
-    actions.push({
+    providerSettings.push({
       label: input.syntheticAgentInitiatorEnabled ? copy.syntheticInitiatorOn : copy.syntheticInitiatorOff,
       value: { type: "toggle-synthetic-agent-initiator" },
       color: "cyan",
@@ -389,7 +398,11 @@ export function buildMenuItems(input: {
   }
 
   return [
-    ...actions,
+    ...providerActions,
+    { label: "", value: { type: "cancel" }, separator: true },
+    ...commonSettings,
+    { label: "", value: { type: "cancel" }, separator: true },
+    ...providerSettings,
     { label: "", value: { type: "cancel" }, separator: true },
     { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
     ...input.accounts.map((account) => {

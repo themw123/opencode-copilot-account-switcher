@@ -9,6 +9,7 @@ import {
   type CopilotPluginHooks,
 } from "./loop-safety-plugin.js"
 import { COPILOT_PROVIDER_DESCRIPTOR } from "./providers/descriptor.js"
+import { CODEX_PROVIDER_DESCRIPTOR } from "./providers/descriptor.js"
 import {
   createCopilotRetryingFetch,
   cleanupLongIdsForAccountSwitch,
@@ -17,6 +18,7 @@ import {
   type CopilotRetryContext,
   type FetchLike,
 } from "./copilot-network-retry.js"
+import { createCodexRetryingFetch } from "./codex-network-retry.js"
 import { createCopilotRetryNotifier } from "./copilot-retry-notifier.js"
 import { resolveCopilotModelAccounts, type ResolvedModelAccountCandidate } from "./model-account-map.js"
 import { normalizeDomain } from "./copilot-api-helpers.js"
@@ -29,8 +31,13 @@ import {
   type OfficialCopilotConfig,
   type OfficialChatHeadersHook,
 } from "./upstream/copilot-loader-adapter.js"
+import {
+  loadOfficialCodexConfig,
+  loadOfficialCodexChatHeaders,
+} from "./upstream/codex-loader-adapter.js"
 import { createNotifyTool } from "./notify-tool.js"
 import { createWaitTool } from "./wait-tool.js"
+import type { CommonSettingsStore } from "./common-settings-store.js"
 import { refreshActiveAccountQuota, type RefreshActiveAccountQuotaResult } from "./active-account-quota.js"
 import { handleStatusCommand, showStatusToast } from "./status-command.js"
 import { handleCodexStatusCommand } from "./codex-status-command.js"
@@ -92,6 +99,8 @@ type SessionBinding = {
   lastUsedAt: number
 }
 
+type LoadOfficialChatHeaders = (input: { client?: object; directory?: string }) => Promise<OfficialChatHeadersHook>
+
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const RATE_LIMIT_HIT_THRESHOLD = 3
@@ -132,6 +141,10 @@ type RetryStoreContext = {
 
 function isCopilotProviderID(providerID: string) {
   return COPILOT_PROVIDER_DESCRIPTOR.providerIDs.includes(providerID)
+}
+
+function isCodexProviderID(providerID: string) {
+  return CODEX_PROVIDER_DESCRIPTOR.providerIDs.includes(providerID)
 }
 
 type DebugPart = {
@@ -200,6 +213,28 @@ function areExperimentalSlashCommandsEnabled(store: StoreFile | undefined) {
   if (store?.experimentalSlashCommandsEnabled === false) return false
   if (store?.experimentalStatusSlashCommandEnabled === false) return false
   return true
+}
+
+function mergeStoreWithCommonSettings(
+  store: StoreFile | undefined,
+  common: CommonSettingsStore | undefined,
+): StoreFile | undefined {
+  if (!store && !common) return undefined
+  return {
+    ...(store ?? { accounts: {} }),
+    ...(common?.loopSafetyEnabled === true || common?.loopSafetyEnabled === false
+      ? { loopSafetyEnabled: common.loopSafetyEnabled }
+      : {}),
+    ...(common?.loopSafetyProviderScope
+      ? { loopSafetyProviderScope: common.loopSafetyProviderScope }
+      : {}),
+    ...(common?.networkRetryEnabled === true || common?.networkRetryEnabled === false
+      ? { networkRetryEnabled: common.networkRetryEnabled }
+      : {}),
+    ...(common?.experimentalSlashCommandsEnabled === true || common?.experimentalSlashCommandsEnabled === false
+      ? { experimentalSlashCommandsEnabled: common.experimentalSlashCommandsEnabled }
+      : {}),
+  }
 }
 
 async function readRequestBody(request: Request | URL | string, init?: RequestInit) {
@@ -602,6 +637,8 @@ export function buildPluginHooks(input: {
   auth: NonNullable<CopilotPluginHooks["auth"]>
   loadStore?: () => Promise<StoreFile | undefined>
   loadStoreSync?: () => StoreFile | undefined
+  loadCommonSettings?: () => Promise<CommonSettingsStore | undefined>
+  loadCommonSettingsSync?: () => CommonSettingsStore | undefined
   writeStore?: (store: StoreFile, meta?: StoreWriteDebugMeta) => Promise<void>
   loadOfficialConfig?: (input: {
     getAuth: () => Promise<CopilotAuthState | undefined>
@@ -648,12 +685,20 @@ export function buildPluginHooks(input: {
   touchWriteCacheIdleTtlMs?: number
   touchWriteCacheMaxEntries?: number
   random?: () => number
+  authLoaderMode?: "copilot" | "codex" | "none"
+  enableModelRouting?: boolean
 }): CopilotPluginHooksWithChatHeaders {
   const authProvider = input.auth.provider ?? COPILOT_PROVIDER_DESCRIPTOR.providerIDs[0] ?? "github-copilot"
-  const enableCopilotAuthLoader = isCopilotProviderID(authProvider)
+  const authLoaderMode = input.authLoaderMode
+    ?? (isCopilotProviderID(authProvider) ? "copilot" : isCodexProviderID(authProvider) ? "codex" : "none")
+  const enableCopilotAuthLoader = authLoaderMode === "copilot"
+  const enableCodexAuthLoader = authLoaderMode === "codex"
+  const enableModelRouting = input.enableModelRouting ?? enableCopilotAuthLoader
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
   const loadStoreSync = input.loadStoreSync ?? readStoreSafeSync
+  const loadCommonSettings = input.loadCommonSettings
+  const loadCommonSettingsSync = input.loadCommonSettingsSync
   const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => {
     if (input.writeStore) return input.writeStore(store, meta)
     return writeStore(store, { debug: meta })
@@ -663,9 +708,44 @@ export function buildPluginHooks(input: {
   const handleCodexStatusCommandImpl = input.handleCodexStatusCommandImpl ?? handleCodexStatusCommand
   const handleCompactCommandImpl = input.handleCompactCommandImpl ?? handleCompactCommand
   const handleStopToolCommandImpl = input.handleStopToolCommandImpl ?? handleStopToolCommand
-  const loadOfficialConfig = input.loadOfficialConfig ?? loadOfficialCopilotConfig
-  const loadOfficialChatHeaders = input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
-  const createRetryFetch = input.createRetryFetch ?? createCopilotRetryingFetch
+  const loadOfficialConfigForCopilot = (args: {
+    getAuth: () => Promise<CopilotAuthState | undefined>
+    provider?: CopilotProviderConfig
+    baseFetch?: typeof fetch
+    version?: string
+  }) => {
+    if (input.loadOfficialConfig) {
+      return (input.loadOfficialConfig as (input: typeof args) => Promise<OfficialCopilotConfig | undefined>)(args)
+    }
+    return loadOfficialCopilotConfig(args)
+  }
+  const loadOfficialConfigForCodex = (args: {
+    getAuth: () => Promise<CopilotAuthState | undefined>
+    provider?: CopilotProviderConfig
+    baseFetch?: typeof fetch
+    version?: string
+  }) => {
+    if (input.loadOfficialConfig) {
+      return (input.loadOfficialConfig as (input: typeof args) => Promise<{ fetch: FetchLike } | undefined>)(args)
+    }
+    return loadOfficialCodexConfig({
+      getAuth: args.getAuth,
+      baseFetch: args.baseFetch,
+      version: args.version,
+      client: input.client as {
+        auth?: {
+          set?: (value: unknown) => Promise<unknown>
+        }
+      } | undefined,
+    })
+  }
+  const resolveOfficialChatHeaders: LoadOfficialChatHeaders = enableCopilotAuthLoader
+    ? input.loadOfficialChatHeaders ?? loadOfficialCopilotChatHeaders
+    : enableCodexAuthLoader
+    ? loadOfficialCodexChatHeaders as unknown as LoadOfficialChatHeaders
+    : (async () => async () => {})
+  const createRetryFetch = input.createRetryFetch
+    ?? (enableCodexAuthLoader ? createCodexRetryingFetch : createCopilotRetryingFetch)
   const now = input.now ?? (() => Date.now())
   const random = input.random ?? Math.random
   let injectArmed = false
@@ -695,6 +775,28 @@ export function buildPluginHooks(input: {
   })
 
   const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
+
+  const loadMergedStore = async () => {
+    const [store, common] = await Promise.all([
+      loadStore().catch(() => undefined),
+      loadCommonSettings?.().catch(() => undefined),
+    ])
+    return mergeStoreWithCommonSettings(store, common)
+  }
+
+  const loadMergedStoreSync = () => mergeStoreWithCommonSettings(loadStoreSync(), loadCommonSettingsSync?.())
+
+  const isNetworkRetryEnabled = async (retryStore?: RetryStoreContext) => {
+    if (loadCommonSettings) {
+      const common = await loadCommonSettings().catch(() => undefined)
+      if (common?.networkRetryEnabled === true) return true
+      if (common?.networkRetryEnabled === false) return false
+    }
+
+    if (retryStore) return retryStore.networkRetryEnabled === true
+    const store = readRetryStoreContext(await loadStore().catch(() => undefined))
+    return store?.networkRetryEnabled === true
+  }
 
   const showInjectToast = async (message: string, variant: "info" | "success" | "warning" | "error" = "info") => {
     await showStatusToast({
@@ -827,6 +929,7 @@ export function buildPluginHooks(input: {
     const finalHeaderCapture = new AsyncLocalStorage<((headers: Record<string, string>) => void) | undefined>()
     const getScopedAuth = async () => authOverride.getStore() ?? getAuth()
     const providerConfig = provider as unknown as CopilotProviderConfig | undefined
+    const loadOfficialConfig = enableCodexAuthLoader ? loadOfficialConfigForCodex : loadOfficialConfigForCopilot
     const config = await loadOfficialConfig({
       getAuth: getScopedAuth as () => Promise<CopilotAuthState | undefined>,
       provider: providerConfig,
@@ -1297,37 +1400,73 @@ export function buildPluginHooks(input: {
       return response
     }
 
-    if (retryStore?.networkRetryEnabled !== true) return {
+    const providerFetch = enableModelRouting
+      ? fetchWithModelAccount
+      : async (request: Request | URL | string, init?: RequestInit) => {
+          const outbound = stripInternalSessionHeader(request, init)
+          return config.fetch(outbound.request, outbound.init)
+        }
+
+    const networkRetryEnabled = await isNetworkRetryEnabled(retryStore)
+
+    if (networkRetryEnabled !== true) return {
       ...config,
-      fetch: fetchWithModelAccount,
+      fetch: providerFetch,
     }
 
     return {
       ...config,
-      fetch: createRetryFetch(fetchWithModelAccount, {
+      fetch: createRetryFetch(providerFetch, {
         client: input.client,
         directory: input.directory,
         serverUrl: input.serverUrl,
-        lastAccountSwitchAt: retryStore.lastAccountSwitchAt,
+        lastAccountSwitchAt: retryStore?.lastAccountSwitchAt,
         notifier: createCopilotRetryNotifier({
           client: input.client,
-          lastAccountSwitchAt: retryStore.lastAccountSwitchAt,
+          lastAccountSwitchAt: retryStore?.lastAccountSwitchAt,
           getLastAccountSwitchAt: getLatestLastAccountSwitchAt,
           clearAccountSwitchContext,
           now: input.now,
         }),
-        clearAccountSwitchContext: async () => clearAccountSwitchContext(retryStore.lastAccountSwitchAt),
+        clearAccountSwitchContext: async () => clearAccountSwitchContext(retryStore?.lastAccountSwitchAt),
       }),
     }
   }
 
-  const officialChatHeaders = loadOfficialChatHeaders({
-    client: input.client,
-    directory: input.directory,
-  })
+  const codexLoader: AuthLoader = async (getAuth) => {
+    const config = await loadOfficialConfigForCodex({
+      getAuth: getAuth as () => Promise<CopilotAuthState | undefined>,
+    }).catch(() => undefined)
+    if (!config || typeof config.fetch !== "function") return {}
+
+    if (await isNetworkRetryEnabled()) {
+      return {
+        ...config,
+        fetch: createRetryFetch(config.fetch as FetchLike),
+      }
+    }
+
+    return {
+      ...config,
+      fetch: config.fetch as FetchLike,
+    }
+  }
+
+  const officialChatHeaders = (enableCopilotAuthLoader || enableCodexAuthLoader)
+    ? resolveOfficialChatHeaders({
+        client: input.client,
+        directory: input.directory,
+      })
+    : Promise.resolve(async () => {})
 
   const chatHeaders: ChatHeadersHook = async (hookInput, output) => {
-    if (!isCopilotProviderID(hookInput.model.providerID)) return
+    if (enableCodexAuthLoader) {
+      if (hookInput.model.providerID !== authProvider) return
+      await (await officialChatHeaders)(hookInput, output)
+      return
+    }
+
+    if (!enableCopilotAuthLoader || !isCopilotProviderID(hookInput.model.providerID)) return
     const headersBeforeOfficial = { ...output.headers }
     await (await officialChatHeaders)(hookInput, output)
 
@@ -1442,42 +1581,47 @@ export function buildPluginHooks(input: {
       ...input.auth,
       provider: authProvider,
       methods: input.auth.methods,
-      loader: enableCopilotAuthLoader ? loader : undefined,
+      loader: enableCopilotAuthLoader ? loader : (enableCodexAuthLoader ? codexLoader : undefined),
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
     config: async (config) => {
       if (!config.command) config.command = {}
-      const store = loadStoreSync()
+      const store = loadMergedStoreSync()
       if (!areExperimentalSlashCommandsEnabled(store)) {
         return
       }
-      config.command["codex-status"] = {
-        template: "Show the current Codex status and usage snapshot via the experimental status path.",
-        description: "Experimental Codex status command",
+      if (enableCodexAuthLoader) {
+        config.command["codex-status"] = {
+          template: "Show the current Codex status and usage snapshot via the experimental status path.",
+          description: "Experimental Codex status command",
+        }
       }
-      config.command["copilot-status"] = {
-        template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
-        description: "Experimental Copilot quota status workaround",
-      }
-      config.command["copilot-compact"] = {
-        template: "Summarize the current session via real session compacting flow.",
-        description: "Experimental compact command for Copilot sessions",
-      }
-      config.command["copilot-stop-tool"] = {
-        template: "Interrupt the current session tool flow, annotate the interrupted result, and append a synthetic continue.",
-        description: "Experimental interrupt-and-annotate recovery with synthetic continue for Copilot sessions",
-      }
-      config.command["copilot-inject"] = {
-        template: "Arm an immediate tool-output inject marker flow that drives model to question.",
-        description: "Experimental force-intervene hook for Copilot workflows",
-      }
-      config.command["copilot-policy-all-models"] = {
-        template: "Toggle the current OpenCode instance policy injection scope between Copilot-only and all providers/models.",
-        description: "Experimental policy scope toggle for all providers",
+      if (enableCopilotAuthLoader) {
+        config.command["copilot-status"] = {
+          template: "Show the current GitHub Copilot quota status via the experimental workaround path.",
+          description: "Experimental Copilot quota status workaround",
+        }
+        config.command["copilot-compact"] = {
+          template: "Summarize the current session via real session compacting flow.",
+          description: "Experimental compact command for Copilot sessions",
+        }
+        config.command["copilot-stop-tool"] = {
+          template: "Interrupt the current session tool flow, annotate the interrupted result, and append a synthetic continue.",
+          description: "Experimental interrupt-and-annotate recovery with synthetic continue for Copilot sessions",
+        }
+        config.command["copilot-inject"] = {
+          template: "Arm an immediate tool-output inject marker flow that drives model to question.",
+          description: "Experimental force-intervene hook for Copilot workflows",
+        }
+        config.command["copilot-policy-all-models"] = {
+          template: "Toggle the current OpenCode instance policy injection scope between Copilot-only and all providers/models.",
+          description: "Experimental policy scope toggle for all providers",
+        }
       }
     },
     "command.execute.before": async (hookInput) => {
-      const store = await loadStore().catch(() => undefined)
+      const store = await loadMergedStore()
       if (hookInput.command === "copilot-inject") {
+        if (!enableCopilotAuthLoader) return
         if (!areExperimentalSlashCommandsEnabled(store)) return
         injectArmed = true
         await showInjectToast("将在模型下次调用工具的时候要求模型立刻调用提问工具", "info")
@@ -1485,6 +1629,7 @@ export function buildPluginHooks(input: {
       }
 
       if (hookInput.command === "copilot-policy-all-models") {
+        if (!enableCopilotAuthLoader) return
         if (!areExperimentalSlashCommandsEnabled(store)) return
         const next = getPolicyScope(store) === "all-models" ? "copilot-only" : "all-models"
         policyScopeOverride = next
@@ -1498,6 +1643,7 @@ export function buildPluginHooks(input: {
       }
 
       if (hookInput.command === "copilot-status") {
+        if (!enableCopilotAuthLoader) return
         if (!areExperimentalSlashCommandsEnabled(store)) return
         await handleStatusCommandImpl({
           client: input.client,
@@ -1508,6 +1654,7 @@ export function buildPluginHooks(input: {
       }
 
       if (hookInput.command === "codex-status") {
+        if (!enableCodexAuthLoader) return
         if (!areExperimentalSlashCommandsEnabled(store)) return
         await handleCodexStatusCommandImpl({
           client: input.client,
@@ -1515,6 +1662,7 @@ export function buildPluginHooks(input: {
       }
 
       if (hookInput.command === "copilot-compact") {
+        if (!enableCopilotAuthLoader) return
         if (!areExperimentalSlashCommandsEnabled(store)) return
         await handleCompactCommandImpl({
           client: input.client ?? {},
@@ -1524,6 +1672,7 @@ export function buildPluginHooks(input: {
       }
 
       if (hookInput.command === "copilot-stop-tool") {
+        if (!enableCopilotAuthLoader) return
         if (!areExperimentalSlashCommandsEnabled(store)) return
         await handleStopToolCommandImpl({
           client: input.client ?? {},
@@ -1589,7 +1738,7 @@ export function buildPluginHooks(input: {
     },
     "chat.headers": chatHeaders,
     "experimental.chat.system.transform": createLoopSafetySystemTransform(
-      loadStore,
+      loadMergedStore,
       compactionLoopSafetyBypass.consume,
       lookupSessionAncestry,
       getPolicyScope,
