@@ -140,12 +140,12 @@ export async function writeCommonSettingsStore(
 ) {
   const file = options?.filePath ?? commonSettingsPath()
   const normalized = normalizeCommonSettingsStore(store)
-  const persisted: CommonSettingsStore = {}
-
-  if (normalized.loopSafetyEnabled === false) persisted.loopSafetyEnabled = false
-  if (normalized.loopSafetyProviderScope === "all-models") persisted.loopSafetyProviderScope = "all-models"
-  if (normalized.networkRetryEnabled === true) persisted.networkRetryEnabled = true
-  if (normalized.experimentalSlashCommandsEnabled === false) persisted.experimentalSlashCommandsEnabled = false
+  const persisted: CommonSettingsStore = {
+    loopSafetyEnabled: normalized.loopSafetyEnabled,
+    loopSafetyProviderScope: normalized.loopSafetyProviderScope,
+    networkRetryEnabled: normalized.networkRetryEnabled,
+    experimentalSlashCommandsEnabled: normalized.experimentalSlashCommandsEnabled,
+  }
 
   await fs.mkdir(path.dirname(file), { recursive: true })
   await fs.writeFile(file, JSON.stringify(persisted, null, 2), { mode: 0o600 })

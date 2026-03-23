@@ -141,7 +141,54 @@ test("common settings store migration is idempotent across repeated reads and wr
 
   assert.deepEqual(second, first)
   assert.deepEqual(await readJson(settingsFile), {
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
+  })
+})
+
+test("writing normalized defaults overrides legacy common settings instead of reviving old values", async () => {
+  const { readCommonSettingsStore, writeCommonSettingsStore } = await loadCommonSettingsStoreOrFail()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "common-settings-store-defaults-"))
+  const settingsFile = path.join(dir, "settings.json")
+  const legacyCopilotFile = path.join(dir, "copilot-accounts.json")
+
+  await writeFile(
+    legacyCopilotFile,
+    JSON.stringify({
+      accounts: {},
+      loopSafetyEnabled: false,
+      loopSafetyProviderScope: "all-models",
+      networkRetryEnabled: true,
+      experimentalSlashCommandsEnabled: false,
+    }, null, 2),
+    "utf8",
+  )
+
+  await writeCommonSettingsStore({
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+  }, { filePath: settingsFile })
+
+  assert.deepEqual(await readJson(settingsFile), {
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+  })
+
+  const settings = await readCommonSettingsStore({
+    filePath: settingsFile,
+    legacyCopilotFilePath: legacyCopilotFile,
+  })
+
+  assert.deepEqual(settings, {
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
   })
 })
