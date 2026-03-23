@@ -12,7 +12,7 @@ function buildPluginHooks(input = {}) {
 
 test("experimental slash commands enabled registers codex-status", async () => {
   const plugin = buildPluginHooks({
-    auth: { provider: "github-copilot", methods: [] },
+    auth: { provider: "openai", methods: [] },
     loadStoreSync: () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -34,7 +34,7 @@ test("experimental slash commands enabled registers codex-status", async () => {
 
 test("experimental slash commands disabled leaves codex-status unregistered", async () => {
   const plugin = buildPluginHooks({
-    auth: { provider: "github-copilot", methods: [] },
+    auth: { provider: "openai", methods: [] },
     loadStoreSync: () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -64,7 +64,7 @@ test("experimental slash commands disabled leaves codex-status unregistered", as
 test("codex-status command hook delegates only when experiment switch enabled", async () => {
   const delegated = []
   const plugin = buildPluginHooks({
-    auth: { provider: "github-copilot", methods: [] },
+    auth: { provider: "openai", methods: [] },
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -89,7 +89,7 @@ test("codex-status command hook delegates only when experiment switch enabled", 
 test("codex-status command hook does not delegate when experiment switch disabled", async () => {
   const delegated = []
   const plugin = buildPluginHooks({
-    auth: { provider: "github-copilot", methods: [] },
+    auth: { provider: "openai", methods: [] },
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -110,7 +110,7 @@ test("codex-status command hook does not delegate when experiment switch disable
 
 test("codex-status hook does not use copilot quota refresh path", async () => {
   const plugin = buildPluginHooks({
-    auth: { provider: "github-copilot", methods: [] },
+    auth: { provider: "openai", methods: [] },
     loadStore: async () => ({
       accounts: {},
       loopSafetyEnabled: false,
@@ -133,7 +133,7 @@ test("codex-status hook does not use copilot quota refresh path", async () => {
   )
 })
 
-test("codex menu path does not expose Copilot-only menu actions", async () => {
+test("codex menu path keeps common settings and hides provider-specific Copilot actions", async () => {
   const items = buildMenuItems({
     provider: "codex",
     accounts: [],
@@ -148,8 +148,11 @@ test("codex menu path does not expose Copilot-only menu actions", async () => {
   assert.equal(labels.includes("同步可用模型列表"), false)
   assert.equal(labels.includes("配置默认账号组"), false)
   assert.equal(labels.includes("为模型配置账号组"), false)
-  assert.equal(labels.includes("Guided Loop Safety：已开启"), false)
-  assert.equal(labels.includes("Copilot Network Retry：已开启"), false)
+  assert.equal(labels.includes("Guided Loop Safety：已关闭"), true)
+  assert.equal(labels.includes("Policy 默认注入范围：仅当前 provider"), true)
+  assert.equal(labels.includes("实验性 Slash Commands：已开启"), true)
+  assert.equal(labels.includes("Network Retry：已关闭"), true)
+  assert.equal(labels.includes("synthetic 消息按 agent 身份发送：已开启"), false)
   assert.equal(labels.includes("添加账号"), true)
   assert.equal(labels.includes("刷新快照"), true)
 })
@@ -193,4 +196,15 @@ test("codex set-interval empty input should not coerce to one minute", async () 
   const changed = await adapter.applyAction(store, { type: "provider", name: "set-interval" })
   assert.equal(changed, false)
   assert.equal(store.refreshMinutes, 15)
+})
+
+test("codex official adapter can be referenced by provider assembly hook input", async () => {
+  const { loadOfficialCodexConfig } = await import("../dist/upstream/codex-loader-adapter.js")
+  const plugin = buildPluginHooks({
+    auth: { provider: "openai", methods: [] },
+    loadOfficialConfig: loadOfficialCodexConfig,
+  })
+
+  assert.equal(typeof loadOfficialCodexConfig, "function")
+  assert.equal(plugin.auth.provider, "openai")
 })

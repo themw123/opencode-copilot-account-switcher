@@ -27,6 +27,14 @@ test("getMenuCopy returns Codex-specific titles without Copilot-only wording", (
   assert.doesNotMatch(zhCopy.retryOff, /Copilot/i)
 })
 
+test("getMenuCopy keeps network retry copy provider-agnostic for Copilot", () => {
+  const enCopy = getMenuCopy("en", "copilot")
+  const zhCopy = getMenuCopy("zh", "copilot")
+
+  assert.doesNotMatch(enCopy.retryOff, /Copilot/i)
+  assert.doesNotMatch(zhCopy.retryOff, /Copilot/i)
+})
+
 test("buildMenuItems shows Guided Loop Safety off state when disabled", () => {
   const items = buildMenuItems({
     accounts: [],
@@ -54,7 +62,7 @@ test("buildMenuItems shows Guided Loop Safety on state when enabled", () => {
   assert.ok(toggle)
 })
 
-test("guided loop safety toggle is placed after Set refresh interval", () => {
+test("guided loop safety toggle is placed in common settings section", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -64,13 +72,13 @@ test("guided loop safety toggle is placed after Set refresh interval", () => {
   })
 
   const labels = items.map((item) => item.label)
-  const intervalIndex = labels.indexOf("Set refresh interval")
+  const commonSettingsHeadingIndex = labels.indexOf("Common settings")
   const toggleIndex = labels.indexOf("Guided Loop Safety: Off")
 
-  assert.equal(toggleIndex, intervalIndex + 1)
+  assert.equal(toggleIndex, commonSettingsHeadingIndex + 1)
 })
 
-test("guided loop safety toggle stays inside the Actions section before the separator", () => {
+test("guided loop safety toggle stays inside the Common settings section", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -80,11 +88,16 @@ test("guided loop safety toggle stays inside the Actions section before the sepa
   })
 
   const toggleIndex = items.findIndex((item) => item.label === "Guided Loop Safety: Off")
-  const separatorIndex = items.findIndex((item) => item.separator === true)
+  const commonHeadingIndex = items.findIndex((item) => item.label === "Common settings")
+  const separatorIndices = items
+    .map((item, index) => (item.separator === true ? index : -1))
+    .filter((index) => index >= 0)
+  const commonSectionEnd = separatorIndices.find((index) => index > commonHeadingIndex) ?? -1
 
   assert.notEqual(toggleIndex, -1)
-  assert.notEqual(separatorIndex, -1)
-  assert.equal(toggleIndex < separatorIndex, true)
+  assert.notEqual(commonSectionEnd, -1)
+  assert.equal(toggleIndex > commonHeadingIndex, true)
+  assert.equal(toggleIndex < commonSectionEnd, true)
 })
 
 test("buildMenuItems shows default policy scope when value is omitted", () => {
@@ -184,13 +197,13 @@ test("experimental slash commands toggle is placed after policy scope and before
   const labels = items.map((item) => item.label)
   const scopeIndex = labels.indexOf("Policy default scope: Copilot only")
   const slashIndex = labels.indexOf("Experimental slash commands: On")
-  const retryIndex = labels.indexOf("Copilot Network Retry: Off")
+  const retryIndex = labels.indexOf("Network Retry: Off")
 
   assert.equal(slashIndex, scopeIndex + 1)
   assert.equal(retryIndex, slashIndex + 1)
 })
 
-test("buildMenuItems shows Copilot Network Retry off state when disabled", () => {
+test("buildMenuItems shows Network Retry off state when disabled", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -202,12 +215,12 @@ test("buildMenuItems shows Copilot Network Retry off state when disabled", () =>
     language: "en",
   })
 
-  const toggle = items.find((item) => item.label === "Copilot Network Retry: Off")
+  const toggle = items.find((item) => item.label === "Network Retry: Off")
   assert.ok(toggle)
-  assert.match(toggle?.hint ?? "", /account switches/i)
+  assert.match(toggle?.hint ?? "", /recover/i)
 })
 
-test("buildMenuItems shows Copilot Network Retry on state when enabled", () => {
+test("buildMenuItems shows Network Retry on state when enabled", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -219,12 +232,12 @@ test("buildMenuItems shows Copilot Network Retry on state when enabled", () => {
     language: "en",
   })
 
-  const toggle = items.find((item) => item.label === "Copilot Network Retry: On")
+  const toggle = items.find((item) => item.label === "Network Retry: On")
   assert.ok(toggle)
-  assert.match(toggle?.hint ?? "", /account switches/i)
+  assert.match(toggle?.hint ?? "", /recover/i)
 })
 
-test("Copilot network retry toggle is placed after guided loop safety and before the separator", () => {
+test("Copilot network retry toggle is placed after slash toggle in common settings", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -238,14 +251,18 @@ test("Copilot network retry toggle is placed after guided loop safety and before
 
   const labels = items.map((item) => item.label)
   const slashIndex = labels.indexOf("Experimental slash commands: On")
-  const retryIndex = labels.indexOf("Copilot Network Retry: Off")
-  const separatorIndex = items.findIndex((item) => item.separator === true)
+  const retryIndex = labels.indexOf("Network Retry: Off")
+  const commonHeadingIndex = labels.indexOf("Common settings")
+  const separatorIndices = items
+    .map((item, index) => (item.separator === true ? index : -1))
+    .filter((index) => index >= 0)
+  const commonSectionEnd = separatorIndices.find((index) => index > commonHeadingIndex) ?? -1
 
   assert.notEqual(slashIndex, -1)
   assert.notEqual(retryIndex, -1)
-  assert.notEqual(separatorIndex, -1)
+  assert.notEqual(commonSectionEnd, -1)
   assert.equal(retryIndex, slashIndex + 1)
-  assert.equal(retryIndex < separatorIndex, true)
+  assert.equal(retryIndex < commonSectionEnd, true)
 })
 
 test("assign models action is placed after default account group", () => {
@@ -367,15 +384,19 @@ test("synthetic initiator toggle is placed after network retry and before the se
   })
 
   const labels = items.map((item) => item.label)
-  const retryIndex = labels.indexOf("Copilot Network Retry: Off")
+  const retryIndex = labels.indexOf("Network Retry: Off")
   const syntheticIndex = labels.indexOf("Send synthetic messages as agent: Off")
-  const separatorIndex = items.findIndex((item) => item.separator === true)
+  const providerHeadingIndex = labels.indexOf("Provider settings")
+  const separatorIndices = items
+    .map((item, index) => (item.separator === true ? index : -1))
+    .filter((index) => index >= 0)
+  const providerSectionEnd = separatorIndices.find((index) => index > providerHeadingIndex) ?? -1
 
   assert.notEqual(retryIndex, -1)
   assert.notEqual(syntheticIndex, -1)
-  assert.notEqual(separatorIndex, -1)
-  assert.equal(syntheticIndex, retryIndex + 1)
-  assert.equal(syntheticIndex < separatorIndex, true)
+  assert.notEqual(providerSectionEnd, -1)
+  assert.equal(syntheticIndex > retryIndex, true)
+  assert.equal(syntheticIndex < providerSectionEnd, true)
 })
 
 test("buildMenuItems includes a language switch action", () => {
@@ -409,7 +430,7 @@ test("experimental slash commands hint includes compact and stop-tool commands",
   assert.match(toggle?.hint ?? "", /copilot-stop-tool/)
 })
 
-test("buildMenuItems hides Copilot-only actions for Codex provider", () => {
+test("buildMenuItems keeps common settings visible for Codex provider", () => {
   const items = buildMenuItems({
     provider: "codex",
     accounts: [],
@@ -423,15 +444,16 @@ test("buildMenuItems hides Copilot-only actions for Codex provider", () => {
   })
 
   const labels = items.map((item) => item.label)
-  assert.equal(labels.includes("Guided Loop Safety: Off"), false)
-  assert.equal(labels.includes("Policy default scope: Copilot only"), false)
-  assert.equal(labels.includes("Experimental slash commands: On"), false)
-  assert.equal(labels.includes("Copilot Network Retry: Off"), false)
+  assert.equal(labels.includes("Guided Loop Safety: Off"), true)
+  assert.equal(labels.includes("Policy default scope: Current provider only"), true)
+  assert.equal(labels.includes("Experimental slash commands: On"), true)
+  assert.equal(labels.includes("Network Retry: Off"), true)
+  assert.equal(labels.includes("Send synthetic messages as agent: Off"), false)
   assert.equal(labels.includes("Assign account groups per model"), false)
   assert.equal(labels.includes("Sync available models"), false)
 })
 
-test("buildMenuItems ignores Copilot-only capability overrides for Codex provider", () => {
+test("buildMenuItems ignores provider-only capability overrides for Codex provider", () => {
   const items = buildMenuItems({
     provider: "codex",
     capabilities: {
@@ -449,10 +471,41 @@ test("buildMenuItems ignores Copilot-only capability overrides for Codex provide
   })
 
   const labels = items.map((item) => item.label)
-  assert.equal(labels.includes("Guided Loop Safety: Off"), false)
-  assert.equal(labels.includes("Network Retry: On"), false)
+  assert.equal(labels.includes("Guided Loop Safety: Off"), true)
+  assert.equal(labels.includes("Network Retry: On"), true)
   assert.equal(labels.includes("Assign account groups per model"), false)
   assert.equal(labels.includes("Sync available models"), false)
+})
+
+test("buildMenuItems keeps section order stable for Copilot", () => {
+  const items = buildMenuItems({
+    provider: "copilot",
+    accounts: [{ name: "alice", index: 0 }],
+    refresh: { enabled: false, minutes: 15 },
+    loopSafetyEnabled: false,
+    loopSafetyProviderScope: "copilot-only",
+    experimentalSlashCommandsEnabled: true,
+    networkRetryEnabled: false,
+    syntheticAgentInitiatorEnabled: false,
+    language: "en",
+  })
+
+  const labels = items.map((item) => item.label)
+  const actionsHeadingIndex = labels.indexOf("Actions")
+  const commonHeadingIndex = labels.indexOf("Common settings")
+  const providerHeadingIndex = labels.indexOf("Provider settings")
+  const accountsHeadingIndex = labels.indexOf("Accounts")
+  const dangerHeadingIndex = labels.indexOf("Danger zone")
+
+  assert.notEqual(actionsHeadingIndex, -1)
+  assert.notEqual(commonHeadingIndex, -1)
+  assert.notEqual(providerHeadingIndex, -1)
+  assert.notEqual(accountsHeadingIndex, -1)
+  assert.notEqual(dangerHeadingIndex, -1)
+  assert.equal(actionsHeadingIndex < commonHeadingIndex, true)
+  assert.equal(commonHeadingIndex < providerHeadingIndex, true)
+  assert.equal(providerHeadingIndex < accountsHeadingIndex, true)
+  assert.equal(accountsHeadingIndex < dangerHeadingIndex, true)
 })
 
 test("buildAccountActionItems keeps Codex account submenu free of Copilot-only model wording", () => {

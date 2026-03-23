@@ -18,7 +18,9 @@ async function loadCodexStoreOrFail() {
 test("codex store read/write upgrades legacy snapshot and persists multi-account shape", async () => {
   const { codexStorePath, readCodexStore, writeCodexStore } = await loadCodexStoreOrFail()
 
-  assert.notEqual(path.basename(codexStorePath()), "copilot-accounts.json")
+  const normalizedPath = codexStorePath().replace(/\\/g, "/")
+  assert.equal(path.basename(normalizedPath), "codex-accounts.json")
+  assert.match(normalizedPath, /\/opencode\/account-switcher\/codex-accounts\.json$/)
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "codex-store-"))
   const file = path.join(dir, "codex-store.json")

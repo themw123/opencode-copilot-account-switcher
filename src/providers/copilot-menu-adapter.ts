@@ -9,6 +9,11 @@ import {
 } from "../model-account-map.js"
 import type { MenuAccountInfo, ProviderMenuAdapter } from "../menu-runtime.js"
 import { applyMenuAction, persistAccountSwitch } from "../plugin-actions.js"
+import {
+  readCommonSettingsStore,
+  writeCommonSettingsStore,
+  type CommonSettingsStore,
+} from "../common-settings-store.js"
 import type { AccountInfo } from "../ui/menu.js"
 import { select, selectMany } from "../ui/select.js"
 import { authPath, readAuth, readStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "../store.js"
@@ -66,6 +71,8 @@ type AdapterDependencies = {
     now?: () => number
   }) => Promise<void>
   logSwitchHint?: () => void
+  readCommonSettings?: () => Promise<CommonSettingsStore>
+  writeCommonSettings?: (settings: CommonSettingsStore, meta?: DebugMeta) => Promise<void>
 }
 
 function getUrls(domain: string) {
@@ -470,6 +477,8 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
   const fetchUserFn = inputDeps.fetchUser ?? fetchUserDefault
   const fetchModelsFn = inputDeps.fetchModels ?? fetchModelsDefault
   const fetchQuotaFn = inputDeps.fetchQuota ?? fetchQuota
+  const readCommonSettings = inputDeps.readCommonSettings ?? readCommonSettingsStore
+  const writeCommonSettings = inputDeps.writeCommonSettings ?? writeCommonSettingsStore
   let nextAutoRefreshAt = 0
 
   async function maybeAutoRefresh(store: StoreFile) {
@@ -818,6 +827,8 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
           action: { type: action.name },
           store,
           writeStore: persistStore,
+          readCommonSettings,
+          writeCommonSettings,
         } as never)
         return false
       }

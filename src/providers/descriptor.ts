@@ -78,6 +78,8 @@ export const CODEX_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
   ],
   capabilities: [
     "auth",
+    "chat-headers",
+    "network-retry",
     "slash-commands",
   ],
 }
@@ -96,13 +98,15 @@ export function createCopilotProviderDescriptor(input: {
 }
 
 export function createCodexProviderDescriptor(input: {
+  buildPluginHooks: BuildPluginHooks
   enabled?: boolean
-} = {}): Omit<AssembledProviderDescriptor, "buildPluginHooks"> {
+}): AssembledProviderDescriptor {
   return {
     key: "codex",
     auth: {
       provider: "openai",
     },
+    buildPluginHooks: input.buildPluginHooks,
     enabledByDefault: input.enabled !== false,
   }
 }

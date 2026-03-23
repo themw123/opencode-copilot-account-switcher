@@ -3,6 +3,7 @@ import os from "node:os"
 import { promises as fs } from "node:fs"
 import { readFileSync } from "node:fs"
 import { xdgConfig, xdgData } from "xdg-basedir"
+import { copilotAccountsPath, legacyCopilotStorePath } from "./store-paths.js"
 
 export type StoreWriteDebugMeta = {
   reason?: string
@@ -88,7 +89,6 @@ type LegacyStoreFile = Omit<StoreFile, "activeAccountNames" | "modelAccountAssig
   experimentalStatusSlashCommandEnabled?: unknown
 }
 
-const filename = "copilot-accounts.json"
 const authFile = "auth.json"
 const defaultStoreDebugLogFile = (() => {
   const tmp = process.env.TEMP || process.env.TMP || "/tmp"
@@ -152,8 +152,7 @@ async function logStoreWrite(input: {
 }
 
 export function storePath(): string {
-  const base = xdgConfig ?? path.join(os.homedir(), ".config")
-  return path.join(base, "opencode", filename)
+  return copilotAccountsPath()
 }
 
 export function authPath(): string {
@@ -224,16 +223,27 @@ export function parseStore(raw: string): StoreFile {
 }
 
 export async function readStore(filePath = storePath()): Promise<StoreFile> {
-  const raw = await fs.readFile(filePath, "utf-8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return ""
-    throw error
+  const raw = await fs.readFile(filePath, "utf-8").catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error
+    if (filePath !== storePath()) return ""
+    return fs.readFile(legacyCopilotStorePath(), "utf-8").catch((legacyError: NodeJS.ErrnoException) => {
+      if (legacyError.code === "ENOENT") return ""
+      throw legacyError
+    })
   })
   return parseStore(raw)
 }
 
 export async function readStoreSafe(filePath = storePath()): Promise<StoreFile | undefined> {
   try {
-    const raw = await fs.readFile(filePath, "utf-8")
+    const raw = await fs.readFile(filePath, "utf-8").catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error
+      if (filePath !== storePath()) return ""
+      return fs.readFile(legacyCopilotStorePath(), "utf-8").catch((legacyError: NodeJS.ErrnoException) => {
+        if (legacyError.code === "ENOENT") return ""
+        throw legacyError
+      })
+    })
     return parseStore(raw)
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
@@ -247,7 +257,17 @@ export function readStoreSafeSync(filePath = storePath()): StoreFile | undefined
     return parseStore(readFileSync(filePath, "utf-8"))
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
-    if (issue.code === "ENOENT") return parseStore("")
+    if (issue.code === "ENOENT") {
+      try {
+        if (filePath === storePath()) {
+          return parseStore(readFileSync(legacyCopilotStorePath(), "utf-8"))
+        }
+      } catch (legacyError) {
+        const legacyIssue = legacyError as NodeJS.ErrnoException
+        if (legacyIssue.code !== "ENOENT") return undefined
+      }
+      return parseStore("")
+    }
     return undefined
   }
 }

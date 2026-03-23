@@ -1,7 +1,14 @@
 import type { NetworkRetryPolicy, NetworkRetryRequest } from "../network-retry-engine.js"
-
-const AI_ERROR_MARKER = Symbol.for("vercel.ai.error")
-const API_CALL_ERROR_MARKER = Symbol.for("vercel.ai.error.AI_APICallError")
+import {
+  createMessageRetryClassifier,
+  getErrorMessage,
+  isAbortError,
+  isRetryableApiCallError as isRetryableApiCallErrorByMarker,
+  normalizeRetryableStatusResponse,
+  toRequestUrl,
+  toRetryableApiCallError as toRetryableApiCallErrorByCommon,
+  type RetryableApiCallError,
+} from "./common-policy.js"
 
 export const COPILOT_RETRYABLE_MESSAGES = [
   "load failed",
@@ -18,17 +25,6 @@ export const COPILOT_RETRYABLE_MESSAGES = [
 ]
 
 export type RetryableErrorGroup = "transport" | "status" | "stream"
-
-type RetryableApiCallError = Error & {
-  url: string
-  requestBodyValues: unknown
-  statusCode?: number
-  responseHeaders?: Record<string, string>
-  responseBody?: string
-  isRetryable: boolean
-  cause: unknown
-  [key: symbol]: unknown
-}
 
 type CopilotStreamErrorInput = {
   error: unknown
@@ -67,18 +63,6 @@ export type CopilotRetryPolicy = NetworkRetryPolicy & {
 
 type CreateCopilotRetryPolicyOptions = {
   extraRetryableClassifier?: (error: unknown) => boolean
-}
-
-function toRequestUrl(request: Request | URL | string) {
-  return request instanceof Request ? request.url : request instanceof URL ? request.href : String(request)
-}
-
-function getErrorMessage(error: unknown) {
-  return String(error instanceof Error ? error.message : error).toLowerCase()
-}
-
-function isAbortError(error: unknown) {
-  return error instanceof Error && error.name === "AbortError"
 }
 
 function isSseReadTimeoutError(error: unknown) {
@@ -158,14 +142,13 @@ export function isCopilotUrl(request: Request | URL | string) {
   }
 }
 
-export function isRetryableCopilotTransportError(error: unknown) {
-  if (!error || isAbortError(error)) return false
-  const message = getErrorMessage(error)
-  return COPILOT_RETRYABLE_MESSAGES.some((part) => message.includes(part))
-}
+const isRetryableCopilotTransportErrorByMessage = createMessageRetryClassifier({
+  retryableMessages: COPILOT_RETRYABLE_MESSAGES,
+  isAbortError,
+})
 
-function buildRetryableApiCallMessage(group: RetryableErrorGroup, detail: string) {
-  return `Copilot retryable error [${group}]: ${detail}`
+export function isRetryableCopilotTransportError(error: unknown) {
+  return isRetryableCopilotTransportErrorByMessage(error)
 }
 
 export function toRetryableApiCallError(
@@ -179,48 +162,27 @@ export function toRetryableApiCallError(
     responseBody?: string
   },
 ) {
-  const base = error instanceof Error ? error : new Error(String(error))
-  const wrapped = new Error(buildRetryableApiCallMessage(options?.group ?? "transport", base.message)) as RetryableApiCallError
-  wrapped.name = "AI_APICallError"
-  wrapped.url = request.url
-  wrapped.requestBodyValues = options?.requestBodyValues ?? (() => {
-    if (!request.body) return {}
-    try {
-      return JSON.parse(request.body)
-    } catch {
-      return {}
-    }
-  })()
-  wrapped.statusCode = options?.statusCode
-  wrapped.responseHeaders = options?.responseHeaders instanceof Headers
-    ? Object.fromEntries(options.responseHeaders.entries())
-    : options?.responseHeaders
-  wrapped.responseBody = options?.responseBody
-  wrapped.isRetryable = true
-  wrapped.cause = error
-  wrapped[AI_ERROR_MARKER] = true
-  wrapped[API_CALL_ERROR_MARKER] = true
-  return wrapped
+  return toRetryableApiCallErrorByCommon(error, request, {
+    providerLabel: "Copilot",
+    group: options?.group ?? "transport",
+    requestBodyValues: options?.requestBodyValues,
+    statusCode: options?.statusCode,
+    responseHeaders: options?.responseHeaders,
+    responseBody: options?.responseBody,
+  })
 }
 
 export function isRetryableApiCallError(error: unknown): error is RetryableApiCallError {
-  return Boolean(
-    error
-      && typeof error === "object"
-      && (error as RetryableApiCallError)[AI_ERROR_MARKER] === true
-      && (error as RetryableApiCallError)[API_CALL_ERROR_MARKER] === true,
-  )
+  return isRetryableApiCallErrorByMarker(error)
 }
 
-function normalizeRetryableStatusResponse(response: Response, request: NetworkRetryRequest) {
-  if (response.status !== 499) return response
-  return response.clone().text().catch(() => "").then((responseBody) => {
-    throw toRetryableApiCallError(new Error(responseBody || `status code ${response.status}`), request, {
-      group: "status",
-      statusCode: response.status,
-      responseHeaders: response.headers,
-      responseBody: responseBody || undefined,
-    })
+function normalizeRetryableStatusResponseForCopilot(response: Response, request: NetworkRetryRequest) {
+  return normalizeRetryableStatusResponse({
+    response,
+    request,
+    providerLabel: "Copilot",
+    group: "status",
+    isRetryableStatus: (status) => status === 499,
   })
 }
 
@@ -236,7 +198,7 @@ export function createCopilotRetryPolicy(options?: CreateCopilotRetryPolicyOptio
       }
       return { retryable: false, category: "none" }
     },
-    handleResponse: async ({ response, request }) => normalizeRetryableStatusResponse(response, request),
+    handleResponse: async ({ response, request }) => normalizeRetryableStatusResponseForCopilot(response, request),
     normalizeFailure: ({ error, classification, request }) => {
       if (classification.retryable && classification.category === "transport") {
         return toRetryableApiCallError(error, request)

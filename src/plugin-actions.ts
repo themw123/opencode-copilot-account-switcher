@@ -1,5 +1,19 @@
 import type { StoreFile } from "./store.js"
 import type { MenuAction } from "./ui/menu.js"
+import { applyCommonSettingsAction } from "./common-settings-actions.js"
+import type { CommonSettingsStore } from "./common-settings-store.js"
+
+function isCommonSettingsAction(action: MenuAction): action is Extract<MenuAction,
+  { type: "toggle-loop-safety" }
+  | { type: "toggle-loop-safety-provider-scope" }
+  | { type: "toggle-experimental-slash-commands" }
+  | { type: "toggle-network-retry" }
+> {
+  return action.type === "toggle-loop-safety"
+    || action.type === "toggle-loop-safety-provider-scope"
+    || action.type === "toggle-experimental-slash-commands"
+    || action.type === "toggle-network-retry"
+}
 
 export async function persistAccountSwitch(input: {
   store: StoreFile
@@ -36,45 +50,24 @@ export async function applyMenuAction(input: {
     inputStage?: string
     parsedKey?: string
   }) => Promise<void>
+  readCommonSettings?: () => Promise<CommonSettingsStore>
+  writeCommonSettings?: (settings: CommonSettingsStore, meta?: {
+    reason?: string
+    source?: string
+    actionType?: string
+    inputStage?: string
+    parsedKey?: string
+  }) => Promise<void>
 }): Promise<boolean> {
-  if (input.action.type === "toggle-loop-safety") {
-    input.store.loopSafetyEnabled = input.store.loopSafetyEnabled !== true
-    await input.writeStore(input.store, {
-      reason: "toggle-loop-safety",
-      source: "applyMenuAction",
-      actionType: "toggle-loop-safety",
-    })
-    return true
-  }
+  if (isCommonSettingsAction(input.action)) {
+    if (!input.readCommonSettings || !input.writeCommonSettings) {
+      throw new Error(`Common settings action ${input.action.type} requires common settings store dependencies`)
+    }
 
-  if (input.action.type === "toggle-loop-safety-provider-scope") {
-    input.store.loopSafetyProviderScope = input.store.loopSafetyProviderScope === "all-models"
-      ? "copilot-only"
-      : "all-models"
-    await input.writeStore(input.store, {
-      reason: "toggle-loop-safety-provider-scope",
-      source: "applyMenuAction",
-      actionType: "toggle-loop-safety-provider-scope",
-    })
-    return true
-  }
-
-  if (input.action.type === "toggle-experimental-slash-commands") {
-    input.store.experimentalSlashCommandsEnabled = input.store.experimentalSlashCommandsEnabled !== true
-    await input.writeStore(input.store, {
-      reason: "toggle-experimental-slash-commands",
-      source: "applyMenuAction",
-      actionType: "toggle-experimental-slash-commands",
-    })
-    return true
-  }
-
-  if (input.action.type === "toggle-network-retry") {
-    input.store.networkRetryEnabled = input.store.networkRetryEnabled !== true
-    await input.writeStore(input.store, {
-      reason: "toggle-network-retry",
-      source: "applyMenuAction",
-      actionType: "toggle-network-retry",
+    await applyCommonSettingsAction({
+      action: { type: input.action.type },
+      readSettings: input.readCommonSettings,
+      writeSettings: input.writeCommonSettings,
     })
     return true
   }
