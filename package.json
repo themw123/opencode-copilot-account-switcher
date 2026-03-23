@@ -46,6 +46,8 @@
     "check:copilot-sync": "node scripts/sync-copilot-upstream.mjs --output src/upstream/copilot-plugin.snapshot.ts --check",
     "sync:codex-snapshot": "node scripts/sync-codex-upstream.mjs --output src/upstream/codex-plugin.snapshot.ts",
     "check:codex-sync": "node scripts/sync-codex-upstream.mjs --output src/upstream/codex-plugin.snapshot.ts --check",
+    "wechat:smoke:self-test": "npm run build && node --input-type=module -e \"import('./dist/wechat/compat/openclaw-smoke.js').then(async (m) => { const results = await m.runOpenClawSmoke('self-test'); console.log(JSON.stringify(results, null, 2)); })\"",
+    "wechat:smoke:real-account": "npm run build && node --input-type=module -e \"import('./dist/wechat/compat/openclaw-smoke.js').then(async (m) => { const results = await m.runOpenClawSmoke('real-account'); console.log(JSON.stringify(results, null, 2)); })\"",
     "test": "npm run build && node --test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
