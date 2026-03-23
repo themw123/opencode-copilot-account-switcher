@@ -649,6 +649,8 @@ export function buildPluginHooks(input: {
   touchWriteCacheMaxEntries?: number
   random?: () => number
 }): CopilotPluginHooksWithChatHeaders {
+  const authProvider = input.auth.provider ?? COPILOT_PROVIDER_DESCRIPTOR.providerIDs[0] ?? "github-copilot"
+  const enableCopilotAuthLoader = isCopilotProviderID(authProvider)
   const compactionLoopSafetyBypass = createCompactionLoopSafetyBypass()
   const loadStore = input.loadStore ?? readStoreSafe
   const loadStoreSync = input.loadStoreSync ?? readStoreSafeSync
@@ -1438,9 +1440,9 @@ export function buildPluginHooks(input: {
   return {
     auth: {
       ...input.auth,
-      provider: input.auth.provider ?? COPILOT_PROVIDER_DESCRIPTOR.providerIDs[0] ?? "github-copilot",
+      provider: authProvider,
       methods: input.auth.methods,
-      loader,
+      loader: enableCopilotAuthLoader ? loader : undefined,
     } as AuthProvider extends never ? never : NonNullable<CopilotPluginHooks["auth"]>,
     config: async (config) => {
       if (!config.command) config.command = {}

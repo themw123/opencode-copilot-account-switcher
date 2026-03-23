@@ -7366,6 +7366,7 @@ test("openai auth provider is wired to direct Codex menu entry", async () => {
   })
 
   assert.equal(plugin.auth?.provider, "openai")
+  assert.equal(plugin.auth?.loader, undefined)
   assert.deepEqual(plugin.auth?.methods?.map((method) => method.label), [
     "Manage OpenAI Codex accounts",
   ])
