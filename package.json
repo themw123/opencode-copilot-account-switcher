@@ -33,7 +33,7 @@
     "auth"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "files": [
     "dist/",
@@ -58,8 +58,10 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "^1.2.26",
     "@opencode-ai/plugin": "^1.2.26",
+    "@opencode-ai/sdk": "^1.2.26",
+    "@tencent-weixin/openclaw-weixin": "1.0.2",
+    "openclaw": "2026.3.13",
     "xdg-basedir": "^5.1.0"
   }
 }
