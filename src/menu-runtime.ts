@@ -7,6 +7,7 @@ type WriteMeta = {
 export type MenuAccountInfo = {
   id?: string
   name: string
+  workspaceName?: string
   index: number
   isCurrent?: boolean
 }

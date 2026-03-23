@@ -6,6 +6,7 @@ export type AccountStatus = "active" | "expired" | "unknown"
 
 export interface AccountInfo {
   name: string
+  workspaceName?: string
   index: number
   addedAt?: number
   lastUsed?: number
@@ -402,6 +403,7 @@ export function buildMenuItems(input: {
       const numbered = `${account.index + 1}. ${account.name}`
       const label = `${numbered}${currentBadge}${statusBadge ? " " + statusBadge : ""}${quotaBadge}`
       const detail = [
+        account.workspaceName,
         account.lastUsed ? formatRelativeTime(account.lastUsed) : undefined,
         account.plan,
         account.models ? `${account.models.enabled}/${account.models.enabled + account.models.disabled} mods` : undefined,

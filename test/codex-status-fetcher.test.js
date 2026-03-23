@@ -343,3 +343,34 @@ test("keeps missing quota fields as undefined instead of fabricating values", as
     resetAt: undefined,
   })
 })
+
+test("aborts hanging codex usage requests and returns timeout", async () => {
+  const { fetchCodexStatus } = await loadCodexStatusFetcherOrFail()
+
+  let aborted = false
+  const result = await fetchCodexStatus({
+    oauth: { type: "oauth", access: "access", refresh: "refresh" },
+    timeoutMs: 10,
+    fetchImpl: async (_url, init) => new Promise((_, reject) => {
+      const signal = init?.signal
+      if (signal?.aborted) {
+        aborted = true
+        const error = new Error("request timed out")
+        error.name = "AbortError"
+        reject(error)
+        return
+      }
+      signal?.addEventListener("abort", () => {
+        aborted = true
+        const error = new Error("request timed out")
+        error.name = "AbortError"
+        reject(error)
+      }, { once: true })
+    }),
+  })
+
+  assert.equal(aborted, true)
+  assert.equal(result.ok, false)
+  assert.equal(result.error.kind, "timeout")
+  assert.match(result.error.message, /timed out|timeout/i)
+})

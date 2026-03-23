@@ -1,6 +1,7 @@
 import type { OpenAIOAuthAuth } from "./codex-auth-source.js"
 
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
+const CODEX_USAGE_TIMEOUT_MS = 15_000
 
 type JsonRecord = Record<string, unknown>
 
@@ -255,6 +256,7 @@ async function requestUsage(input: {
   oauth: OpenAIOAuthAuth
   accountId?: string
   fetchImpl: typeof globalThis.fetch
+  signal?: AbortSignal
 }): Promise<Response> {
   return input.fetchImpl(CODEX_USAGE_URL, {
     method: "GET",
@@ -262,6 +264,7 @@ async function requestUsage(input: {
       access: input.oauth.access,
       accountId: input.accountId,
     }),
+    signal: input.signal,
   })
 }
 
@@ -270,24 +273,30 @@ export async function fetchCodexStatus(input: {
   accountId?: string
   fetchImpl?: typeof globalThis.fetch
   now?: () => number
+  timeoutMs?: number
   refreshTokens?: (oauth: OpenAIOAuthAuth) => Promise<OpenAIOAuthAuth | undefined>
 }): Promise<CodexStatusFetcherResult> {
   const fetchImpl = input.fetchImpl ?? globalThis.fetch
   const now = input.now ?? Date.now
   const explicitAccountId = input.accountId
+  const timeoutMs = input.timeoutMs ?? CODEX_USAGE_TIMEOUT_MS
 
   let oauth = input.oauth
   let authPatch: AuthPatch | undefined
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response: Response
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
     try {
       response = await requestUsage({
         oauth,
         accountId: explicitAccountId ?? oauth.accountId,
         fetchImpl,
+        signal: controller.signal,
       })
     } catch (error) {
+      clearTimeout(timeout)
       if (isTimeoutError(error)) {
         return {
           ok: false,
@@ -305,6 +314,8 @@ export async function fetchCodexStatus(input: {
           message: error instanceof Error ? error.message : String(error),
         },
       }
+    } finally {
+      clearTimeout(timeout)
     }
 
     if (response.status === 401 && attempt === 0 && input.refreshTokens) {

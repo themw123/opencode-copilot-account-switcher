@@ -177,6 +177,7 @@ test("codex adapter refreshSnapshots maps plan 5h and week into menu info", asyn
           accountId: "acct_plan",
           email: "plan@example.com",
           plan: "team",
+          workspaceName: "workspace-plan",
         },
         windows: {
           primary: {
@@ -203,10 +204,48 @@ test("codex adapter refreshSnapshots maps plan 5h and week into menu info", asyn
 
   assert.equal(menuInfo.length, 1)
   assert.equal(menuInfo[0].plan, "team")
+  assert.equal(menuInfo[0].workspaceName, "workspace-plan")
   assert.deepEqual(menuInfo[0].quota?.premium, { remaining: 42, entitlement: 100 })
   assert.deepEqual(menuInfo[0].quota?.chat, { remaining: 6, entitlement: 100 })
   assert.equal(store.accounts.acct_plan.snapshot?.usage5h?.remaining, 42)
   assert.equal(store.accounts.acct_plan.snapshot?.usageWeek?.remaining, 6)
+})
+
+test("codex adapter toMenuInfo carries workspaceName for menu rendering", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const store = {
+    accounts: {
+      acct_workspace: {
+        name: "acct_workspace",
+        providerId: "openai",
+        refresh: "refresh_workspace",
+        access: "access_workspace",
+        accountId: "acct_workspace",
+        email: "workspace@example.com",
+        workspaceName: "visible-workspace",
+        snapshot: {
+          plan: "team",
+          usage5h: { entitlement: 100, remaining: 42 },
+          usageWeek: { entitlement: 100, remaining: 6 },
+          updatedAt: 1700000000333,
+        },
+      },
+    },
+    active: "acct_workspace",
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
+
+  const adapter = createCodexMenuAdapter({
+    client: createClient([]),
+    now: () => 1700000000333,
+  })
+
+  const menuInfo = await adapter.toMenuInfo(store)
+
+  assert.equal(menuInfo.length, 1)
+  assert.equal(menuInfo[0].name, "workspace@example.com")
+  assert.equal(menuInfo[0].workspaceName, "visible-workspace")
 })
 
 test("codex adapter toMenuInfo returns stable account ids for runtime actions", async () => {

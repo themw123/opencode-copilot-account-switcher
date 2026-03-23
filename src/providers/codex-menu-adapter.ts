@@ -40,6 +40,7 @@ type OAuthAccount = {
   expires?: number
   accountId?: string
   email?: string
+  workspaceName?: string
 }
 
 type RecoveryWarningMeta = {
@@ -329,6 +330,7 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
           fallback: `openai-${now()}`,
         }),
         providerId: "openai",
+        workspaceName: oauth.workspaceName,
         refresh,
         access,
         expires: oauth.expires,
@@ -343,6 +345,7 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
       return Object.entries(store.accounts).map(([name, entry], index) => ({
         id: entry.accountId ?? name,
         name: entry.email ?? entry.accountId ?? name,
+        workspaceName: entry.workspaceName,
         index,
         isCurrent: store.active === name,
         source: entry.source,

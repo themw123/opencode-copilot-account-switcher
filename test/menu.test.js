@@ -537,3 +537,23 @@ test("showMenu keeps provider-specific account submenu dispatch for codex and co
 
   assert.deepEqual(providers, ["copilot", "codex"])
 })
+
+test("buildMenuItems shows codex workspaceName first in account hint", () => {
+  const items = buildMenuItems({
+    provider: "codex",
+    accounts: [{
+      name: "acct_workspace",
+      index: 0,
+      workspaceName: "workspace-visible",
+      plan: "team",
+      quota: {
+        premium: { remaining: 42, entitlement: 100 },
+        chat: { remaining: 6, entitlement: 100 },
+      },
+    }],
+    refresh: { enabled: false, minutes: 15 },
+  })
+
+  const accountItem = items.find((item) => item.label.includes("acct_workspace"))
+  assert.equal(accountItem?.hint, "workspace-visible • team")
+})
