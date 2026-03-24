@@ -1,0 +1,24 @@
+{
+  "evidenceFile": "008-nonslash-warning-02.json",
+  "evidenceId": "nonslash-warning-02",
+  "timestamp": "2026-03-24T06:24:02.618Z",
+  "input": "hello 2",
+  "routeResult": "guard-reject-warning",
+  "inbound": {
+    "messageId": 7442093730282233000,
+    "fromUserId": "o9cq805a9MyJu__bWlfPrRIkH0jY@im.wechat",
+    "contextToken": "[REDACTED_CONTEXT_TOKEN]",
+    "createdAtMs": 1774333412672,
+    "text": "hello 2",
+    "itemTypes": [
+      1
+    ],
+    "normalizedBy": "guided-smoke-public-structure"
+  },
+  "warningReply": {
+    "ok": true,
+    "text": "请使用 slash 命令（/status、/reply、/allow）",
+    "messageId": "[REDACTED_MESSAGE_ID]"
+  },
+  "persisted": true
+}

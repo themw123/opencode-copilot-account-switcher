@@ -1,0 +1,22 @@
+{
+  "evidenceFile": "005-reply-command.json",
+  "timestamp": "2026-03-24T04:14:29.268Z",
+  "input": "/reply smoke",
+  "command": "reply",
+  "inbound": {
+    "command": "reply",
+    "synthetic": true,
+    "reason": "timed out waiting for real reply inbound",
+    "getUpdatesObservation": {
+      "msgCount": 0,
+      "getUpdatesBuf": "ChAIARDn/6nw0TMYpP+p8NEzEjplNmQ4M2I4YTYwYTBAaW0uYm90OjA2MDAwMDg5YzcxNTNjZWRmYTA1MmI0MzBjZWEwZjE1ZWY4Y2Y0",
+      "texts": []
+    }
+  },
+  "routeResult": "stub",
+  "completed": false,
+  "outbound": {
+    "mode": "none",
+    "detail": "guided smoke slash sampling has no real outbound"
+  }
+}

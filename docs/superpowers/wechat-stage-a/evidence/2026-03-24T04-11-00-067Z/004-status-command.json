@@ -1,0 +1,25 @@
+{
+  "evidenceFile": "004-status-command.json",
+  "timestamp": "2026-03-24T04:11:28.614Z",
+  "input": "/status",
+  "command": "status",
+  "inbound": {
+    "command": "status",
+    "input": "/status",
+    "messageId": 7442060531894323000,
+    "fromUserId": "o9cq805a9MyJu__bWlfPrRIkH0jY@im.wechat",
+    "contextToken": "[REDACTED_CONTEXT_TOKEN]",
+    "createdAtMs": 1774325497553,
+    "text": "/status",
+    "itemTypes": [
+      1
+    ],
+    "normalizedBy": "guided-smoke-public-structure"
+  },
+  "routeResult": "stub",
+  "completed": true,
+  "outbound": {
+    "mode": "none",
+    "detail": "guided smoke slash sampling has no real outbound"
+  }
+}

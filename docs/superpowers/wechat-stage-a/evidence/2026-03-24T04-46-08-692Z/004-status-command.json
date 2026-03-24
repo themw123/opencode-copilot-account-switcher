@@ -1,0 +1,22 @@
+{
+  "evidenceFile": "004-status-command.json",
+  "timestamp": "2026-03-24T04:51:14.359Z",
+  "input": "/status",
+  "command": "status",
+  "inbound": {
+    "command": "status",
+    "synthetic": true,
+    "reason": "timed out waiting for real status inbound",
+    "getUpdatesObservation": {
+      "msgCount": 0,
+      "getUpdatesBuf": "",
+      "texts": []
+    }
+  },
+  "routeResult": "stub",
+  "completed": false,
+  "outbound": {
+    "mode": "none",
+    "detail": "guided smoke slash sampling has no real outbound"
+  }
+}

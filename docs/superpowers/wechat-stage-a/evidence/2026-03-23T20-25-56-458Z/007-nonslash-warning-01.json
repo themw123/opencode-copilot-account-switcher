@@ -1,0 +1,13 @@
+{
+  "evidenceFile": "007-nonslash-warning-01.json",
+  "evidenceId": "nonslash-warning-01",
+  "timestamp": "2026-03-23T20:28:30.717Z",
+  "input": "(missing non-slash attempt evidence)",
+  "routeResult": "guard-reject-warning",
+  "inbound": null,
+  "warningReply": {
+    "ok": false,
+    "text": ""
+  },
+  "persisted": false
+}

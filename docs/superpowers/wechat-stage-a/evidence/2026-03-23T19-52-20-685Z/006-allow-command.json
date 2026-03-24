@@ -1,0 +1,17 @@
+{
+  "evidenceFile": "006-allow-command.json",
+  "timestamp": "2026-03-23T20:00:16.798Z",
+  "input": "/allow once",
+  "command": "allow",
+  "inbound": {
+    "command": "allow",
+    "synthetic": true,
+    "reason": "timed out waiting for real allow inbound"
+  },
+  "routeResult": "stub",
+  "completed": false,
+  "outbound": {
+    "mode": "none",
+    "detail": "guided smoke slash sampling has no real outbound"
+  }
+}
