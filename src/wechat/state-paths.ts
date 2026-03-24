@@ -1,0 +1,60 @@
+import path from "node:path"
+import { mkdir } from "node:fs/promises"
+import { wechatConfigDir } from "../store-paths.js"
+
+export const WECHAT_DIR_MODE = 0o700
+export const WECHAT_FILE_MODE = 0o600
+
+export type WechatRequestKind = "question" | "permission"
+
+export function wechatStateRoot() {
+  return wechatConfigDir()
+}
+
+export function brokerStatePath() {
+  return path.join(wechatStateRoot(), "broker.json")
+}
+
+export function launchLockPath() {
+  return path.join(wechatStateRoot(), "launch.lock")
+}
+
+export function operatorStatePath() {
+  return path.join(wechatStateRoot(), "operator.json")
+}
+
+export function instancesDir() {
+  return path.join(wechatStateRoot(), "instances")
+}
+
+export function instanceStatePath(instanceID: string) {
+  return path.join(instancesDir(), `${instanceID}.json`)
+}
+
+export function tokensDir() {
+  return path.join(wechatStateRoot(), "tokens")
+}
+
+export function tokenStatePath(wechatAccountId: string, userId: string) {
+  return path.join(tokensDir(), wechatAccountId, `${userId}.json`)
+}
+
+export function requestKindDir(kind: WechatRequestKind) {
+  return path.join(wechatStateRoot(), "requests", kind)
+}
+
+export function requestStatePath(kind: WechatRequestKind, routeKey: string) {
+  return path.join(requestKindDir(kind), `${routeKey}.json`)
+}
+
+async function ensureDir(dirPath: string) {
+  await mkdir(dirPath, { recursive: true, mode: WECHAT_DIR_MODE })
+}
+
+export async function ensureWechatStateLayout() {
+  await ensureDir(wechatStateRoot())
+  await ensureDir(instancesDir())
+  await ensureDir(tokensDir())
+  await ensureDir(requestKindDir("question"))
+  await ensureDir(requestKindDir("permission"))
+}

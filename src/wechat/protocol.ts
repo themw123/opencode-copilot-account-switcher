@@ -1,0 +1,129 @@
+export type BrokerImplementedMessageType =
+  | "registerInstance"
+  | "registerAck"
+  | "heartbeat"
+  | "ping"
+  | "pong"
+  | "error"
+
+export type BrokerFutureMessageType =
+  | "collectStatus"
+  | "replyQuestion"
+  | "rejectQuestion"
+  | "replyPermission"
+  | "showFallbackToast"
+
+export type BrokerMessageType = BrokerImplementedMessageType | BrokerFutureMessageType
+
+export type BrokerErrorCode = "unauthorized" | "invalidMessage" | "notImplemented" | "brokerUnavailable"
+
+type EnvelopeBase = {
+  id: string
+  type: BrokerMessageType
+  instanceID?: string
+  sessionToken?: string
+}
+
+export type BrokerEnvelope<TPayload = unknown> = EnvelopeBase & {
+  payload: TPayload
+}
+
+export type ErrorPayload = {
+  code: BrokerErrorCode
+  message: string
+  requestId: string
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function isMessageType(value: unknown): value is BrokerMessageType {
+  return (
+    value === "registerInstance" ||
+    value === "registerAck" ||
+    value === "heartbeat" ||
+    value === "ping" ||
+    value === "pong" ||
+    value === "error" ||
+    value === "collectStatus" ||
+    value === "replyQuestion" ||
+    value === "rejectQuestion" ||
+    value === "replyPermission" ||
+    value === "showFallbackToast"
+  )
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function assertValidEnvelope(envelope: unknown): asserts envelope is BrokerEnvelope {
+  if (!isObject(envelope)) {
+    throw new Error("invalid message envelope")
+  }
+
+  if (!isNonEmptyString(envelope.id) || !isMessageType(envelope.type)) {
+    throw new Error("invalid message envelope")
+  }
+
+  if (!("payload" in envelope)) {
+    throw new Error("invalid message envelope")
+  }
+
+  if (envelope.instanceID !== undefined && !isNonEmptyString(envelope.instanceID)) {
+    throw new Error("invalid message envelope")
+  }
+
+  if (envelope.sessionToken !== undefined && !isNonEmptyString(envelope.sessionToken)) {
+    throw new Error("invalid message envelope")
+  }
+}
+
+export function serializeEnvelope<TPayload = unknown>(envelope: BrokerEnvelope<TPayload>): string {
+  assertValidEnvelope(envelope)
+  return `${JSON.stringify(envelope)}\n`
+}
+
+export function parseEnvelopeLine(line: string): BrokerEnvelope {
+  if (typeof line !== "string" || line.length === 0) {
+    throw new Error("invalid message line")
+  }
+
+  if (!line.endsWith("\n")) {
+    throw new Error("invalid message line")
+  }
+
+  const body = line.slice(0, -1)
+  if (body.length === 0 || body.includes("\n") || body.includes("\r")) {
+    throw new Error("invalid message line")
+  }
+
+  try {
+    const parsed = JSON.parse(body)
+    assertValidEnvelope(parsed)
+    return parsed
+  } catch {
+    throw new Error("invalid message line")
+  }
+}
+
+export function createErrorEnvelope(
+  code: BrokerErrorCode,
+  message: string,
+  requestId: string,
+): BrokerEnvelope<ErrorPayload> {
+  if (!isNonEmptyString(message) || !isNonEmptyString(requestId)) {
+    throw new Error("invalid error envelope")
+  }
+
+  return {
+    id: `err-${requestId}`,
+    type: "error",
+    payload: {
+      code,
+      message,
+      requestId,
+    },
+  }
+}

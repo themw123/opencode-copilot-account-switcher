@@ -22,6 +22,10 @@ export function codexAccountsPath() {
   return path.join(accountSwitcherConfigDir(), "codex-accounts.json")
 }
 
+export function wechatConfigDir() {
+  return path.join(accountSwitcherConfigDir(), "wechat")
+}
+
 export function legacyCopilotStorePath() {
   return path.join(configBaseDir(), "opencode", "copilot-accounts.json")
 }

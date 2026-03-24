@@ -1,0 +1,267 @@
+import test, { after, beforeEach } from "node:test"
+import assert from "node:assert/strict"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+
+const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-token-store-"))
+const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+process.env.XDG_CONFIG_HOME = sandboxConfigHome
+
+after(() => {
+  if (previousXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+  else process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+})
+
+const tokenStore = await import("../dist/wechat/token-store.js")
+const statePaths = await import("../dist/wechat/state-paths.js")
+
+beforeEach(async () => {
+  await rm(statePaths.wechatStateRoot(), { recursive: true, force: true })
+})
+
+test("最近一次入站 token 覆盖旧记录", async () => {
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: "wx-a",
+    userId: "user-1",
+    contextToken: "token-old",
+    updatedAt: 1_700_000_100_000,
+    source: "question",
+    sourceRef: "q-1",
+  })
+
+  const latest = await tokenStore.upsertInboundToken({
+    wechatAccountId: "wx-a",
+    userId: "user-1",
+    contextToken: "token-new",
+    updatedAt: 1_700_000_200_000,
+    source: "permission",
+    sourceRef: "p-2",
+  })
+
+  assert.equal(latest.contextToken, "token-new")
+  assert.equal(latest.source, "permission")
+  assert.equal(latest.sourceRef, "p-2")
+
+  const stored = await tokenStore.readTokenState("wx-a", "user-1")
+  assert.equal(stored?.contextToken, "token-new")
+})
+
+test("staleReason 只打标，不删除文件", async () => {
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: "wx-b",
+    userId: "user-2",
+    contextToken: "token-live",
+    updatedAt: 1_700_000_300_000,
+    source: "question",
+  })
+
+  const stale = await tokenStore.markTokenStale({
+    wechatAccountId: "wx-b",
+    userId: "user-2",
+    staleReason: "operator-reset",
+  })
+
+  assert.equal(stale.staleReason, "operator-reset")
+  const fromDisk = await tokenStore.readTokenState("wx-b", "user-2")
+  assert.equal(fromDisk?.staleReason, "operator-reset")
+})
+
+test("不存在固定 TTL 自动失效", async () => {
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: "wx-c",
+    userId: "user-3",
+    contextToken: "token-very-old",
+    updatedAt: 946_684_800_000,
+    source: "question",
+  })
+
+  const stored = await tokenStore.readTokenState("wx-c", "user-3")
+  assert.equal(stored?.contextToken, "token-very-old")
+  assert.equal(stored?.updatedAt, 946_684_800_000)
+})
+
+test("tokens/<wechatAccountId>/<userId>.json 字段固定", async () => {
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: "wx-d",
+    userId: "user-4",
+    contextToken: "token-only-fields",
+    updatedAt: 1_700_000_400_000,
+    source: "permission",
+    sourceRef: "perm-4",
+  })
+  await tokenStore.markTokenStale({
+    wechatAccountId: "wx-d",
+    userId: "user-4",
+    staleReason: "request-expired",
+  })
+
+  const raw = await readFile(statePaths.tokenStatePath("wx-d", "user-4"), "utf8")
+  const parsed = JSON.parse(raw)
+
+  assert.deepEqual(Object.keys(parsed).sort(), [
+    "contextToken",
+    "source",
+    "sourceRef",
+    "staleReason",
+    "updatedAt",
+  ])
+  assert.equal(parsed.contextToken, "token-only-fields")
+  assert.equal(parsed.source, "permission")
+  assert.equal(parsed.sourceRef, "perm-4")
+  assert.equal(parsed.staleReason, "request-expired")
+})
+
+test("损坏或缺字段 token JSON 会抛明确格式错误", async () => {
+  const brokenPath = statePaths.tokenStatePath("wx-broken", "u-broken")
+  await mkdir(path.dirname(brokenPath), { recursive: true })
+  await writeFile(brokenPath, "{bad-json")
+
+  await assert.rejects(
+    () => tokenStore.readTokenState("wx-broken", "u-broken"),
+    /invalid token state format/i,
+  )
+
+  const missingFieldPath = statePaths.tokenStatePath("wx-missing", "u-missing")
+  await mkdir(path.dirname(missingFieldPath), { recursive: true })
+  await writeFile(
+    missingFieldPath,
+    JSON.stringify({
+      contextToken: "token",
+      source: "question",
+    }),
+  )
+
+  await assert.rejects(
+    () => tokenStore.readTokenState("wx-missing", "u-missing"),
+    /invalid token state format/i,
+  )
+})
+
+test("upsertInboundToken() 拒绝非法 source", async () => {
+  await assert.rejects(
+    () =>
+      tokenStore.upsertInboundToken({
+        wechatAccountId: "wx-invalid-source",
+        userId: "u-invalid-source",
+        contextToken: "token",
+        updatedAt: 1_700_080_000_000,
+        source: "bad-source",
+      }),
+    /invalid token state format/i,
+  )
+})
+
+test("upsertInboundToken() 拒绝 updatedAt: NaN 或非法 contextToken", async () => {
+  await assert.rejects(
+    () =>
+      tokenStore.upsertInboundToken({
+        wechatAccountId: "wx-invalid-updated-at",
+        userId: "u-invalid-updated-at",
+        contextToken: "token",
+        updatedAt: Number.NaN,
+        source: "question",
+      }),
+    /invalid token state format/i,
+  )
+
+  await assert.rejects(
+    () =>
+      tokenStore.upsertInboundToken({
+        wechatAccountId: "wx-invalid-token",
+        userId: "u-invalid-token",
+        contextToken: "",
+        updatedAt: 1_700_080_100_000,
+        source: "permission",
+      }),
+    /invalid token state format/i,
+  )
+})
+
+test("upsertInboundToken() 失败路径不会写出脏 token 文件", async () => {
+  const filePath = statePaths.tokenStatePath("wx-no-dirty", "u-no-dirty")
+
+  await assert.rejects(
+    () =>
+      tokenStore.upsertInboundToken({
+        wechatAccountId: "wx-no-dirty",
+        userId: "u-no-dirty",
+        contextToken: "",
+        updatedAt: 1_700_080_200_000,
+        source: "question",
+      }),
+    /invalid token state format/i,
+  )
+
+  await assert.rejects(
+    () => readFile(filePath, "utf8"),
+    (error) => error?.code === "ENOENT",
+  )
+})
+
+test("非法 wechatAccountId 不会写出越界 token 文件", async () => {
+  const escapedPath = statePaths.tokenStatePath("../wx-escape", "u-safe")
+
+  await assert.rejects(
+    () =>
+      tokenStore.upsertInboundToken({
+        wechatAccountId: "../wx-escape",
+        userId: "u-safe",
+        contextToken: "token",
+        updatedAt: 1_700_080_300_000,
+        source: "question",
+      }),
+    /invalid token state format/i,
+  )
+
+  await assert.rejects(
+    () => readFile(escapedPath, "utf8"),
+    (error) => error?.code === "ENOENT",
+  )
+})
+
+test("非法 userId 不会写出越界 token 文件", async () => {
+  const escapedPath = statePaths.tokenStatePath("wx-safe", "../u-escape")
+
+  await assert.rejects(
+    () =>
+      tokenStore.upsertInboundToken({
+        wechatAccountId: "wx-safe",
+        userId: "../u-escape",
+        contextToken: "token",
+        updatedAt: 1_700_080_400_000,
+        source: "permission",
+      }),
+    /invalid token state format/i,
+  )
+
+  await assert.rejects(
+    () => readFile(escapedPath, "utf8"),
+    (error) => error?.code === "ENOENT",
+  )
+})
+
+test("markTokenStale() 拒绝空 staleReason 且不改写原文件", async () => {
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: "wx-stale-empty",
+    userId: "u-stale-empty",
+    contextToken: "token-stale",
+    updatedAt: 1_700_090_100_000,
+    source: "question",
+  })
+
+  const before = await readFile(statePaths.tokenStatePath("wx-stale-empty", "u-stale-empty"), "utf8")
+
+  await assert.rejects(
+    () =>
+      tokenStore.markTokenStale({
+        wechatAccountId: "wx-stale-empty",
+        userId: "u-stale-empty",
+        staleReason: "",
+      }),
+    /invalid token state format/i,
+  )
+
+  const after = await readFile(statePaths.tokenStatePath("wx-stale-empty", "u-stale-empty"), "utf8")
+  assert.equal(after, before)
+})
