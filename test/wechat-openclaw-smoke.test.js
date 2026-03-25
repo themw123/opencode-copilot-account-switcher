@@ -54,26 +54,66 @@ test("smoke harness keeps /status /reply /allow in stub paths", async () => {
   assert.equal(allowResult.command, "allow")
 })
 
-test("self-test mode validates compat host before slash-only checks", async () => {
+test("self-test mode validates public helper load before slash-only checks", async () => {
   const smoke = await import(DIST_SMOKE_MODULE)
-  const hostCalls = []
+  const publicLoadCalls = []
 
   const results = await smoke.runOpenClawSmoke("self-test", {
-    loadCompatHost: async (api) => {
-      hostCalls.push(api)
-      return { id: "openclaw-weixin" }
+    loadOpenClawWeixinPublicHelpers: async (options) => {
+      publicLoadCalls.push(options)
+      return {
+        entry: { entryRelativePath: "./index.ts", entryAbsolutePath: "/tmp/index.ts", extensions: ["./index.ts"], packageJsonPath: "/tmp/package.json", packageRoot: "/tmp" },
+        pluginId: "openclaw-weixin",
+        qrGateway: {
+          loginWithQrStart() {
+            return null
+          },
+          loginWithQrWait() {
+            return null
+          },
+        },
+        latestAccountState: null,
+        getUpdates: async () => ({ msgs: [] }),
+        sendMessageWeixin: async () => ({ messageId: "mock-mid" }),
+      }
     },
   })
 
-  assert.equal(hostCalls.length, 1)
-  assert.equal(typeof hostCalls[0]?.registerChannel, "function")
+  assert.equal(publicLoadCalls.length, 1)
   assert.deepEqual(results[0], {
-    route: "host-self-test",
+    route: "public-self-test",
     status: "loaded",
     pluginId: "openclaw-weixin",
   })
   assert.equal(results[2]?.route, "stub")
   assert.equal(results[2]?.command, "status")
+})
+
+test("self-test mode stays in stub semantics and never enters real status handling", async () => {
+  const smoke = await import(DIST_SMOKE_MODULE)
+  const results = await smoke.runOpenClawSmoke("self-test", {
+    inputs: ["/status", "/reply smoke", "/allow once"],
+    loadOpenClawWeixinPublicHelpers: async () => ({
+      entry: { entryRelativePath: "./index.ts", entryAbsolutePath: "/tmp/index.ts", extensions: ["./index.ts"], packageJsonPath: "/tmp/package.json", packageRoot: "/tmp" },
+      pluginId: "openclaw-weixin",
+      qrGateway: {
+        loginWithQrStart() {
+          return null
+        },
+        loginWithQrWait() {
+          return null
+        },
+      },
+      latestAccountState: null,
+      getUpdates: async () => ({ msgs: [] }),
+      sendMessageWeixin: async () => {
+        throw new Error("sendMessageWeixin should not be called in smoke self-test")
+      },
+    }),
+  })
+
+  assert.equal(results[0].route, "public-self-test")
+  assert.deepEqual(results.slice(1).map((item) => item.route), ["stub", "stub", "stub"])
 })
 
 test("self-test mode keeps command handling in stub path", async () => {

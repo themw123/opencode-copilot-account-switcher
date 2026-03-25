@@ -8,8 +8,12 @@ import {
   serializeEnvelope,
   type BrokerEnvelope,
   type BrokerMessageType,
+  type CollectStatusPayload,
+  type StatusSnapshotPayload,
 } from "./protocol.js"
 import { WECHAT_DIR_MODE, WECHAT_FILE_MODE, instanceStatePath, instancesDir } from "./state-paths.js"
+import { formatAggregatedStatusReply } from "./status-format.js"
+import type { WechatSlashCommand } from "./command-parser.js"
 
 const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
   "collectStatus",
@@ -21,6 +25,7 @@ const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
 
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30_000
 const DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS = 1_000
+export const DEFAULT_STATUS_COLLECT_WINDOW_MS = 1_500
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
@@ -72,10 +77,46 @@ type InstanceSnapshot = {
   staleSince?: number
 }
 
+type AggregatedStatusInstance =
+  | {
+      instanceID: string
+      status: "ok"
+      snapshot: unknown
+    }
+  | {
+      instanceID: string
+      status: "timeout/unreachable"
+    }
+
+type CollectStatusResult = {
+  requestId: string
+  instances: AggregatedStatusInstance[]
+  reply: string
+}
+
+type PendingCollectStatus = {
+  requestedInstanceIDs: Set<string>
+  snapshotsByInstanceID: Map<string, unknown>
+  resolve: (result: CollectStatusResult) => void
+  timer: NodeJS.Timeout
+}
+
 const registrationByInstanceID = new Map<string, RegistrationRecord>()
 const instanceIDsBySocket = new Map<net.Socket, Set<string>>()
 const snapshotByInstanceID = new Map<string, InstanceSnapshot>()
 const snapshotPersistQueueByInstanceID = new Map<string, Promise<void>>()
+const pendingCollectStatusByRequestId = new Map<string, PendingCollectStatus>()
+
+function clearRuntimeState() {
+  for (const instanceID of registrationByInstanceID.keys()) {
+    revokeSessionToken(instanceID)
+  }
+  registrationByInstanceID.clear()
+  instanceIDsBySocket.clear()
+  snapshotByInstanceID.clear()
+  snapshotPersistQueueByInstanceID.clear()
+  pendingCollectStatusByRequestId.clear()
+}
 
 function toPositiveNumber(rawValue: string | undefined, fallback: number): number {
   if (!isNonEmptyString(rawValue)) {
@@ -99,6 +140,15 @@ function asObject(value: unknown): Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
+}
+
+function hasCollectStatusPayload(payload: unknown): payload is CollectStatusPayload {
+  return asObject(payload).requestId !== undefined && isNonEmptyString(asObject(payload).requestId)
+}
+
+function hasStatusSnapshotPayload(payload: unknown): payload is StatusSnapshotPayload {
+  const record = asObject(payload)
+  return isNonEmptyString(record.requestId) && "snapshot" in record
 }
 
 function isSafeInstanceID(instanceID: string): boolean {
@@ -262,6 +312,42 @@ function cleanupSocketRegistrations(socket: net.Socket) {
   instanceIDsBySocket.delete(socket)
 }
 
+function finalizePendingCollectStatus(requestId: string) {
+  const pending = pendingCollectStatusByRequestId.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timer)
+  pendingCollectStatusByRequestId.delete(requestId)
+
+  const instances: AggregatedStatusInstance[] = []
+  for (const instanceID of pending.requestedInstanceIDs) {
+    if (pending.snapshotsByInstanceID.has(instanceID)) {
+      instances.push({
+        instanceID,
+        status: "ok",
+        snapshot: pending.snapshotsByInstanceID.get(instanceID),
+      })
+      continue
+    }
+
+    instances.push({
+      instanceID,
+      status: "timeout/unreachable",
+    })
+  }
+
+  pending.resolve({
+    requestId,
+    instances,
+    reply: formatAggregatedStatusReply({
+      requestId,
+      instances,
+    }),
+  })
+}
+
 async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Promise<void> {
   const requestId = getRequestId(envelope)
 
@@ -360,6 +446,39 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
     return
   }
 
+  if (envelope.type === "statusSnapshot") {
+    if (!requireAuthorized(envelope)) {
+      writeError(socket, "unauthorized", "session token is invalid", requestId)
+      return
+    }
+
+    const payload = envelope.payload
+    if (!hasStatusSnapshotPayload(payload)) {
+      writeError(socket, "invalidMessage", "statusSnapshot payload is invalid", requestId)
+      return
+    }
+
+    const pending = pendingCollectStatusByRequestId.get(payload.requestId)
+    if (!pending) {
+      return
+    }
+
+    const sourceInstanceID = envelope.instanceID
+    if (!isNonEmptyString(sourceInstanceID)) {
+      return
+    }
+
+    if (!pending.requestedInstanceIDs.has(sourceInstanceID)) {
+      return
+    }
+
+    pending.snapshotsByInstanceID.set(sourceInstanceID, payload.snapshot)
+    if (pending.snapshotsByInstanceID.size >= pending.requestedInstanceIDs.size) {
+      finalizePendingCollectStatus(payload.requestId)
+    }
+    return
+  }
+
   if (FUTURE_MESSAGE_TYPES.has(envelope.type)) {
     if (!requireAuthorized(envelope)) {
       writeError(socket, "unauthorized", "session token is invalid", requestId)
@@ -408,6 +527,8 @@ async function prepareEndpoint(endpoint: string) {
 export type BrokerServerHandle = {
   endpoint: string
   startedAt: number
+  collectStatus: () => Promise<CollectStatusResult>
+  handleWechatSlashCommand: (command: WechatSlashCommand) => Promise<string>
   close: () => Promise<void>
 }
 
@@ -484,6 +605,61 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
   }, heartbeatScanIntervalMs)
 
   let closed = false
+
+  const collectStatus = async (): Promise<CollectStatusResult> => {
+    const requestId = `collect-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const requestedInstanceIDs = new Set<string>()
+
+    for (const [instanceID, record] of registrationByInstanceID.entries()) {
+      if (record.socket.destroyed) {
+        continue
+      }
+      requestedInstanceIDs.add(instanceID)
+      writeEnvelope(record.socket, {
+        id: `collectStatus-${requestId}-${instanceID}`,
+        type: "collectStatus",
+        instanceID,
+        sessionToken: record.sessionToken,
+        payload: {
+          requestId,
+        } as CollectStatusPayload,
+      })
+    }
+
+    if (requestedInstanceIDs.size === 0) {
+      return {
+        requestId,
+        instances: [],
+        reply: formatAggregatedStatusReply({
+          requestId,
+          instances: [],
+        }),
+      }
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        finalizePendingCollectStatus(requestId)
+      }, DEFAULT_STATUS_COLLECT_WINDOW_MS)
+
+      pendingCollectStatusByRequestId.set(requestId, {
+        requestedInstanceIDs,
+        snapshotsByInstanceID: new Map(),
+        resolve,
+        timer,
+      })
+    })
+  }
+
+  const handleWechatSlashCommand = async (command: WechatSlashCommand): Promise<string> => {
+    if (command.type === "status") {
+      const result = await collectStatus()
+      return result.reply
+    }
+
+    return `命令暂未实现：/${command.command}`
+  }
+
   const close = async () => {
     if (closed) {
       return
@@ -492,6 +668,16 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
 
     clearInterval(staleScanTimer)
 
+    for (const requestId of pendingCollectStatusByRequestId.keys()) {
+      finalizePendingCollectStatus(requestId)
+    }
+
+    for (const record of registrationByInstanceID.values()) {
+      if (!record.socket.destroyed) {
+        record.socket.destroy()
+      }
+    }
+
     await new Promise<void>((resolve) => {
       server.close(() => resolve())
     })
@@ -499,11 +685,15 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     if (process.platform !== "win32") {
       await rm(endpoint, { force: true })
     }
+
+    clearRuntimeState()
   }
 
   return {
     endpoint,
     startedAt: Date.now(),
+    collectStatus,
+    handleWechatSlashCommand,
     close,
   }
 }

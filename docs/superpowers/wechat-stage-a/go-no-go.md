@@ -2,12 +2,12 @@
 
 ## 测试时间与环境
 - 时间：待填充
-- 环境：Node v24.x、阶段 A compat host + slash-only guard
+- 环境：Node v24.x、阶段 A public helper + slash-only guard
 - 当前状态：`dry-run` / `known-unknown`
 
 ## 输入与观察结果
 - 输入：`npm run wechat:smoke:self-test`
-- 观察：compat host 自检成功，guard reject 与命令 stub 路径成立
+- 观察：public helper 自检成功，guard reject 与命令 stub 路径成立
 - 输入：`npm run wechat:smoke:real-account -- --dry-run`
 - 观察：仅输出准备信息、环境变量、手测步骤与产物路径，不触发真实绑定
 
@@ -17,12 +17,12 @@
 - 当前引用方式：使用证据 ID 或相对路径写入本节
 
 ## Go/No-Go 硬门槛
-- `compat host + 自检 3/3 连续成功`
+- `public helper + 自检 3/3 连续成功`
 - `非 slash 拒绝 + 告警回发 10/10 连续成功`
 - `阶段 B 关键字段清单完整，无关键字段缺失`
 
 ## 对照检查
-- `compat host + 自检 3/3 连续成功`：已完成（自动化验证）
+- `public helper + 自检 3/3 连续成功`：已完成（自动化验证）
 - `非 slash 拒绝 + 告警回发 10/10 连续成功`：未完成，待真实账号手测
 - `阶段 B 关键字段清单完整，无关键字段缺失`：未完成，当前为 `known-unknown`
 

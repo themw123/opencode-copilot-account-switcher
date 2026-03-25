@@ -4,6 +4,7 @@ export type BrokerImplementedMessageType =
   | "heartbeat"
   | "ping"
   | "pong"
+  | "statusSnapshot"
   | "error"
 
 export type BrokerFutureMessageType =
@@ -14,6 +15,15 @@ export type BrokerFutureMessageType =
   | "showFallbackToast"
 
 export type BrokerMessageType = BrokerImplementedMessageType | BrokerFutureMessageType
+
+export type CollectStatusPayload = {
+  requestId: string
+}
+
+export type StatusSnapshotPayload = {
+  requestId: string
+  snapshot: unknown
+}
 
 export type BrokerErrorCode = "unauthorized" | "invalidMessage" | "notImplemented" | "brokerUnavailable"
 
@@ -45,6 +55,7 @@ function isMessageType(value: unknown): value is BrokerMessageType {
     value === "heartbeat" ||
     value === "ping" ||
     value === "pong" ||
+    value === "statusSnapshot" ||
     value === "error" ||
     value === "collectStatus" ||
     value === "replyQuestion" ||

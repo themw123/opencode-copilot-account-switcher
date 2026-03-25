@@ -2,10 +2,13 @@ import { readFileSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { createRequire } from "node:module"
-import { createJiti } from "jiti"
-import { loadAndRegisterOpenClawWeixin } from "./openclaw-host.js"
-import { resolveOpenClawWeixinPublicEntry } from "./openclaw-host.js"
+import {
+  loadOpenClawWeixinPublicHelpers,
+  type OpenClawWeixinPublicHelpers,
+  type OpenClawWeixinPublicHelpersLoaderOptions,
+  type PublicWeixinMessage,
+  type PublicWeixinSendMessage,
+} from "./openclaw-public-helpers.js"
 import { createOpenClawSmokeHarness, runOpenClawSmoke, sanitizeOpenClawEvidenceSample } from "./openclaw-smoke.js"
 import type { SlashOnlyCommand } from "./slash-guard.js"
 
@@ -45,24 +48,14 @@ type PublicWeixinMessageItem = {
   }
 }
 
-type PublicWeixinMessage = {
-  message_id?: number
-  from_user_id?: string
-  context_token?: string
-  create_time_ms?: number
-  item_list?: PublicWeixinMessageItem[]
-}
-
 type SlashCaptureState = {
   getUpdatesBuf?: string
   pendingMessages?: PublicWeixinMessage[]
 }
 
-type PublicWeixinSendMessage = (params: {
-  to: string
-  text: string
-  opts: { baseUrl: string; token: string; contextToken?: string }
-}) => Promise<{ messageId: string }>
+type GuidedPublicHelpers = Pick<OpenClawWeixinPublicHelpers, "entry" | "qrGateway" | "latestAccountState" | "getUpdates" | "sendMessageWeixin">
+
+type GuidedPublicHelpersLoader = (options?: OpenClawWeixinPublicHelpersLoaderOptions) => Promise<GuidedPublicHelpers>
 
 type GuidedSmokeKeyFieldsCheck = {
   login: { status: GuidedSmokeCheckStatus; detail?: string }
@@ -140,13 +133,8 @@ export type RunGuidedSmokeOptions = {
     keyFieldsCheck?: Partial<GuidedSmokeKeyFieldsCheck>
   } | void>
   getDependencyVersions?: () => GuidedSmokeDependencyVersions
-  loadLatestWeixinAccountState?: () => Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null>
-  loadPublicWeixinHelpers?: () => Promise<{
-    getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-  }>
-  loadPublicWeixinSendHelper?: () => Promise<{
-    sendMessageWeixin: PublicWeixinSendMessage
-  }>
+  loadOpenClawWeixinPublicHelpers?: GuidedPublicHelpersLoader
+  publicHelpersOptions?: OpenClawWeixinPublicHelpersLoaderOptions
   slashCaptureWaitTimeoutMs?: number
   slashCapturePollIntervalMs?: number
 }
@@ -178,25 +166,12 @@ const DEFAULT_SLASH_CAPTURE_WAIT_TIMEOUT_MS = 180_000
 const DEFAULT_SLASH_CAPTURE_POLL_INTERVAL_MS = 2_000
 const DEFAULT_PUBLIC_GET_UPDATES_LONG_POLL_TIMEOUT_MS = 35_000
 
-let guidedJitiLoader: ReturnType<typeof createJiti> | null = null
-
 function printGuidedPrompt(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
 function createRunId(): string {
   return new Date().toISOString().replace(/[:.]/g, "-")
-}
-
-function getGuidedJiti() {
-  if (guidedJitiLoader) {
-    return guidedJitiLoader
-  }
-  guidedJitiLoader = createJiti(import.meta.url, {
-    interopDefault: true,
-    extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
-  })
-  return guidedJitiLoader
 }
 
 function resolveDependencyVersionsFromPackageJson(): GuidedSmokeDependencyVersions {
@@ -214,9 +189,9 @@ function resolveDependencyVersionsFromPackageJson(): GuidedSmokeDependencyVersio
 async function runGuidedSelfTestDefault(): Promise<GuidedSmokeSelfTestResult> {
   try {
     const results = await runOpenClawSmoke("self-test")
-    const loaded = results.some((item) => item.route === "host-self-test" && item.status === "loaded")
+    const loaded = results.some((item) => item.route === "public-self-test" && item.status === "loaded")
     if (!loaded) {
-      return { ok: false, reason: "self-test missing host-self-test loaded result" }
+      return { ok: false, reason: "self-test missing public-self-test loaded result" }
     }
     return { ok: true }
   } catch (error) {
@@ -452,54 +427,6 @@ async function updateGoNoGoDoc(
   await writeFile(filePath, `${normalizedPrevious}\n\n${section}`, "utf8")
 }
 
-function hasQrLoginMethods(value: unknown): value is {
-  loginWithQrStart: (input?: unknown) => unknown
-  loginWithQrWait: (input?: unknown) => unknown
-} {
-  if (!value || typeof value !== "object") {
-    return false
-  }
-  const candidate = value as {
-    loginWithQrStart?: unknown
-    loginWithQrWait?: unknown
-  }
-  return typeof candidate.loginWithQrStart === "function" && typeof candidate.loginWithQrWait === "function"
-}
-
-function extractWeixinPluginFromRegisterPayload(payload: unknown): {
-  loginWithQrStart: (input?: unknown) => unknown
-  loginWithQrWait: (input?: unknown) => unknown
-} | null {
-  if (!payload || typeof payload !== "object") {
-    return null
-  }
-
-  const record = payload as Record<string, unknown>
-  const candidates = [
-    payload,
-    record.weixinPlugin,
-    record.plugin,
-    (record.plugin as Record<string, unknown> | undefined)?.auth,
-    (record.plugin as Record<string, unknown> | undefined)?.gateway,
-    (record.gateway as Record<string, unknown> | undefined)?.weixinPlugin,
-    (record.gateway as Record<string, unknown> | undefined)?.plugin,
-    ((record.gateway as Record<string, unknown> | undefined)?.plugin as Record<string, unknown> | undefined)?.auth,
-    ((record.gateway as Record<string, unknown> | undefined)?.plugin as Record<string, unknown> | undefined)?.gateway,
-    (record.channel as Record<string, unknown> | undefined)?.weixinPlugin,
-    (record.channel as Record<string, unknown> | undefined)?.plugin,
-    ((record.channel as Record<string, unknown> | undefined)?.plugin as Record<string, unknown> | undefined)?.auth,
-    ((record.channel as Record<string, unknown> | undefined)?.plugin as Record<string, unknown> | undefined)?.gateway,
-  ]
-
-  for (const candidate of candidates) {
-    if (hasQrLoginMethods(candidate)) {
-      return candidate
-    }
-  }
-
-  return null
-}
-
 function pickFirstString(source: unknown, keys: readonly string[]): string | undefined {
   if (!source || typeof source !== "object") {
     return undefined
@@ -557,89 +484,6 @@ function normalizeNonSlashInboundSample(message: PublicWeixinMessage): Record<st
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function loadLatestWeixinAccountState(): Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null> {
-  const require = createRequire(import.meta.url)
-  const stateDirModulePath = require.resolve("@tencent-weixin/openclaw-weixin/src/storage/state-dir.ts")
-  const stateDirModule = getGuidedJiti()(stateDirModulePath) as { resolveStateDir?: () => string }
-  const stateDir = (stateDirModule as { resolveStateDir?: () => string }).resolveStateDir?.()
-  if (!stateDir) {
-    return null
-  }
-
-  const accountsIndexPath = path.join(stateDir, "openclaw-weixin", "accounts.json")
-  let accountIds: string[] = []
-  try {
-    const raw = await readFile(accountsIndexPath, "utf8")
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) {
-      accountIds = parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    }
-  } catch {
-    return null
-  }
-
-  const accountId = accountIds.at(-1)
-  if (!accountId) {
-    return null
-  }
-
-  try {
-    const accountFilePath = path.join(stateDir, "openclaw-weixin", "accounts", `${accountId}.json`)
-    const accountRaw = await readFile(accountFilePath, "utf8")
-    const account = JSON.parse(accountRaw) as { token?: unknown; baseUrl?: unknown }
-    const syncBufModulePath = require.resolve("@tencent-weixin/openclaw-weixin/src/storage/sync-buf.ts")
-    const syncBufModule = getGuidedJiti()(syncBufModulePath) as {
-      getSyncBufFilePath?: (accountId: string) => string
-      loadGetUpdatesBuf?: (filePath: string) => string | undefined
-    }
-    if (typeof account.token !== "string" || account.token.trim().length === 0) {
-      return null
-    }
-    const syncBufFilePath = syncBufModule.getSyncBufFilePath?.(accountId)
-    const persistedGetUpdatesBuf = syncBufFilePath ? syncBufModule.loadGetUpdatesBuf?.(syncBufFilePath) : undefined
-    return {
-      accountId,
-      token: account.token,
-      baseUrl: typeof account.baseUrl === "string" && account.baseUrl.trim().length > 0 ? account.baseUrl : "https://ilinkai.weixin.qq.com",
-      getUpdatesBuf: typeof persistedGetUpdatesBuf === "string" ? persistedGetUpdatesBuf : undefined,
-    }
-  } catch {
-    return null
-  }
-}
-
-async function loadPublicWeixinHelpers(): Promise<{
-  getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-}> {
-  const require = createRequire(import.meta.url)
-  const getUpdatesModulePath = require.resolve("@tencent-weixin/openclaw-weixin/src/api/api.ts")
-  const getUpdatesModule = getGuidedJiti()(getUpdatesModulePath) as {
-    getUpdates?: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-  }
-  if (typeof getUpdatesModule.getUpdates !== "function") {
-    throw new Error("public getUpdates helper unavailable")
-  }
-  return {
-    getUpdates: getUpdatesModule.getUpdates,
-  }
-}
-
-async function loadPublicWeixinSendHelper(): Promise<{
-  sendMessageWeixin: PublicWeixinSendMessage
-}> {
-  const require = createRequire(import.meta.url)
-  const sendModulePath = require.resolve("@tencent-weixin/openclaw-weixin/src/messaging/send.ts")
-  const sendModule = getGuidedJiti()(sendModulePath) as {
-    sendMessageWeixin?: PublicWeixinSendMessage
-  }
-  if (typeof sendModule.sendMessageWeixin !== "function") {
-    throw new Error("public sendMessageWeixin helper unavailable")
-  }
-  return {
-    sendMessageWeixin: sendModule.sendMessageWeixin,
-  }
 }
 
 function matchesSlashStep(message: PublicWeixinMessage, input: string): boolean {
@@ -736,34 +580,12 @@ async function captureNonSlashInboundFromPublicMessages(input: {
 }
 
 async function runQrLoginDefault(input: { waitTimeoutMs: number }): Promise<{ status: "success" | "timeout"; connected?: boolean; qrPrinted?: boolean; qrUrl?: string; qrDataUrl?: string }> {
-  const registeredPayloads: unknown[] = []
-  const compatHostApi = {
-    runtime: {
-      channelRuntime: {
-        mode: "guided-smoke",
-      },
-      gateway: {
-        startAccount: {
-          source: "guided-smoke",
-        },
-      },
-    },
-    registerChannel(payload: unknown) {
-      registeredPayloads.push(payload)
-    },
-    registerCli() {},
+  const qrGateway = (input as { qrGateway?: OpenClawWeixinPublicHelpers["qrGateway"] }).qrGateway
+  if (!qrGateway) {
+    throw new Error("missing qrGateway helper")
   }
 
-  await loadAndRegisterOpenClawWeixin(compatHostApi)
-
-  const weixinPlugin = registeredPayloads
-    .map((payload) => extractWeixinPluginFromRegisterPayload(payload))
-    .find((item) => Boolean(item))
-  if (!weixinPlugin) {
-    throw new Error("registerChannel did not expose weixinPlugin with loginWithQrStart/loginWithQrWait")
-  }
-
-  const startResult = await Promise.resolve(weixinPlugin.loginWithQrStart({
+  const startResult = await Promise.resolve(qrGateway.loginWithQrStart({
     accountId: undefined,
     force: false,
     timeoutMs: input.waitTimeoutMs,
@@ -781,7 +603,7 @@ async function runQrLoginDefault(input: { waitTimeoutMs: number }): Promise<{ st
     throw new Error(qrStartMessage || "invalid qr login result: missing qr code or qr url")
   }
 
-  const waitResult = await Promise.resolve(weixinPlugin.loginWithQrWait({ timeoutMs: input.waitTimeoutMs, sessionKey }))
+  const waitResult = await Promise.resolve(qrGateway.loginWithQrWait({ timeoutMs: input.waitTimeoutMs, sessionKey }))
   if (waitResult && typeof waitResult === "object" && "status" in waitResult && String((waitResult as { status?: unknown }).status) === "timeout") {
     return { status: "timeout", qrPrinted: Boolean(qrTerminal), qrUrl }
   }
@@ -827,16 +649,16 @@ async function captureSlashInboundDefault(
   command: SlashOnlyCommand,
   deps: {
     state?: SlashCaptureState
-    loadLatestWeixinAccountState?: () => Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null>
-    loadPublicWeixinHelpers?: () => Promise<{
-      getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-    }>
+    loadOpenClawWeixinPublicHelpers?: GuidedPublicHelpersLoader
+    publicHelpersOptions?: OpenClawWeixinPublicHelpersLoaderOptions
     waitTimeoutMs?: number
     pollIntervalMs?: number
   } = {},
 ): Promise<Record<string, unknown>> {
   let lastObservation: { msgCount: number; getUpdatesBuf?: string; texts: string[] } | null = null
-  const accountState = await (deps.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)()
+  const loader = deps.loadOpenClawWeixinPublicHelpers ?? loadOpenClawWeixinPublicHelpers
+  const helpers = await loader(deps.publicHelpersOptions)
+  const accountState = helpers.latestAccountState
   if (!accountState) {
     return {
       command,
@@ -845,16 +667,7 @@ async function captureSlashInboundDefault(
     }
   }
 
-  let publicHelpers: Awaited<ReturnType<typeof loadPublicWeixinHelpers>>
-  try {
-    publicHelpers = await (deps.loadPublicWeixinHelpers ?? loadPublicWeixinHelpers)()
-  } catch (error) {
-    return {
-      command,
-      synthetic: true,
-      reason: error instanceof Error ? error.message : String(error),
-    }
-  }
+  const publicHelpers = { getUpdates: helpers.getUpdates }
 
   const state = deps.state ?? {}
   let getUpdatesBuf = typeof state.getUpdatesBuf === "string"
@@ -885,7 +698,7 @@ async function captureSlashInboundDefault(
       lastObservation = {
         msgCount: messages.length,
         getUpdatesBuf: typeof response.get_updates_buf === "string" ? response.get_updates_buf : getUpdatesBuf,
-        texts: messages.map((message) => extractTextFromPublicWeixinMessage(message)).filter((text) => text.length > 0),
+        texts: messages.map((message: PublicWeixinMessage) => extractTextFromPublicWeixinMessage(message)).filter((text: string) => text.length > 0),
       }
       return messages
     },
@@ -906,13 +719,8 @@ export const captureSlashInboundDefaultForTest = captureSlashInboundDefault
 
 async function runDefaultNonSlashVerification(input: {
   state?: SlashCaptureState
-  loadLatestWeixinAccountState?: () => Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null>
-  loadPublicWeixinHelpers?: () => Promise<{
-    getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-  }>
-  loadPublicWeixinSendHelper?: () => Promise<{
-    sendMessageWeixin: PublicWeixinSendMessage
-  }>
+  loadOpenClawWeixinPublicHelpers?: GuidedPublicHelpersLoader
+  publicHelpersOptions?: OpenClawWeixinPublicHelpersLoaderOptions
   inputs?: string[]
   waitTimeoutMs?: number
   pollIntervalMs?: number
@@ -933,7 +741,21 @@ async function runDefaultNonSlashVerification(input: {
     warningReply: { status: "known-unknown" },
   }
 
-  const accountState = await (input.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)()
+  const loader = input.loadOpenClawWeixinPublicHelpers ?? loadOpenClawWeixinPublicHelpers
+  let helpers: GuidedPublicHelpers
+  try {
+    helpers = await loader(input.publicHelpersOptions)
+  } catch (error) {
+    return {
+      passed: 0,
+      total,
+      failedChecks: [error instanceof Error ? error.message : String(error)],
+      attempts,
+      keyFieldsCheck,
+    }
+  }
+
+  const accountState = helpers.latestAccountState
   if (!accountState) {
     return {
       passed: 0,
@@ -944,20 +766,8 @@ async function runDefaultNonSlashVerification(input: {
     }
   }
 
-  let publicHelpers: Awaited<ReturnType<typeof loadPublicWeixinHelpers>>
-  let sendHelper: Awaited<ReturnType<typeof loadPublicWeixinSendHelper>>
-  try {
-    publicHelpers = await (input.loadPublicWeixinHelpers ?? loadPublicWeixinHelpers)()
-    sendHelper = await (input.loadPublicWeixinSendHelper ?? loadPublicWeixinSendHelper)()
-  } catch (error) {
-    return {
-      passed: 0,
-      total,
-      failedChecks: [error instanceof Error ? error.message : String(error)],
-      attempts,
-      keyFieldsCheck,
-    }
-  }
+  const publicHelpers = { getUpdates: helpers.getUpdates }
+  const sendHelper = { sendMessageWeixin: helpers.sendMessageWeixin }
 
   const state = input.state ?? {}
   let getUpdatesBuf = typeof state.getUpdatesBuf === "string"
@@ -1184,7 +994,6 @@ function normalizeQrLoginResult(result: unknown): { status: "success" | "timeout
   }
 }
 
-export const extractWeixinPluginFromRegisterPayloadForTest = extractWeixinPluginFromRegisterPayload
 export const normalizeQrLoginResultForTest = normalizeQrLoginResult
 
 function normalizeNonSlashVerificationResult(result: unknown): {
@@ -1313,22 +1122,37 @@ export async function runGuidedSmoke(options: RunGuidedSmokeOptions = {}): Promi
   const run = createGuidedSmokeRun(options)
   const waitTimeoutMs = options.qrWaitTimeoutMs ?? DEFAULT_QR_WAIT_TIMEOUT_MS
   const slashCaptureState: SlashCaptureState = {}
-  const loadPublicEntry = options.loadPublicEntry ?? resolveOpenClawWeixinPublicEntry
+  const loadOpenClawPublicHelpers = options.loadOpenClawWeixinPublicHelpers ?? loadOpenClawWeixinPublicHelpers
+  let cachedPublicHelpers: GuidedPublicHelpers | null = null
+  const getPublicHelpers = async (): Promise<GuidedPublicHelpers> => {
+    if (cachedPublicHelpers) {
+      return cachedPublicHelpers
+    }
+    cachedPublicHelpers = await loadOpenClawPublicHelpers({
+      ...options.publicHelpersOptions,
+    })
+    return cachedPublicHelpers
+  }
+
+  const loadPublicEntry = options.loadPublicEntry ?? (async () => {
+    const helpers = await getPublicHelpers()
+    return helpers.entry
+  })
   const runSelfTest = options.runSelfTest ?? runGuidedSelfTestDefault
   const getDependencyVersions = options.getDependencyVersions ?? resolveDependencyVersionsFromPackageJson
-  const runQrLogin = options.runQrLogin ?? runQrLoginDefault
+  const runQrLogin = options.runQrLogin ?? (async (input: { waitTimeoutMs: number }) => {
+    const helpers = await getPublicHelpers()
+    return runQrLoginDefault({ ...input, qrGateway: helpers.qrGateway } as { waitTimeoutMs: number; qrGateway: OpenClawWeixinPublicHelpers["qrGateway"] })
+  })
   const captureSlashInbound = options.captureSlashInbound ?? ((command: SlashOnlyCommand) => captureSlashInboundDefault(command, {
     state: slashCaptureState,
-    loadLatestWeixinAccountState: options.loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers: options.loadPublicWeixinHelpers,
+    loadOpenClawWeixinPublicHelpers: async () => getPublicHelpers(),
     waitTimeoutMs: options.slashCaptureWaitTimeoutMs,
     pollIntervalMs: options.slashCapturePollIntervalMs,
   }))
   const runNonSlashVerification = options.runNonSlashVerification ?? (() => runDefaultNonSlashVerification({
     state: slashCaptureState,
-    loadLatestWeixinAccountState: options.loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers: options.loadPublicWeixinHelpers,
-    loadPublicWeixinSendHelper: options.loadPublicWeixinSendHelper,
+    loadOpenClawWeixinPublicHelpers: async () => getPublicHelpers(),
   }))
   const apiSamplesDocPath =
     options.apiSamplesDocPath ??

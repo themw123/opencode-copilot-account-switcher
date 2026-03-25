@@ -8,6 +8,35 @@ import { Writable } from "node:stream"
 
 const DIST_GUIDED_MODULE = "../dist/wechat/compat/openclaw-guided-smoke.js"
 
+function createUnifiedPublicHelpersLoader(overrides = {}) {
+  return async () => ({
+    entry: {
+      entryRelativePath: "./index.ts",
+      entryAbsolutePath: "/tmp/index.ts",
+      extensions: ["./index.ts"],
+      packageJsonPath: "/tmp/package.json",
+      packageRoot: "/tmp",
+    },
+    pluginId: "openclaw-weixin",
+    qrGateway: {
+      loginWithQrStart() {
+        return null
+      },
+      loginWithQrWait() {
+        return null
+      },
+    },
+    latestAccountState: {
+      accountId: "account-1",
+      token: "bot-token",
+      baseUrl: "https://example.test",
+    },
+    getUpdates: async () => ({ msgs: [] }),
+    sendMessageWeixin: async () => ({ messageId: "mock-mid" }),
+    ...overrides,
+  })
+}
+
 test("guided smoke preflight writes 001-preflight evidence", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
@@ -74,7 +103,7 @@ test("guided smoke preflight validates public entry load and evidence directory 
   assert.match(content, /evidence directory creation: `pass`/)
 })
 
-test("guided smoke preflight aborts when compat host self-test fails", async () => {
+test("guided smoke preflight aborts when public helper self-test fails", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
   let qrStageCalled = false
@@ -449,22 +478,6 @@ test("guided smoke surfaces qr start failure message when plugin returns no qr p
   assert.match(result.reason ?? "", /fetch failed/i)
 })
 
-test("guided smoke extracts qr methods from registerChannel payload plugin.gateway", async () => {
-  const guided = await import(DIST_GUIDED_MODULE)
-
-  const qrPlugin = {
-    gateway: {
-      loginWithQrStart: async () => ({ qrDataUrl: "https://example.test/qr-data-url", sessionKey: "session-123", message: "ok" }),
-      loginWithQrWait: async () => ({ connected: true, message: "connected", accountId: "wx-account" }),
-    },
-  }
-
-  const extracted = guided.extractWeixinPluginFromRegisterPayloadForTest({ plugin: qrPlugin })
-
-  assert.equal(typeof extracted?.loginWithQrStart, "function")
-  assert.equal(typeof extracted?.loginWithQrWait, "function")
-})
-
 test("guided smoke accepts qrDataUrl and connected success result from public plugin auth flow", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
 
@@ -480,33 +493,6 @@ test("guided smoke accepts qrDataUrl and connected success result from public pl
     qrPrinted: false,
     qrUrl: "https://example.test/qr-data-url",
   })
-})
-
-test("guided smoke passes object params into qr login methods", async () => {
-  const guided = await import(DIST_GUIDED_MODULE)
-
-  let startArgs
-  let waitArgs
-  const extracted = guided.extractWeixinPluginFromRegisterPayloadForTest({
-    plugin: {
-      gateway: {
-        loginWithQrStart: async (args) => {
-          startArgs = args
-          return { qrDataUrl: "https://example.test/qr-data-url", sessionKey: "session-123", message: "ok" }
-        },
-        loginWithQrWait: async (args) => {
-          waitArgs = args
-          return { connected: true, message: "connected", accountId: "wx-account" }
-        },
-      },
-    },
-  })
-
-  await extracted.loginWithQrStart({ accountId: undefined, force: false, timeoutMs: 480000, verbose: false })
-  await extracted.loginWithQrWait({ timeoutMs: 480000, sessionKey: "session-123" })
-
-  assert.deepEqual(startArgs, { accountId: undefined, force: false, timeoutMs: 480000, verbose: false })
-  assert.deepEqual(waitArgs, { timeoutMs: 480000, sessionKey: "session-123" })
 })
 
 test("guided smoke blocks when non-slash verification is not implemented", async () => {
@@ -553,12 +539,7 @@ test("guided smoke uses default non-slash verification when no override is provi
       text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}`,
       normalizedBy: "guided-smoke-public-structure",
     }),
-    loadLatestWeixinAccountState: async () => ({
-      accountId: "account-1",
-      token: "bot-token",
-      baseUrl: "https://example.test",
-    }),
-    loadPublicWeixinHelpers: async () => ({
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
       getUpdates: async () => {
         getUpdatesCalls += 1
         return {
@@ -572,8 +553,6 @@ test("guided smoke uses default non-slash verification when no override is provi
           get_updates_buf: "buf-nonslash",
         }
       },
-    }),
-    loadPublicWeixinSendHelper: async () => ({
       sendMessageWeixin: async ({ to }) => ({ messageId: `reply-${to}` }),
     }),
   })
@@ -923,12 +902,7 @@ test("guided smoke default slash inbound capture must not fake real inbound pass
     runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
     slashCaptureWaitTimeoutMs: 10,
     slashCapturePollIntervalMs: 5,
-    loadLatestWeixinAccountState: async () => ({
-      accountId: "account-1",
-      token: "bot-token",
-      baseUrl: "https://example.test",
-    }),
-    loadPublicWeixinHelpers: async () => ({
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
       getUpdates: async () => ({ msgs: [], get_updates_buf: "buf-empty" }),
     }),
     runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
@@ -1088,12 +1062,7 @@ test("guided smoke default slash capture can use injected public loader helpers"
   const calls = []
 
   const inbound = await guided.captureSlashInboundDefaultForTest("status", {
-    loadLatestWeixinAccountState: async () => ({
-      accountId: "account-1",
-      token: "bot-token",
-      baseUrl: "https://example.test",
-    }),
-    loadPublicWeixinHelpers: async () => ({
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
       getUpdates: async (params) => {
         calls.push(params)
         return {
@@ -1137,13 +1106,7 @@ test("guided smoke default slash capture preserves later slash messages from the
   const calls = []
   const sharedState = {}
 
-  const loadLatestWeixinAccountState = async () => ({
-    accountId: "account-1",
-    token: "bot-token",
-    baseUrl: "https://example.test",
-  })
-
-  const loadPublicWeixinHelpers = async () => ({
+  const loadOpenClawWeixinPublicHelpers = createUnifiedPublicHelpersLoader({
     getUpdates: async (params) => {
       calls.push(params)
       if (calls.length === 1) {
@@ -1187,22 +1150,19 @@ test("guided smoke default slash capture preserves later slash messages from the
 
   const statusInbound = await guided.captureSlashInboundDefaultForTest("status", {
     state: sharedState,
-    loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers,
+    loadOpenClawWeixinPublicHelpers,
     waitTimeoutMs: 100,
     pollIntervalMs: 10,
   })
   const replyInbound = await guided.captureSlashInboundDefaultForTest("reply", {
     state: sharedState,
-    loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers,
+    loadOpenClawWeixinPublicHelpers,
     waitTimeoutMs: 100,
     pollIntervalMs: 10,
   })
   const allowInbound = await guided.captureSlashInboundDefaultForTest("allow", {
     state: sharedState,
-    loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers,
+    loadOpenClawWeixinPublicHelpers,
     waitTimeoutMs: 100,
     pollIntervalMs: 10,
   })
@@ -1219,13 +1179,13 @@ test("guided smoke default slash capture starts from persisted get_updates_buf w
   const calls = []
 
   const inbound = await guided.captureSlashInboundDefaultForTest("status", {
-    loadLatestWeixinAccountState: async () => ({
-      accountId: "account-1",
-      token: "bot-token",
-      baseUrl: "https://example.test",
-      getUpdatesBuf: "buf-saved",
-    }),
-    loadPublicWeixinHelpers: async () => ({
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
+      latestAccountState: {
+        accountId: "account-1",
+        token: "bot-token",
+        baseUrl: "https://example.test",
+        getUpdatesBuf: "buf-saved",
+      },
       getUpdates: async (params) => {
         calls.push(params)
         return {
@@ -1256,13 +1216,7 @@ test("guided smoke default non-slash verification can consume real inbound sampl
   const slashState = {}
   const publicCalls = []
 
-  const loadLatestWeixinAccountState = async () => ({
-    accountId: "account-1",
-    token: "bot-token",
-    baseUrl: "https://example.test",
-  })
-
-  const loadPublicWeixinHelpers = async () => ({
+  const loadOpenClawWeixinPublicHelpers = createUnifiedPublicHelpersLoader({
     getUpdates: async (params) => {
       publicCalls.push(params)
       if (publicCalls.length === 1) {
@@ -1299,25 +1253,21 @@ test("guided smoke default non-slash verification can consume real inbound sampl
         get_updates_buf: "buf-2",
       }
     },
+    sendMessageWeixin: async ({ to }) => ({
+      messageId: `reply-${to}`,
+    }),
   })
 
   await guided.captureSlashInboundDefaultForTest("status", {
     state: slashState,
-    loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers,
+    loadOpenClawWeixinPublicHelpers,
     waitTimeoutMs: 100,
     pollIntervalMs: 10,
   })
 
   const result = await guided.runDefaultNonSlashVerificationForTest({
     state: slashState,
-    loadLatestWeixinAccountState,
-    loadPublicWeixinHelpers,
-    loadPublicWeixinSendHelper: async () => ({
-      sendMessageWeixin: async ({ to }) => ({
-        messageId: `reply-${to}`,
-      }),
-    }),
+    loadOpenClawWeixinPublicHelpers,
     inputs: ["hello 1", "hello 2"],
     waitTimeoutMs: 100,
     pollIntervalMs: 10,
@@ -1332,6 +1282,63 @@ test("guided smoke default non-slash verification can consume real inbound sampl
   assert.equal(result.attempts[0].warningReply?.ok, true)
   assert.equal(result.attempts[1].warningReply?.ok, true)
   assert.equal(publicCalls[1].timeoutMs, 35000)
+})
+
+test("guided smoke only uses unified helper loader boundary", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+  const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
+
+  const result = await guided.runGuidedSmoke({
+    runId: "run-unified-loader-boundary",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
+      latestAccountState: {
+        accountId: "account-1",
+        token: "bot-token",
+        baseUrl: "https://example.test",
+      },
+      getUpdates: async () => ({ msgs: [], get_updates_buf: "buf-empty" }),
+      sendMessageWeixin: async () => ({ messageId: "reply-mid" }),
+    }),
+    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
+    loadLatestWeixinAccountState: async () => {
+      throw new Error("legacy loadLatestWeixinAccountState should not be used")
+    },
+    loadPublicWeixinHelpers: async () => {
+      throw new Error("legacy loadPublicWeixinHelpers should not be used")
+    },
+    loadPublicWeixinSendHelper: async () => {
+      throw new Error("legacy loadPublicWeixinSendHelper should not be used")
+    },
+    slashCaptureWaitTimeoutMs: 10,
+    slashCapturePollIntervalMs: 5,
+    runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
+  })
+
+  assert.equal(result.status, "blocked")
+  assert.match(result.reason ?? "", /slash sampling incomplete/i)
+})
+
+test("guided smoke slash evidence keeps outbound-none and stub semantics", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+  const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
+
+  const result = await guided.runGuidedSmoke({
+    runId: "run-slash-stub-outbound-none",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
+    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
+    runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
+  })
+
+  assert.equal(result.status, "completed")
+  const statusFile = path.join(evidenceBaseDir, "run-slash-stub-outbound-none", "004-status-command.json")
+  const payload = JSON.parse(await readFile(statusFile, "utf8"))
+  assert.equal(payload.routeResult, "stub")
+  assert.equal(payload.outbound?.mode, "none")
 })
 
 test("guided smoke prints step-by-step prompts after each confirmed stage", async () => {

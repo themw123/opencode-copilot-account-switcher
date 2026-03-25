@@ -448,6 +448,10 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         || action.name === "toggle-loop-safety-provider-scope"
         || action.name === "toggle-experimental-slash-commands"
         || action.name === "toggle-network-retry"
+        || action.name === "toggle-wechat-notifications"
+        || action.name === "toggle-wechat-question-notify"
+        || action.name === "toggle-wechat-permission-notify"
+        || action.name === "toggle-wechat-session-error-notify"
       ) {
         await applyCommonSettingsAction({
           action: { type: action.name },
@@ -455,6 +459,9 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
           writeSettings: writeCommonSettings,
         })
         return false
+      }
+      if (action.name === "wechat-bind") {
+        return true
       }
       return false
     },

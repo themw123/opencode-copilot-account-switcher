@@ -194,7 +194,7 @@ test("go-no-go skeleton includes three hard gates", async () => {
   const content = await readFile(GO_NO_GO_DOC, "utf8")
   assert.match(content, /^# /m)
   assert.match(content, /## Go\/No-Go 硬门槛/m)
-  assert.match(content, /compat host \+ 自检 3\/3 连续成功/m)
+  assert.match(content, /public helper \+ 自检 3\/3 连续成功/m)
   assert.match(content, /非 slash 拒绝 \+ 告警回发 10\/10 连续成功/m)
   assert.match(content, /阶段 B 关键字段清单完整/m)
   assert.match(content, /## 测试时间与环境/m)

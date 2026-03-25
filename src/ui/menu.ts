@@ -42,6 +42,11 @@ export type MenuAction =
   | { type: "toggle-loop-safety-provider-scope" }
   | { type: "toggle-experimental-slash-commands" }
   | { type: "toggle-network-retry" }
+  | { type: "wechat-bind" }
+  | { type: "toggle-wechat-notifications" }
+  | { type: "toggle-wechat-question-notify" }
+  | { type: "toggle-wechat-permission-notify" }
+  | { type: "toggle-wechat-session-error-notify" }
   | { type: "toggle-synthetic-agent-initiator" }
   | { type: "switch"; account: AccountInfo }
   | { type: "remove"; account: AccountInfo }
@@ -64,6 +69,7 @@ type MenuCapabilities = {
   experimentalSlashCommands: boolean
   networkRetry: boolean
   syntheticAgentInitiator: boolean
+  wechatNotificationsMenu: boolean
 }
 
 function defaultMenuCapabilities(provider: MenuProvider): MenuCapabilities {
@@ -80,6 +86,7 @@ function defaultMenuCapabilities(provider: MenuProvider): MenuCapabilities {
       experimentalSlashCommands: true,
       networkRetry: true,
       syntheticAgentInitiator: false,
+      wechatNotificationsMenu: true,
     }
   }
   return {
@@ -94,6 +101,7 @@ function defaultMenuCapabilities(provider: MenuProvider): MenuCapabilities {
     experimentalSlashCommands: true,
     networkRetry: true,
     syntheticAgentInitiator: true,
+    wechatNotificationsMenu: true,
   }
 }
 
@@ -133,6 +141,16 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
         syntheticInitiatorOn: "Send synthetic messages as agent: On",
         syntheticInitiatorOff: "Send synthetic messages as agent: Off",
         syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
+        wechatNotificationsHeading: "WeChat notifications",
+        wechatBind: "Bind / Rebind WeChat",
+        wechatNotificationsOn: "WeChat notifications: On",
+        wechatNotificationsOff: "WeChat notifications: Off",
+        wechatQuestionNotifyOn: "Question notifications: On",
+        wechatQuestionNotifyOff: "Question notifications: Off",
+        wechatPermissionNotifyOn: "Permission notifications: On",
+        wechatPermissionNotifyOff: "Permission notifications: Off",
+        wechatSessionErrorNotifyOn: "Session error notifications: On",
+        wechatSessionErrorNotifyOff: "Session error notifications: Off",
         accountsHeading: "Accounts",
         dangerHeading: "Danger zone",
         removeAll: "Remove all accounts",
@@ -171,6 +189,16 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
       syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
       syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
+      wechatNotificationsHeading: "微信通知",
+      wechatBind: "绑定 / 重绑微信",
+      wechatNotificationsOn: "微信通知总开关：已开启",
+      wechatNotificationsOff: "微信通知总开关：已关闭",
+      wechatQuestionNotifyOn: "问题通知：已开启",
+      wechatQuestionNotifyOff: "问题通知：已关闭",
+      wechatPermissionNotifyOn: "权限通知：已开启",
+      wechatPermissionNotifyOff: "权限通知：已关闭",
+      wechatSessionErrorNotifyOn: "会话错误通知：已开启",
+      wechatSessionErrorNotifyOff: "会话错误通知：已关闭",
       accountsHeading: "账号",
       dangerHeading: "危险操作",
       removeAll: "删除全部账号",
@@ -212,6 +240,16 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       syntheticInitiatorOn: "Send synthetic messages as agent: On",
       syntheticInitiatorOff: "Send synthetic messages as agent: Off",
       syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
+      wechatNotificationsHeading: "WeChat notifications",
+      wechatBind: "Bind / Rebind WeChat",
+      wechatNotificationsOn: "WeChat notifications: On",
+      wechatNotificationsOff: "WeChat notifications: Off",
+      wechatQuestionNotifyOn: "Question notifications: On",
+      wechatQuestionNotifyOff: "Question notifications: Off",
+      wechatPermissionNotifyOn: "Permission notifications: On",
+      wechatPermissionNotifyOff: "Permission notifications: Off",
+      wechatSessionErrorNotifyOn: "Session error notifications: On",
+      wechatSessionErrorNotifyOff: "Session error notifications: Off",
       accountsHeading: "Accounts",
       dangerHeading: "Danger zone",
       removeAll: "Remove all accounts",
@@ -252,6 +290,16 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
     syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
     syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
     syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
+    wechatNotificationsHeading: "微信通知",
+    wechatBind: "绑定 / 重绑微信",
+    wechatNotificationsOn: "微信通知总开关：已开启",
+    wechatNotificationsOff: "微信通知总开关：已关闭",
+    wechatQuestionNotifyOn: "问题通知：已开启",
+    wechatQuestionNotifyOff: "问题通知：已关闭",
+    wechatPermissionNotifyOn: "权限通知：已开启",
+    wechatPermissionNotifyOff: "权限通知：已关闭",
+    wechatSessionErrorNotifyOn: "会话错误通知：已开启",
+    wechatSessionErrorNotifyOff: "会话错误通知：已关闭",
     accountsHeading: "账号",
     dangerHeading: "危险操作",
     removeAll: "删除全部账号",
@@ -288,6 +336,10 @@ export function buildMenuItems(input: {
   loopSafetyEnabled: boolean
   loopSafetyProviderScope?: "copilot-only" | "all-models"
   networkRetryEnabled: boolean
+  wechatNotificationsEnabled?: boolean
+  wechatQuestionNotifyEnabled?: boolean
+  wechatPermissionNotifyEnabled?: boolean
+  wechatSessionErrorNotifyEnabled?: boolean
   syntheticAgentInitiatorEnabled?: boolean
   experimentalSlashCommandsEnabled?: boolean
   capabilities?: Partial<MenuCapabilities>
@@ -309,6 +361,10 @@ export function buildMenuItems(input: {
   const quotaHint = input.lastQuotaRefresh ? `last ${formatRelativeTime(input.lastQuotaRefresh)}` : undefined
   const loopSafetyProviderScope = input.loopSafetyProviderScope ?? "copilot-only"
   const experimentalSlashCommandsEnabled = input.experimentalSlashCommandsEnabled !== false
+  const wechatNotificationsEnabled = input.wechatNotificationsEnabled !== false
+  const wechatQuestionNotifyEnabled = input.wechatQuestionNotifyEnabled !== false
+  const wechatPermissionNotifyEnabled = input.wechatPermissionNotifyEnabled !== false
+  const wechatSessionErrorNotifyEnabled = input.wechatSessionErrorNotifyEnabled !== false
 
   const providerActions: MenuItem<MenuAction>[] = [
     { label: copy.actionsHeading, value: { type: "cancel" }, kind: "heading" },
@@ -397,12 +453,48 @@ export function buildMenuItems(input: {
     })
   }
 
+  const wechatNotifications: MenuItem<MenuAction>[] = [
+    { label: copy.wechatNotificationsHeading, value: { type: "cancel" }, kind: "heading" },
+    {
+      label: copy.wechatBind,
+      value: { type: "wechat-bind" },
+      color: "cyan",
+      disabled: !capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: wechatNotificationsEnabled ? copy.wechatNotificationsOn : copy.wechatNotificationsOff,
+      value: { type: "toggle-wechat-notifications" },
+      color: "cyan",
+      disabled: !capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: wechatQuestionNotifyEnabled ? copy.wechatQuestionNotifyOn : copy.wechatQuestionNotifyOff,
+      value: { type: "toggle-wechat-question-notify" },
+      color: "cyan",
+      disabled: !capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: wechatPermissionNotifyEnabled ? copy.wechatPermissionNotifyOn : copy.wechatPermissionNotifyOff,
+      value: { type: "toggle-wechat-permission-notify" },
+      color: "cyan",
+      disabled: !capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: wechatSessionErrorNotifyEnabled ? copy.wechatSessionErrorNotifyOn : copy.wechatSessionErrorNotifyOff,
+      value: { type: "toggle-wechat-session-error-notify" },
+      color: "cyan",
+      disabled: !capabilities.wechatNotificationsMenu,
+    },
+  ]
+
   return [
     ...providerActions,
     { label: "", value: { type: "cancel" }, separator: true },
     ...commonSettings,
     { label: "", value: { type: "cancel" }, separator: true },
     ...providerSettings,
+    { label: "", value: { type: "cancel" }, separator: true },
+    ...wechatNotifications,
     { label: "", value: { type: "cancel" }, separator: true },
     { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
     ...input.accounts.map((account) => {
@@ -446,6 +538,10 @@ export async function showMenu(
     loopSafetyEnabled?: boolean
     loopSafetyProviderScope?: "copilot-only" | "all-models"
     networkRetryEnabled?: boolean
+    wechatNotificationsEnabled?: boolean
+    wechatQuestionNotifyEnabled?: boolean
+    wechatPermissionNotifyEnabled?: boolean
+    wechatSessionErrorNotifyEnabled?: boolean
     syntheticAgentInitiatorEnabled?: boolean
     experimentalSlashCommandsEnabled?: boolean
     capabilities?: Partial<MenuCapabilities>
@@ -466,6 +562,10 @@ export async function showMenuWithDeps(
     loopSafetyEnabled?: boolean
     loopSafetyProviderScope?: "copilot-only" | "all-models"
     networkRetryEnabled?: boolean
+    wechatNotificationsEnabled?: boolean
+    wechatQuestionNotifyEnabled?: boolean
+    wechatPermissionNotifyEnabled?: boolean
+    wechatSessionErrorNotifyEnabled?: boolean
     syntheticAgentInitiatorEnabled?: boolean
     experimentalSlashCommandsEnabled?: boolean
     capabilities?: Partial<MenuCapabilities>
@@ -495,6 +595,10 @@ export async function showMenuWithDeps(
       loopSafetyEnabled: input.loopSafetyEnabled === true,
       loopSafetyProviderScope: input.loopSafetyProviderScope,
       networkRetryEnabled: input.networkRetryEnabled === true,
+      wechatNotificationsEnabled: input.wechatNotificationsEnabled,
+      wechatQuestionNotifyEnabled: input.wechatQuestionNotifyEnabled,
+      wechatPermissionNotifyEnabled: input.wechatPermissionNotifyEnabled,
+      wechatSessionErrorNotifyEnabled: input.wechatSessionErrorNotifyEnabled,
       syntheticAgentInitiatorEnabled: input.syntheticAgentInitiatorEnabled === true,
       experimentalSlashCommandsEnabled: input.experimentalSlashCommandsEnabled,
       capabilities: input.capabilities,

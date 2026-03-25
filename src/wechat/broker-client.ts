@@ -1,5 +1,11 @@
 import net from "node:net"
-import { parseEnvelopeLine, serializeEnvelope, type BrokerEnvelope } from "./protocol.js"
+import {
+  parseEnvelopeLine,
+  serializeEnvelope,
+  type BrokerEnvelope,
+  type CollectStatusPayload,
+} from "./protocol.js"
+import type { WechatBridge } from "./bridge.js"
 
 type RegisterMeta = {
   instanceID: string
@@ -27,6 +33,15 @@ type BrokerClient = {
   close: () => Promise<void>
 }
 
+export type CollectStatusInput = {
+  requestId: string
+}
+
+export type BrokerClientOptions = {
+  onCollectStatus?: (input: CollectStatusInput) => Promise<unknown> | unknown
+  bridge?: WechatBridge
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
 }
@@ -35,11 +50,30 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
-export async function connect(endpoint: string): Promise<BrokerClient> {
+function isResponseForRequest(response: BrokerEnvelope, requestId: string): boolean {
+  if (response.id === requestId) {
+    return true
+  }
+  if (response.id.endsWith(`-${requestId}`)) {
+    return true
+  }
+  if (response.type === "error") {
+    const payload = response.payload as { requestId?: unknown }
+    return payload.requestId === requestId
+  }
+  return false
+}
+
+export async function connect(endpoint: string, options: BrokerClientOptions = {}): Promise<BrokerClient> {
+  if (options.bridge && options.onCollectStatus) {
+    throw new Error("broker client options are ambiguous: provide either bridge or onCollectStatus")
+  }
+
   const socket = net.createConnection(endpoint)
   let sequence = 0
   let pendingResolve: ((value: BrokerEnvelope) => void) | null = null
   let pendingReject: ((reason?: unknown) => void) | null = null
+  let pendingRequestId: string | null = null
   let buffer = ""
   let connected = false
   let closed = false
@@ -64,14 +98,37 @@ export async function connect(endpoint: string): Promise<BrokerClient> {
       const frame = buffer.slice(0, newlineIndex + 1)
       buffer = buffer.slice(newlineIndex + 1)
       if (pendingResolve) {
-        const resolve = pendingResolve
-        const reject = pendingReject
-        pendingResolve = null
-        pendingReject = null
         try {
-          resolve(parseEnvelopeLine(frame))
+          const parsed = parseEnvelopeLine(frame)
+          if (parsed.type === "collectStatus") {
+            handleCollectStatus(parsed)
+            continue
+          }
+
+          if (pendingRequestId && !isResponseForRequest(parsed, pendingRequestId)) {
+            continue
+          }
+
+          const resolve = pendingResolve
+          pendingResolve = null
+          pendingReject = null
+          pendingRequestId = null
+          resolve(parsed)
         } catch (error) {
+          const reject = pendingReject
+          pendingResolve = null
+          pendingReject = null
+          pendingRequestId = null
           reject?.(error)
+        }
+      } else {
+        try {
+          const parsed = parseEnvelopeLine(frame)
+          if (parsed.type === "collectStatus") {
+            handleCollectStatus(parsed)
+          }
+        } catch {
+          // ignore unsolicited invalid frames when no pending request exists
         }
       }
     }
@@ -82,6 +139,7 @@ export async function connect(endpoint: string): Promise<BrokerClient> {
       const reject = pendingReject
       pendingResolve = null
       pendingReject = null
+      pendingRequestId = null
       reject(error)
     }
   })
@@ -94,6 +152,7 @@ export async function connect(endpoint: string): Promise<BrokerClient> {
       const reject = pendingReject
       pendingResolve = null
       pendingReject = null
+      pendingRequestId = null
       reject(new Error("broker connection closed"))
     }
   })
@@ -103,6 +162,48 @@ export async function connect(endpoint: string): Promise<BrokerClient> {
   function nextRequestId(prefix: string) {
     sequence += 1
     return `${prefix}-${Date.now()}-${sequence}`
+  }
+
+  function sendStatusSnapshot(requestId: string, snapshot: unknown) {
+    if (!session) {
+      return
+    }
+
+    const envelope: BrokerEnvelope = {
+      id: nextRequestId("statusSnapshot"),
+      type: "statusSnapshot",
+      instanceID: session.instanceID,
+      sessionToken: session.sessionToken,
+      payload: {
+        requestId,
+        snapshot,
+      },
+    }
+    socket.write(serializeEnvelope(envelope))
+  }
+
+  function handleCollectStatus(envelope: BrokerEnvelope) {
+    const payload = envelope.payload as Partial<CollectStatusPayload>
+    if (!isNonEmptyString(payload.requestId)) {
+      return
+    }
+    const hasBridge = options.bridge !== undefined
+    const hasHook = options.onCollectStatus !== undefined
+    if (!hasBridge && !hasHook) {
+      return
+    }
+
+    const collectPromise = hasBridge
+      ? options.bridge!.collectStatusSnapshot()
+      : options.onCollectStatus!({ requestId: payload.requestId })
+
+    void Promise.resolve(collectPromise)
+      .then((snapshot) => {
+        sendStatusSnapshot(payload.requestId as string, snapshot)
+      })
+      .catch(() => {
+        // swallow collect handler errors to keep socket alive
+      })
   }
 
   async function send(envelope: BrokerEnvelope): Promise<BrokerEnvelope> {
@@ -116,6 +217,7 @@ export async function connect(endpoint: string): Promise<BrokerClient> {
     return new Promise((resolve, reject) => {
       pendingResolve = resolve
       pendingReject = reject
+      pendingRequestId = envelope.id
       socket.write(serializeEnvelope(envelope))
     })
   }
@@ -195,10 +297,28 @@ export async function connect(endpoint: string): Promise<BrokerClient> {
       if (closed) {
         return
       }
-      socket.end()
-      await new Promise<void>((resolve) => {
+      if (socket.destroyed) {
+        closed = true
+        connected = false
+        session = null
+        return
+      }
+
+      const closePromise = new Promise<void>((resolve) => {
         socket.once("close", () => resolve())
       })
+      socket.end()
+      await Promise.race([
+        closePromise,
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (!socket.destroyed) {
+              socket.destroy()
+            }
+            resolve()
+          }, 200)
+        }),
+      ])
     },
   }
 }

@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { startBrokerServer } from "./broker-server.js"
 import { WECHAT_FILE_MODE, wechatStateRoot } from "./state-paths.js"
+import { createWechatStatusRuntime, type WechatStatusRuntime } from "./wechat-status-runtime.js"
 
 type BrokerState = {
   pid: number
@@ -65,6 +66,71 @@ async function writeBrokerState(state: BrokerState, stateRoot: string) {
 
 type BrokerOwnership = Pick<BrokerState, "pid" | "startedAt">
 
+type BrokerWechatStatusRuntimeLifecycle = {
+  start: () => Promise<void>
+  close: () => Promise<void>
+}
+
+type BrokerWechatStatusRuntimeLifecycleDeps = {
+  createStatusRuntime?: (deps: { onSlashCommand: (input: { command: import("./command-parser.js").WechatSlashCommand }) => Promise<string> }) => WechatStatusRuntime
+  handleWechatSlashCommand?: (command: import("./command-parser.js").WechatSlashCommand) => Promise<string>
+  onRuntimeError?: (error: unknown) => void
+}
+
+export function shouldEnableBrokerWechatStatusRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.WECHAT_BROKER_ENABLE_STATUS_RUNTIME === "1"
+}
+
+export function createBrokerWechatStatusRuntimeLifecycle(
+  deps: BrokerWechatStatusRuntimeLifecycleDeps = {},
+): BrokerWechatStatusRuntimeLifecycle {
+  const onRuntimeError = deps.onRuntimeError ?? ((error) => console.error(error))
+  const handleWechatSlashCommand =
+    deps.handleWechatSlashCommand ??
+    (async (command) => {
+      if (command.type === "status") {
+        return "命令暂未实现：/status"
+      }
+      return `命令暂未实现：/${command.command}`
+    })
+  const createStatusRuntime =
+    deps.createStatusRuntime ??
+    ((statusRuntimeDeps) =>
+      createWechatStatusRuntime({
+        onSlashCommand: async ({ command }) => statusRuntimeDeps.onSlashCommand({ command }),
+        onRuntimeError,
+      }))
+
+  let runtime: WechatStatusRuntime | null = null
+
+  return {
+    start: async () => {
+      if (runtime) {
+        return
+      }
+      const created = createStatusRuntime({
+        onSlashCommand: async ({ command }) => handleWechatSlashCommand(command),
+      })
+      runtime = created
+      try {
+        await created.start()
+      } catch (error) {
+        onRuntimeError(error)
+      }
+    },
+    close: async () => {
+      if (!runtime) {
+        return
+      }
+      const active = runtime
+      runtime = null
+      await active.close().catch((error) => {
+        onRuntimeError(error)
+      })
+    },
+  }
+}
+
 function removeOwnedBrokerStateFileSync(ownership: BrokerOwnership, stateRoot: string) {
   try {
     const filePath = brokerStatePathForRoot(stateRoot)
@@ -94,6 +160,12 @@ async function run() {
   }
 
   await writeBrokerState(state, stateRoot)
+  const wechatRuntimeLifecycle = createBrokerWechatStatusRuntimeLifecycle({
+    handleWechatSlashCommand: server.handleWechatSlashCommand,
+  })
+  if (shouldEnableBrokerWechatStatusRuntime()) {
+    await wechatRuntimeLifecycle.start()
+  }
   const ownership: BrokerOwnership = {
     pid: state.pid,
     startedAt: state.startedAt,
@@ -107,6 +179,7 @@ async function run() {
     shuttingDown = true
 
     removeOwnedBrokerStateFileSync(ownership, stateRoot)
+    await wechatRuntimeLifecycle.close()
     await server.close()
     process.exit(exitCode)
   }

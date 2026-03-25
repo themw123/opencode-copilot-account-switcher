@@ -5,6 +5,10 @@ export type CommonSettingsActionType =
   | "toggle-loop-safety-provider-scope"
   | "toggle-experimental-slash-commands"
   | "toggle-network-retry"
+  | "toggle-wechat-notifications"
+  | "toggle-wechat-question-notify"
+  | "toggle-wechat-permission-notify"
+  | "toggle-wechat-session-error-notify"
 
 type WriteMeta = {
   reason?: string
@@ -57,6 +61,46 @@ export async function applyCommonSettingsAction(input: {
       reason: "toggle-network-retry",
       source: "applyCommonSettingsAction",
       actionType: "toggle-network-retry",
+    })
+    return true
+  }
+
+  if (input.action.type === "toggle-wechat-notifications") {
+    settings.wechatNotificationsEnabled = settings.wechatNotificationsEnabled !== true
+    await input.writeSettings(settings, {
+      reason: "toggle-wechat-notifications",
+      source: "applyCommonSettingsAction",
+      actionType: "toggle-wechat-notifications",
+    })
+    return true
+  }
+
+  if (input.action.type === "toggle-wechat-question-notify") {
+    settings.wechatQuestionNotifyEnabled = settings.wechatQuestionNotifyEnabled !== true
+    await input.writeSettings(settings, {
+      reason: "toggle-wechat-question-notify",
+      source: "applyCommonSettingsAction",
+      actionType: "toggle-wechat-question-notify",
+    })
+    return true
+  }
+
+  if (input.action.type === "toggle-wechat-permission-notify") {
+    settings.wechatPermissionNotifyEnabled = settings.wechatPermissionNotifyEnabled !== true
+    await input.writeSettings(settings, {
+      reason: "toggle-wechat-permission-notify",
+      source: "applyCommonSettingsAction",
+      actionType: "toggle-wechat-permission-notify",
+    })
+    return true
+  }
+
+  if (input.action.type === "toggle-wechat-session-error-notify") {
+    settings.wechatSessionErrorNotifyEnabled = settings.wechatSessionErrorNotifyEnabled !== true
+    await input.writeSettings(settings, {
+      reason: "toggle-wechat-session-error-notify",
+      source: "applyCommonSettingsAction",
+      actionType: "toggle-wechat-session-error-notify",
     })
     return true
   }

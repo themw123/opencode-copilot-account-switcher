@@ -56,6 +56,10 @@ test("common settings store migrates legacy copilot flags into dedicated setting
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
   })
 
   await writeCommonSettingsStore(settings, { filePath: settingsFile })
@@ -66,6 +70,10 @@ test("common settings store migrates legacy copilot flags into dedicated setting
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
   })
   assert.equal(Object.hasOwn(raw, "experimentalStatusSlashCommandEnabled"), false)
 })
@@ -108,6 +116,10 @@ test("common settings store prefers new settings and only backfills missing lega
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
   })
 })
 
@@ -145,6 +157,10 @@ test("common settings store migration is idempotent across repeated reads and wr
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
   })
 })
 
@@ -178,6 +194,10 @@ test("writing normalized defaults overrides legacy common settings instead of re
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: true,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
   })
 
   const settings = await readCommonSettingsStore({
@@ -190,5 +210,46 @@ test("writing normalized defaults overrides legacy common settings instead of re
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: true,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
+  })
+})
+
+test("common settings store persists wechat notification toggles and keeps values after reload", async () => {
+  const { readCommonSettingsStore, writeCommonSettingsStore } = await loadCommonSettingsStoreOrFail()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "common-settings-store-wechat-"))
+  const settingsFile = path.join(dir, "settings.json")
+
+  await writeCommonSettingsStore({
+    wechatNotificationsEnabled: false,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: false,
+    wechatSessionErrorNotifyEnabled: true,
+  }, { filePath: settingsFile })
+
+  const raw = await readJson(settingsFile)
+  assert.deepEqual(raw, {
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    wechatNotificationsEnabled: false,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: false,
+    wechatSessionErrorNotifyEnabled: true,
+  })
+
+  const settings = await readCommonSettingsStore({ filePath: settingsFile })
+  assert.deepEqual(settings, {
+    loopSafetyEnabled: true,
+    loopSafetyProviderScope: "copilot-only",
+    networkRetryEnabled: false,
+    experimentalSlashCommandsEnabled: true,
+    wechatNotificationsEnabled: false,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: false,
+    wechatSessionErrorNotifyEnabled: true,
   })
 })

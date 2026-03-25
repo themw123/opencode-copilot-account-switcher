@@ -1,5 +1,9 @@
 import { guardSlashOnlyInput, type SlashOnlyCommand } from "./slash-guard.js"
-import { loadAndRegisterOpenClawWeixin } from "./openclaw-host.js"
+import {
+  loadOpenClawWeixinPublicHelpers,
+  type OpenClawWeixinPublicHelpers,
+  type OpenClawWeixinPublicHelpersLoaderOptions,
+} from "./openclaw-public-helpers.js"
 type SmokeMode = "self-test" | "real-account"
 
 const REAL_ACCOUNT_REQUIRED_ENV_VARS = [
@@ -25,12 +29,11 @@ type OpenClawSmokeHarnessOptions = {
   mode: SmokeMode
 }
 
-type CompatHostLoader = typeof loadAndRegisterOpenClawWeixin
-
-type CompatHostApi = Parameters<CompatHostLoader>[0]
+type PublicHelpersLoader = (options?: OpenClawWeixinPublicHelpersLoaderOptions) => Promise<OpenClawWeixinPublicHelpers>
 
 type RunOpenClawSmokeOptions = {
-  loadCompatHost?: CompatHostLoader
+  loadOpenClawWeixinPublicHelpers?: PublicHelpersLoader
+  publicHelpersOptions?: OpenClawWeixinPublicHelpersLoaderOptions
   inputs?: string[]
   dryRun?: boolean
   argv?: string[]
@@ -42,7 +45,7 @@ type SmokeGuardRejectResult = {
 }
 
 type SmokeHostSelfTestResult = {
-  route: "host-self-test"
+  route: "public-self-test"
   status: "loaded"
   pluginId: string
 }
@@ -119,23 +122,6 @@ export function sanitizeOpenClawEvidenceSample(input: string): string {
     .replace(/("requestId"\s*:\s*")([^"]+)(")/gi, "$1[REDACTED_REQUEST_ID]$3")
 }
 
-function createCompatHostApiStub(): CompatHostApi {
-  return {
-    runtime: {
-      channelRuntime: {
-        mode: "slash-only",
-      },
-      gateway: {
-        startAccount: {
-          source: "wechat-smoke",
-        },
-      },
-    },
-    registerChannel() {},
-    registerCli() {},
-  }
-}
-
 export function createOpenClawSmokeHarness(options: OpenClawSmokeHarnessOptions): OpenClawSmokeHarness {
   return {
     async handleIncomingText(input: string): Promise<OpenClawSmokeHandleResult> {
@@ -161,11 +147,11 @@ export function createOpenClawSmokeHarness(options: OpenClawSmokeHarnessOptions)
 export async function runOpenClawSmoke(mode: SmokeMode, options: RunOpenClawSmokeOptions = {}): Promise<OpenClawSmokeHandleResult[]> {
   const results: OpenClawSmokeHandleResult[] = []
   if (mode === "self-test") {
-    const plugin = await (options.loadCompatHost ?? loadAndRegisterOpenClawWeixin)(createCompatHostApiStub())
+    const helpers = await (options.loadOpenClawWeixinPublicHelpers ?? loadOpenClawWeixinPublicHelpers)(options.publicHelpersOptions)
     results.push({
-      route: "host-self-test",
+      route: "public-self-test",
       status: "loaded",
-      pluginId: plugin.id ?? "unknown",
+      pluginId: helpers.pluginId,
     })
   }
 

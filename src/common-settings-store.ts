@@ -11,6 +11,10 @@ export type CommonSettingsStore = {
   networkRetryEnabled?: boolean
   experimentalSlashCommandsEnabled?: boolean
   experimentalStatusSlashCommandEnabled?: boolean
+  wechatNotificationsEnabled?: boolean
+  wechatQuestionNotifyEnabled?: boolean
+  wechatPermissionNotifyEnabled?: boolean
+  wechatSessionErrorNotifyEnabled?: boolean
 }
 
 function normalizeCommonSettingsStore(input: CommonSettingsStore | undefined): CommonSettingsStore {
@@ -26,6 +30,12 @@ function normalizeCommonSettingsStore(input: CommonSettingsStore | undefined): C
         : legacySlashCommandsEnabled === false
         ? false
         : true,
+    ...(source.wechatNotificationsEnabled === false ? { wechatNotificationsEnabled: false } : { wechatNotificationsEnabled: true }),
+    ...(source.wechatQuestionNotifyEnabled === false ? { wechatQuestionNotifyEnabled: false } : { wechatQuestionNotifyEnabled: true }),
+    ...(source.wechatPermissionNotifyEnabled === false ? { wechatPermissionNotifyEnabled: false } : { wechatPermissionNotifyEnabled: true }),
+    ...(source.wechatSessionErrorNotifyEnabled === false
+      ? { wechatSessionErrorNotifyEnabled: false }
+      : { wechatSessionErrorNotifyEnabled: true }),
   }
 }
 
@@ -47,6 +57,18 @@ function parsePartialCommonSettingsStore(raw: string): CommonSettingsStore {
   }
   if (parsed.experimentalStatusSlashCommandEnabled === true || parsed.experimentalStatusSlashCommandEnabled === false) {
     partial.experimentalStatusSlashCommandEnabled = parsed.experimentalStatusSlashCommandEnabled
+  }
+  if (parsed.wechatNotificationsEnabled === true || parsed.wechatNotificationsEnabled === false) {
+    partial.wechatNotificationsEnabled = parsed.wechatNotificationsEnabled
+  }
+  if (parsed.wechatQuestionNotifyEnabled === true || parsed.wechatQuestionNotifyEnabled === false) {
+    partial.wechatQuestionNotifyEnabled = parsed.wechatQuestionNotifyEnabled
+  }
+  if (parsed.wechatPermissionNotifyEnabled === true || parsed.wechatPermissionNotifyEnabled === false) {
+    partial.wechatPermissionNotifyEnabled = parsed.wechatPermissionNotifyEnabled
+  }
+  if (parsed.wechatSessionErrorNotifyEnabled === true || parsed.wechatSessionErrorNotifyEnabled === false) {
+    partial.wechatSessionErrorNotifyEnabled = parsed.wechatSessionErrorNotifyEnabled
   }
 
   return partial
@@ -72,6 +94,10 @@ function mergeCommonSettings(current: CommonSettingsStore, legacy: CommonSetting
       current.experimentalSlashCommandsEnabled ?? legacy.experimentalSlashCommandsEnabled,
     experimentalStatusSlashCommandEnabled:
       current.experimentalStatusSlashCommandEnabled ?? legacy.experimentalStatusSlashCommandEnabled,
+    wechatNotificationsEnabled: current.wechatNotificationsEnabled ?? legacy.wechatNotificationsEnabled,
+    wechatQuestionNotifyEnabled: current.wechatQuestionNotifyEnabled ?? legacy.wechatQuestionNotifyEnabled,
+    wechatPermissionNotifyEnabled: current.wechatPermissionNotifyEnabled ?? legacy.wechatPermissionNotifyEnabled,
+    wechatSessionErrorNotifyEnabled: current.wechatSessionErrorNotifyEnabled ?? legacy.wechatSessionErrorNotifyEnabled,
   })
 }
 
@@ -145,6 +171,10 @@ export async function writeCommonSettingsStore(
     loopSafetyProviderScope: normalized.loopSafetyProviderScope,
     networkRetryEnabled: normalized.networkRetryEnabled,
     experimentalSlashCommandsEnabled: normalized.experimentalSlashCommandsEnabled,
+    wechatNotificationsEnabled: normalized.wechatNotificationsEnabled,
+    wechatQuestionNotifyEnabled: normalized.wechatQuestionNotifyEnabled,
+    wechatPermissionNotifyEnabled: normalized.wechatPermissionNotifyEnabled,
+    wechatSessionErrorNotifyEnabled: normalized.wechatSessionErrorNotifyEnabled,
   }
 
   await fs.mkdir(path.dirname(file), { recursive: true })
