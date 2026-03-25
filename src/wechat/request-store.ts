@@ -1,0 +1,285 @@
+import path from "node:path"
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import {
+  WECHAT_FILE_MODE,
+  ensureWechatStateLayout,
+  requestKindDir,
+  requestStatePath,
+  type WechatRequestKind,
+} from "./state-paths.js"
+import { assertValidHandleInput, normalizeHandle } from "./handle.js"
+
+export type RequestStatus = "open" | "answered" | "rejected" | "expired" | "cleaned"
+
+export type RequestRecord = {
+  kind: WechatRequestKind
+  requestID: string
+  routeKey: string
+  handle: string
+  wechatAccountId: string
+  userId: string
+  status: RequestStatus
+  createdAt: number
+  answeredAt?: number
+  rejectedAt?: number
+  expiredAt?: number
+  cleanedAt?: number
+}
+
+function normalizeRecord(input: RequestRecord): RequestRecord {
+  return {
+    kind: input.kind,
+    requestID: input.requestID,
+    routeKey: input.routeKey,
+    handle: input.handle,
+    wechatAccountId: input.wechatAccountId,
+    userId: input.userId,
+    status: input.status,
+    createdAt: input.createdAt,
+    ...(typeof input.answeredAt === "number" ? { answeredAt: input.answeredAt } : {}),
+    ...(typeof input.rejectedAt === "number" ? { rejectedAt: input.rejectedAt } : {}),
+    ...(typeof input.expiredAt === "number" ? { expiredAt: input.expiredAt } : {}),
+    ...(typeof input.cleanedAt === "number" ? { cleanedAt: input.cleanedAt } : {}),
+  }
+}
+
+function isRequestStatus(value: unknown): value is RequestStatus {
+  return ["open", "answered", "rejected", "expired", "cleaned"].includes(value as RequestStatus)
+}
+
+function isRequestKind(value: unknown): value is WechatRequestKind {
+  return value === "question" || value === "permission"
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function assertValidRouteKey(routeKey: string) {
+  if (!/^[a-z0-9-]+$/.test(routeKey) || routeKey.includes("..")) {
+    throw new Error("invalid routeKey format")
+  }
+}
+
+function toRequestRecord(input: unknown): RequestRecord {
+  const parsed = input as Partial<RequestRecord>
+  if (
+    !parsed ||
+    !isRequestKind(parsed.kind) ||
+    !isNonEmptyString(parsed.requestID) ||
+    !isNonEmptyString(parsed.routeKey) ||
+    !isNonEmptyString(parsed.handle) ||
+    !isNonEmptyString(parsed.wechatAccountId) ||
+    !isNonEmptyString(parsed.userId) ||
+    !isFiniteNumber(parsed.createdAt) ||
+    !isRequestStatus(parsed.status)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  if (
+    (parsed.answeredAt !== undefined && !isFiniteNumber(parsed.answeredAt)) ||
+    (parsed.rejectedAt !== undefined && !isFiniteNumber(parsed.rejectedAt)) ||
+    (parsed.expiredAt !== undefined && !isFiniteNumber(parsed.expiredAt)) ||
+    (parsed.cleanedAt !== undefined && !isFiniteNumber(parsed.cleanedAt))
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  return normalizeRecord(parsed as RequestRecord)
+}
+
+async function readRequest(kind: WechatRequestKind, routeKey: string): Promise<RequestRecord> {
+  try {
+    const raw = await readFile(requestStatePath(kind, routeKey), "utf8")
+    const record = toRequestRecord(JSON.parse(raw))
+    if (record.kind !== kind) {
+      throw new Error("invalid request record format")
+    }
+    return record
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") throw error
+    if (error instanceof Error && error.message === "invalid request record format") throw error
+    throw new Error("invalid request record format")
+  }
+}
+
+async function writeRequest(record: RequestRecord): Promise<RequestRecord> {
+  await ensureWechatStateLayout()
+  const filePath = requestStatePath(record.kind, record.routeKey)
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const normalized = normalizeRecord(record)
+  await writeFile(filePath, JSON.stringify(normalized, null, 2), { mode: WECHAT_FILE_MODE })
+  return normalized
+}
+
+async function markTerminalStatus(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  status: Exclude<RequestStatus, "open" | "cleaned">
+  atField: "answeredAt" | "rejectedAt" | "expiredAt"
+  at: number
+}) {
+  if (!isFiniteNumber(input.at)) {
+    throw new Error("invalid request record format")
+  }
+
+  const current = await readRequest(input.kind, input.routeKey)
+  if (current.status !== "open") {
+    throw new Error("request is not open")
+  }
+  return writeRequest({
+    ...current,
+    status: input.status,
+    [input.atField]: input.at,
+  })
+}
+
+export async function upsertRequest(
+  input: Omit<RequestRecord, "status" | "answeredAt" | "rejectedAt" | "expiredAt" | "cleanedAt">,
+): Promise<RequestRecord> {
+  if (
+    !isRequestKind((input as { kind: unknown }).kind) ||
+    !isNonEmptyString((input as { requestID: unknown }).requestID) ||
+    !isNonEmptyString((input as { routeKey: unknown }).routeKey) ||
+    !isNonEmptyString((input as { wechatAccountId: unknown }).wechatAccountId) ||
+    !isNonEmptyString((input as { userId: unknown }).userId) ||
+    !isFiniteNumber((input as { createdAt: unknown }).createdAt)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  assertValidRouteKey(input.routeKey)
+  assertValidHandleInput(input.handle)
+  const normalizedHandle = normalizeHandle(input.handle)
+
+  try {
+    const current = await readRequest(input.kind, input.routeKey)
+    if (current.status !== "open") {
+      throw new Error("cannot upsert terminal request")
+    }
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code !== "ENOENT") throw error
+  }
+
+  return writeRequest({
+    ...input,
+    handle: normalizedHandle,
+    status: "open",
+  })
+}
+
+export async function markRequestAnswered(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  answeredAt: number
+}) {
+  return markTerminalStatus({
+    kind: input.kind,
+    routeKey: input.routeKey,
+    status: "answered",
+    atField: "answeredAt",
+    at: input.answeredAt,
+  })
+}
+
+export async function markRequestRejected(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  rejectedAt: number
+}) {
+  return markTerminalStatus({
+    kind: input.kind,
+    routeKey: input.routeKey,
+    status: "rejected",
+    atField: "rejectedAt",
+    at: input.rejectedAt,
+  })
+}
+
+export async function markRequestExpired(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  expiredAt: number
+}) {
+  return markTerminalStatus({
+    kind: input.kind,
+    routeKey: input.routeKey,
+    status: "expired",
+    atField: "expiredAt",
+    at: input.expiredAt,
+  })
+}
+
+export async function markCleaned(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  cleanedAt: number
+}) {
+  const current = await readRequest(input.kind, input.routeKey)
+  if (!["answered", "rejected", "expired"].includes(current.status)) {
+    throw new Error("request cannot be cleaned from current status")
+  }
+  return writeRequest({
+    ...current,
+    status: "cleaned",
+    cleanedAt: input.cleanedAt,
+  })
+}
+
+export async function purgeCleanedBefore(input: { cutoffAt: number }) {
+  await ensureWechatStateLayout()
+  let deleted = 0
+
+  for (const kind of ["question", "permission"] as const) {
+    const dir = requestKindDir(kind)
+    const files = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return []
+      throw error
+    })
+
+    for (const fileName of files) {
+      if (!fileName.endsWith(".json")) continue
+      const routeKey = fileName.slice(0, -5)
+      const current = await readRequest(kind, routeKey)
+      if (current.status !== "cleaned") continue
+      if (typeof current.cleanedAt !== "number") continue
+      if (current.cleanedAt >= input.cutoffAt) continue
+
+      await rm(requestStatePath(kind, routeKey), { force: true })
+      deleted += 1
+    }
+  }
+
+  return deleted
+}
+
+export async function listActiveRequests(): Promise<RequestRecord[]> {
+  await ensureWechatStateLayout()
+  const result: RequestRecord[] = []
+
+  for (const kind of ["question", "permission"] as const) {
+    const dir = requestKindDir(kind)
+    const files = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return []
+      throw error
+    })
+
+    for (const fileName of files) {
+      if (!fileName.endsWith(".json")) continue
+      const routeKey = fileName.slice(0, -5)
+      const current = await readRequest(kind, routeKey)
+      if (current.status === "cleaned") continue
+      result.push(current)
+    }
+  }
+
+  result.sort((a, b) => a.createdAt - b.createdAt)
+  return result
+}

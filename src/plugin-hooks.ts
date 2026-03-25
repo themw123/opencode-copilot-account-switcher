@@ -58,6 +58,11 @@ import {
   type RoutingSnapshot,
   type RoutingEvent,
 } from "./routing-state.js"
+import {
+  createWechatBridgeLifecycle,
+  type WechatBridgeLifecycle,
+  type WechatBridgeLifecycleInput,
+} from "./wechat/bridge.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
 type AuthProvider = Parameters<NonNullable<AuthLoader>>[1]
@@ -101,6 +106,8 @@ type SessionBinding = {
 
 type LoadOfficialChatHeaders = (input: { client?: object; directory?: string }) => Promise<OfficialChatHeadersHook>
 
+type WechatBridgeClientShape = WechatBridgeLifecycleInput["client"]
+
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const RATE_LIMIT_HIT_THRESHOLD = 3
@@ -109,6 +116,97 @@ const MAX_SESSION_BINDINGS = 256
 const TOUCH_WRITE_CACHE_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_TOUCH_WRITE_CACHE_ENTRIES = 2048
 const INTERNAL_DEBUG_LINK_HEADER = "x-opencode-debug-link-id"
+
+type WechatBridgeLifecycleState = {
+  key: string
+  promise: Promise<WechatBridgeLifecycle>
+  lifecycle?: WechatBridgeLifecycle
+  closeRequested: boolean
+}
+
+let wechatBridgeLifecycleState: WechatBridgeLifecycleState | undefined
+let wechatBridgeAutoCloseAttached = false
+
+function buildWechatBridgeLifecycleKey(input: {
+  directory?: string
+  serverUrl?: URL
+  project?: {
+    id?: string
+    name?: string
+  }
+}) {
+  const projectName = typeof input.project?.name === "string" ? input.project.name : ""
+  const projectId = typeof input.project?.id === "string" ? input.project.id : ""
+  const directory = typeof input.directory === "string" ? input.directory : ""
+  const serverUrl = input.serverUrl?.href ?? ""
+  return `${serverUrl}|${directory}|${projectName}|${projectId}`
+}
+
+function attachWechatBridgeAutoClose() {
+  if (wechatBridgeAutoCloseAttached) {
+    return
+  }
+  wechatBridgeAutoCloseAttached = true
+
+  const closeLifecycle = () => {
+    const state = wechatBridgeLifecycleState
+    if (!state) return
+    closeWechatBridgeLifecycleState(state)
+  }
+
+  process.once("beforeExit", closeLifecycle)
+  process.once("SIGINT", closeLifecycle)
+  process.once("SIGTERM", closeLifecycle)
+}
+
+function closeWechatBridgeLifecycleState(state: WechatBridgeLifecycleState) {
+  if (state.closeRequested) {
+    return
+  }
+  state.closeRequested = true
+  void state.promise
+    .then((lifecycle) => lifecycle.close().catch(() => {}))
+    .catch(() => {})
+}
+
+function ensureWechatBridgeLifecycle(input: {
+  key: string
+  create: () => Promise<WechatBridgeLifecycle>
+}) {
+  if (wechatBridgeLifecycleState?.key === input.key) {
+    return wechatBridgeLifecycleState.promise
+  }
+
+  const previous = wechatBridgeLifecycleState
+  const promise = input.create()
+  const state: WechatBridgeLifecycleState = {
+    key: input.key,
+    promise,
+    closeRequested: false,
+  }
+  wechatBridgeLifecycleState = state
+
+  if (previous) {
+    closeWechatBridgeLifecycleState(previous)
+  }
+
+  void promise
+    .then((lifecycle) => {
+      if (wechatBridgeLifecycleState !== state) {
+        closeWechatBridgeLifecycleState(state)
+        return
+      }
+      state.lifecycle = lifecycle
+    })
+    .catch((error) => {
+      if (wechatBridgeLifecycleState === state) {
+        wechatBridgeLifecycleState = undefined
+      }
+      console.warn("[plugin-hooks] failed to initialize wechat bridge lifecycle", error)
+    })
+
+  return promise
+}
 
 type TriggerBillingCompensationInput = {
   fromAccountName: string
@@ -400,6 +498,30 @@ function getFinalSentRequestHeadersRecord(request: Request | URL | string, init:
   return sanitizeLoggedRequestHeadersRecord(Object.fromEntries(headers.entries()))
 }
 
+function hasWechatBridgeClientShape(value: unknown): value is WechatBridgeClientShape {
+  if (typeof value !== "object" || value === null) return false
+  const client = value as {
+    session?: {
+      list?: unknown
+      status?: unknown
+      todo?: unknown
+      messages?: unknown
+    }
+    question?: {
+      list?: unknown
+    }
+    permission?: {
+      list?: unknown
+    }
+  }
+  return typeof client.session?.list === "function"
+    && typeof client.session?.status === "function"
+    && typeof client.session?.todo === "function"
+    && typeof client.session?.messages === "function"
+    && typeof client.question?.list === "function"
+    && typeof client.permission?.list === "function"
+}
+
 function sanitizeLoggedRequestHeadersRecord(headers: Record<string, string>) {
   const sanitized = { ...headers }
   if (typeof sanitized.authorization === "string" && sanitized.authorization.length > 0) {
@@ -661,8 +783,13 @@ export function buildPluginHooks(input: {
   loadOfficialChatHeaders?: (input: { client?: object; directory?: string }) => Promise<OfficialChatHeadersHook>
   createRetryFetch?: (fetch: FetchLike, ctx?: CopilotRetryContext) => FetchLike
   client?: CopilotRetryContext["client"]
+  project?: {
+    id?: string
+    name?: string
+  }
   directory?: CopilotRetryContext["directory"]
   serverUrl?: CopilotRetryContext["serverUrl"]
+  createWechatBridgeLifecycleImpl?: (input: WechatBridgeLifecycleInput) => Promise<{ close: () => Promise<void> }>
   clearAccountSwitchContext?: (lastAccountSwitchAt?: number) => Promise<void>
   now?: () => number
   refreshQuota?: RefreshQuota
@@ -762,6 +889,27 @@ export function buildPluginHooks(input: {
   const appendRouteDecisionEventImpl = input.appendRouteDecisionEventImpl ?? appendRouteDecisionEvent
   const readRoutingStateImpl = input.readRoutingStateImpl ?? readRoutingState
   const triggerBillingCompensation = input.triggerBillingCompensation ?? (async () => {})
+  const createWechatBridgeLifecycleImpl = input.createWechatBridgeLifecycleImpl ?? createWechatBridgeLifecycle
+
+  if (input.serverUrl && hasWechatBridgeClientShape(input.client)) {
+    const wechatBridgeClient = input.client
+    const lifecycleKey = buildWechatBridgeLifecycleKey({
+      directory: input.directory,
+      serverUrl: input.serverUrl,
+      project: input.project,
+    })
+    attachWechatBridgeAutoClose()
+    void ensureWechatBridgeLifecycle({
+      key: lifecycleKey,
+      create: () => createWechatBridgeLifecycleImpl({
+        client: wechatBridgeClient,
+        project: input.project,
+        directory: input.directory,
+        serverUrl: input.serverUrl,
+        statusCollectionEnabled: true,
+      }),
+    }).catch(() => {})
+  }
 
   const loadCandidateAccountLoads = input.loadCandidateAccountLoads ?? (async (ctx: {
     candidates: ResolvedModelAccountCandidate[]

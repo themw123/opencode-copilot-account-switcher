@@ -1,0 +1,227 @@
+import type { WechatInstanceStatusSnapshot } from "./bridge.js"
+import type { SessionDigest, SessionDigestHighlight } from "./session-digest.js"
+
+export type AggregatedStatusInstance =
+  | {
+      instanceID: string
+      status: "ok"
+      snapshot: unknown
+    }
+  | {
+      instanceID: string
+      status: "timeout/unreachable"
+    }
+
+export type AggregatedStatusReplyInput = {
+  requestId: string
+  instances: AggregatedStatusInstance[]
+}
+
+const HIGHLIGHT_ORDER: Record<SessionDigestHighlight["kind"], number> = {
+  permission: 0,
+  question: 1,
+  "running-tool": 2,
+  "completed-tool": 3,
+  todo: 4,
+  status: 5,
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+  return fallback
+}
+
+function dedupeAndSortStrings(values: string[]): string[] {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b))
+}
+
+function isHighlightKind(value: unknown): value is SessionDigestHighlight["kind"] {
+  return (
+    value === "permission" ||
+    value === "question" ||
+    value === "running-tool" ||
+    value === "completed-tool" ||
+    value === "todo" ||
+    value === "status"
+  )
+}
+
+function normalizeHighlight(value: unknown): SessionDigestHighlight | null {
+  const record = asObject(value)
+  if (!isHighlightKind(record.kind)) {
+    return null
+  }
+  if (!isNonEmptyString(record.text)) {
+    return null
+  }
+  return {
+    kind: record.kind,
+    text: record.text,
+  }
+}
+
+function normalizeSessionDigest(value: unknown): SessionDigest | null {
+  const record = asObject(value)
+  if (!isNonEmptyString(record.sessionID)) {
+    return null
+  }
+
+  const statusValue = record.status
+  const normalizedStatus =
+    statusValue === "busy" || statusValue === "idle" || statusValue === "retry" || statusValue === "unknown"
+      ? statusValue
+      : "unknown"
+
+  const highlightsRaw = Array.isArray(record.highlights) ? record.highlights : []
+  const highlights = highlightsRaw
+    .map((item) => normalizeHighlight(item))
+    .filter((item): item is SessionDigestHighlight => item !== null)
+
+  return {
+    sessionID: record.sessionID,
+    title: isNonEmptyString(record.title) ? record.title : "",
+    directory: isNonEmptyString(record.directory) ? record.directory : "",
+    updatedAt: toFiniteNumber(record.updatedAt),
+    status: normalizedStatus,
+    pendingQuestionCount: toFiniteNumber(record.pendingQuestionCount),
+    pendingPermissionCount: toFiniteNumber(record.pendingPermissionCount),
+    todoSummary: {
+      total: toFiniteNumber(asObject(record.todoSummary).total),
+      inProgress: toFiniteNumber(asObject(record.todoSummary).inProgress),
+      completed: toFiniteNumber(asObject(record.todoSummary).completed),
+    },
+    unavailable: toSessionUnavailable(record.unavailable),
+    highlights,
+  }
+}
+
+function toSessionDigestArray(value: unknown): SessionDigest[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.map((item) => normalizeSessionDigest(item)).filter((item): item is SessionDigest => item !== null)
+}
+
+function toSessionUnavailable(value: unknown): Array<"messages" | "todo"> {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return dedupeAndSortStrings(
+    value.filter((item): item is string => item === "messages" || item === "todo"),
+  ).filter((item): item is "messages" | "todo" => item === "messages" || item === "todo")
+}
+
+function toInstanceUnavailable(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return dedupeAndSortStrings(value.filter((item): item is string => typeof item === "string" && item.length > 0))
+}
+
+function normalizeSnapshot(snapshot: unknown): WechatInstanceStatusSnapshot {
+  const record = asObject(snapshot)
+  return {
+    instanceID: isNonEmptyString(record.instanceID) ? record.instanceID : "unknown-instance",
+    instanceName: isNonEmptyString(record.instanceName) ? record.instanceName : "",
+    pid: typeof record.pid === "number" && Number.isFinite(record.pid) ? record.pid : 0,
+    projectName: isNonEmptyString(record.projectName) ? record.projectName : undefined,
+    directory: isNonEmptyString(record.directory) ? record.directory : "",
+    collectedAt: typeof record.collectedAt === "number" && Number.isFinite(record.collectedAt) ? record.collectedAt : 0,
+    sessions: toSessionDigestArray(record.sessions),
+    unavailable: toInstanceUnavailable(record.unavailable) as WechatInstanceStatusSnapshot["unavailable"],
+  }
+}
+
+function sortHighlights(highlights: SessionDigestHighlight[]): SessionDigestHighlight[] {
+  return [...highlights].sort((a, b) => {
+    const orderA = HIGHLIGHT_ORDER[a.kind] ?? 999
+    const orderB = HIGHLIGHT_ORDER[b.kind] ?? 999
+    if (orderA !== orderB) {
+      return orderA - orderB
+    }
+    return a.text.localeCompare(b.text)
+  })
+}
+
+function pickTopSessions(sessions: SessionDigest[]): SessionDigest[] {
+  return [...sessions]
+    .sort((a, b) => {
+      const ua = typeof a.updatedAt === "number" && Number.isFinite(a.updatedAt) ? a.updatedAt : 0
+      const ub = typeof b.updatedAt === "number" && Number.isFinite(b.updatedAt) ? b.updatedAt : 0
+      if (ub !== ua) {
+        return ub - ua
+      }
+      return a.sessionID.localeCompare(b.sessionID)
+    })
+    .slice(0, 3)
+}
+
+export function formatInstanceStatusSnapshot(snapshotInput: unknown): string {
+  const snapshot = normalizeSnapshot(snapshotInput)
+  const lines: string[] = []
+  const name = snapshot.instanceName || snapshot.instanceID
+
+  lines.push(`instance: ${name} (${snapshot.instanceID})`)
+
+  const instanceUnavailable = toInstanceUnavailable(snapshot.unavailable)
+  if (instanceUnavailable.length > 0) {
+    lines.push(`instance unavailable: ${instanceUnavailable.join(", ")}`)
+  }
+
+  const sessions = pickTopSessions(snapshot.sessions)
+  if (sessions.length === 0) {
+    lines.push("- no active sessions")
+    return lines.join("\n")
+  }
+
+  for (const session of sessions) {
+    const title = isNonEmptyString(session.title) ? session.title : session.sessionID
+    lines.push(`- session ${session.sessionID}: ${title}`)
+
+    const sessionUnavailable = toSessionUnavailable(session.unavailable)
+    if (sessionUnavailable.length > 0) {
+      lines.push(`  session unavailable: ${sessionUnavailable.join(", ")}`)
+    }
+
+    const highlights = sortHighlights(Array.isArray(session.highlights) ? session.highlights : [])
+    for (const highlight of highlights) {
+      lines.push(`  ${highlight.text}`)
+    }
+  }
+
+  return lines.join("\n")
+}
+
+export function formatAggregatedStatusReply(input: AggregatedStatusReplyInput): string {
+  if (!Array.isArray(input.instances) || input.instances.length === 0) {
+    return "wechat status: no online instances"
+  }
+
+  const sections: string[] = []
+  sections.push("wechat status")
+
+  for (const instance of input.instances) {
+    if (instance.status === "timeout/unreachable") {
+      sections.push(`instance: ${instance.instanceID}`)
+      sections.push("timeout/unreachable")
+      continue
+    }
+
+    sections.push(formatInstanceStatusSnapshot(instance.snapshot))
+  }
+
+  return sections.join("\n")
+}

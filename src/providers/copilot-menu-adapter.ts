@@ -821,6 +821,10 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
         || action.name === "toggle-loop-safety-provider-scope"
         || action.name === "toggle-experimental-slash-commands"
         || action.name === "toggle-network-retry"
+        || action.name === "toggle-wechat-notifications"
+        || action.name === "toggle-wechat-question-notify"
+        || action.name === "toggle-wechat-permission-notify"
+        || action.name === "toggle-wechat-session-error-notify"
         || action.name === "toggle-synthetic-agent-initiator"
       ) {
         await applyMenuAction({
@@ -831,6 +835,10 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
           writeCommonSettings,
         } as never)
         return false
+      }
+
+      if (action.name === "wechat-bind") {
+        return true
       }
 
       if (action.name === "list-models") {

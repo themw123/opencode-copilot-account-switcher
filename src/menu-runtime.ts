@@ -32,6 +32,13 @@ function parseSharedActionResult(result: SharedActionResult | undefined) {
   }
 }
 
+function providerActionReason(name: string) {
+  if (name.startsWith("wechat-")) {
+    return `wechat-action:${name}`
+  }
+  return `provider-action:${name}`
+}
+
 export type MenuAction =
   | { type: "add" }
   | { type: "cancel" }
@@ -39,6 +46,10 @@ export type MenuAction =
   | { type: "remove-all" }
   | { type: "switch"; account: MenuActionAccount }
   | { type: "provider"; name: string; payload?: unknown }
+
+function isNonPersistentProviderAction(name: string) {
+  return name === "wechat-bind"
+}
 
 export type ProviderMenuAdapter<TStore, TEntry> = {
   key: string
@@ -154,8 +165,9 @@ export async function runProviderMenu<TStore, TEntry>(input: {
 
     if (!input.adapter.applyAction) continue
     if (!await input.adapter.applyAction(store, action)) continue
+    if (isNonPersistentProviderAction(action.name)) continue
     await input.adapter.writeStore(store, {
-      reason: `provider-action:${action.name}`,
+      reason: providerActionReason(action.name),
       source: "menu-runtime",
       actionType: action.name,
     })
