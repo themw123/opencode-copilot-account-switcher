@@ -36,6 +36,8 @@ function toSharedRuntimeAction(action: UiMenuAction): RuntimeMenuAction | undefi
   if (action.type === "toggle-loop-safety-provider-scope") return { type: "provider", name: "toggle-loop-safety-provider-scope" }
   if (action.type === "toggle-experimental-slash-commands") return { type: "provider", name: "toggle-experimental-slash-commands" }
   if (action.type === "toggle-network-retry") return { type: "provider", name: "toggle-network-retry" }
+  if (action.type === "wechat-bind") return { type: "provider", name: "wechat-bind" }
+  if (action.type === "wechat-rebind") return { type: "provider", name: "wechat-rebind" }
   return undefined
 }
 export async function configureDefaultAccountGroup(

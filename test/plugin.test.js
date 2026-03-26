@@ -7079,6 +7079,13 @@ test("copilot menu runtime toggle actions keep write semantics", async () => {
   ])
 })
 
+test("plugin shared runtime action mapping includes wechat bind actions", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.match(pluginSource, /if \(action\.type === "wechat-bind"\)\s*return \{ type: "provider", name: "wechat-bind" \}/)
+  assert.match(pluginSource, /if \(action\.type === "wechat-rebind"\)\s*return \{ type: "provider", name: "wechat-rebind" \}/)
+})
+
 test("plugin auth loader default clearAccountSwitchContext reloads and persists matching switch timestamp", async () => {
   const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const staleStore = {
