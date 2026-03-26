@@ -21,37 +21,27 @@ test("public helper loader returns guided-smoke required helpers", async () => {
   assert.equal(typeof loaded.sendMessageWeixin, "function")
 })
 
-test("public helper account wrappers pass cfg-aware signatures correctly", async () => {
+test("public helper loader bypasses config-surface account helpers and uses account wrapper source", async () => {
   const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
 
-  const calls = []
   const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
-    loadPublicWeixinAccountHelpers: async () => ({
+    loadPublicWeixinAccountHelpers: async () => {
+      throw new Error("must not read config surface")
+    },
+    loadOpenClawAccountHelpers: async () => ({
       listAccountIds: async () => ["acc-helper"],
-      resolveAccount: async (cfg, accountId) => {
-        const args = [cfg, accountId]
-        calls.push({ method: "resolveAccount", args })
-        return { accountId: args[1], enabled: true }
-      },
-      describeAccount: async (account) => {
-        const args = [account]
-        calls.push({ method: "describeAccount", args })
-        return { accountId: args[0]?.accountId ?? args[0], configured: true }
-      },
+      resolveAccount: async () => ({ accountId: "acc-helper", enabled: true, configured: true, userId: "u-helper" }),
+      describeAccount: async () => ({ accountId: "acc-helper", enabled: true, configured: true, userId: "u-helper" }),
     }),
   })
 
-  await loaded.accountHelpers.resolveAccount("acc-helper")
-  await loaded.accountHelpers.describeAccount("acc-helper")
-  await loaded.accountHelpers.describeAccount({ accountId: "acc-helper" })
-
-  assert.deepEqual(calls, [
-    { method: "resolveAccount", args: [undefined, "acc-helper"] },
-    { method: "resolveAccount", args: [undefined, "acc-helper"] },
-    { method: "describeAccount", args: [{ accountId: "acc-helper", enabled: true }] },
-    { method: "resolveAccount", args: [undefined, "acc-helper"] },
-    { method: "describeAccount", args: [{ accountId: "acc-helper", enabled: true }] },
-  ])
+  assert.deepEqual(await loaded.accountHelpers.listAccountIds(), ["acc-helper"])
+  assert.deepEqual(await loaded.accountHelpers.resolveAccount("acc-helper"), {
+    accountId: "acc-helper",
+    enabled: true,
+    configured: true,
+    userId: "u-helper",
+  })
 })
 
 test("account adapter exposes menu-safe display fields only", async () => {
@@ -201,4 +191,41 @@ test("public helper loader assembles wrappers without function-length probing", 
   const packageJsonRaw = await readFile(new URL("../package.json", import.meta.url), "utf8")
   const packageJson = JSON.parse(packageJsonRaw)
   assert.equal(packageJson.dependencies?.["@tencent-weixin/openclaw-weixin"], "2.0.1")
+})
+
+test("public helper loader uses account wrapper loader instead of config-surface helpers", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadPublicWeixinQrGateway: async () => ({
+      gateway: {
+        loginWithQrStart: async () => ({ sessionKey: "s" }),
+        loginWithQrWait: async () => ({ connected: true, accountId: "acc-wrapper" }),
+      },
+      pluginId: "wechat-2x",
+    }),
+    loadOpenClawAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-wrapper"],
+      resolveAccount: async () => ({ accountId: "acc-wrapper", enabled: true, configured: true, userId: "user-wrapper" }),
+      describeAccount: async (accountIdOrInput) => ({
+        accountId: typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId,
+        configured: true,
+      }),
+    }),
+    loadPublicWeixinHelpers: async () => ({
+      getUpdates: async () => ({ msgs: [], get_updates_buf: "buf" }),
+    }),
+    loadPublicWeixinSendHelper: async () => ({
+      sendMessageWeixin: async () => ({ messageId: "m-1" }),
+    }),
+    loadLatestWeixinAccountState: async () => null,
+  })
+
+  assert.deepEqual(await loaded.accountHelpers.listAccountIds(), ["acc-wrapper"])
+  assert.deepEqual(await loaded.accountHelpers.resolveAccount("acc-wrapper"), {
+    accountId: "acc-wrapper",
+    enabled: true,
+    configured: true,
+    userId: "user-wrapper",
+  })
 })
