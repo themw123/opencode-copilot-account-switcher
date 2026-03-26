@@ -24,3 +24,28 @@ test("sync-buf module exports latest account state loader for assembly usage", a
 
   assert.equal(typeof mod.loadLatestWeixinAccountState, "function")
 })
+
+test("loadOpenClawSyncBufHelper throws when source helper missing", async () => {
+  const mod = await import(DIST_SYNC_BUF_MODULE)
+
+  await assert.rejects(
+    () => mod.loadOpenClawSyncBufHelper({ syncBufModulePath: "node:path" }),
+    /sync-buf source helper unavailable/,
+  )
+})
+
+test("createOpenClawSyncBufHelper rejects empty file path", async () => {
+  const mod = await import(DIST_SYNC_BUF_MODULE)
+
+  const helper = mod.createOpenClawSyncBufHelper({
+    getSyncBufFilePath: () => "",
+    saveGetUpdatesBuf: () => {
+      throw new Error("should not be called")
+    },
+  })
+
+  await assert.rejects(
+    () => helper.persistGetUpdatesBuf({ accountId: "acc-2x", getUpdatesBuf: "buf-2x" }),
+    /sync-buf helper returned invalid file path/,
+  )
+})

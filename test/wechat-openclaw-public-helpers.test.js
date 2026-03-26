@@ -54,7 +54,7 @@ test("account adapter exposes menu-safe display fields only", async () => {
       baseUrl: "https://internal.example",
       getUpdatesBuf: "buf-a",
       userId: "u-1",
-      savedAt: 1710000000000,
+      boundAt: 1710000000000,
     },
     accountHelpers: {
       listAccountIds: async () => ["acc-a"],
@@ -82,7 +82,7 @@ test("account adapter exposes menu-safe display fields only", async () => {
   assert.equal("getUpdatesBuf" in account, false)
 })
 
-test("account adapter absorbs upstream shape differences inside adapter", async () => {
+test("account adapter only consumes stable helper surface fields", async () => {
   const adapter = await import(DIST_ACCOUNT_ADAPTER_MODULE)
 
   const account = await adapter.buildOpenClawMenuAccount({
@@ -99,12 +99,18 @@ test("account adapter absorbs upstream shape differences inside adapter", async 
         displayName: "2.0.1 账号",
         isEnabled: 1,
         user_id: "u-2",
+        name: "稳定账号",
+        enabled: false,
+        userId: "u-stable",
+        boundAt: 1711111111111,
       }),
       describeAccount: async (input) => {
         if (typeof input === "object" && input !== null) {
           return {
+            isConfigured: false,
+            savedAt: 1710000000000,
             configured: true,
-            savedAt: 1711111111111,
+            boundAt: 1711111111111,
           }
         }
         return undefined
@@ -114,11 +120,44 @@ test("account adapter absorbs upstream shape differences inside adapter", async 
 
   assert.deepEqual(account, {
     accountId: "acc-b",
-    name: "2.0.1 账号",
-    enabled: true,
+    name: "稳定账号",
+    enabled: false,
     configured: true,
-    userId: "u-2",
+    userId: "u-stable",
     boundAt: 1711111111111,
+  })
+})
+
+test("account adapter does not coerce numeric enabled/configured values", async () => {
+  const adapter = await import(DIST_ACCOUNT_ADAPTER_MODULE)
+
+  const account = await adapter.buildOpenClawMenuAccount({
+    latestAccountState: {
+      accountId: "acc-num-bool",
+      token: "token-num-bool",
+      baseUrl: "https://internal.example",
+    },
+    accountHelpers: {
+      listAccountIds: async () => ["acc-num-bool"],
+      resolveAccount: async () => ({
+        accountId: "acc-num-bool",
+        enabled: 1,
+        userId: "user-num-bool",
+      }),
+      describeAccount: async () => ({
+        accountId: "acc-num-bool",
+        configured: 1,
+      }),
+    },
+  })
+
+  assert.deepEqual(account, {
+    accountId: "acc-num-bool",
+    name: undefined,
+    enabled: false,
+    configured: false,
+    userId: "user-num-bool",
+    boundAt: undefined,
   })
 })
 

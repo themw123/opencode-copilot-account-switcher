@@ -53,12 +53,6 @@ export async function loadOpenClawQrGateway(
         pluginId: resolvedPluginId,
       }
     }
-    if (hasQrLoginMethods(payloadPlugin)) {
-      return {
-        gateway: createOpenClawQrGateway(payloadPlugin),
-        pluginId: resolvedPluginId,
-      }
-    }
   }
 
   throw new Error("registerChannel did not expose weixin gateway loginWithQrStart/loginWithQrWait")

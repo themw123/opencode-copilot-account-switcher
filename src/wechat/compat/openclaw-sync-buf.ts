@@ -33,6 +33,9 @@ export function createOpenClawSyncBufHelper(input: {
   return {
     async persistGetUpdatesBuf({ accountId, getUpdatesBuf }) {
       const filePath = input.getSyncBufFilePath(accountId)
+      if (typeof filePath !== "string" || filePath.trim().length === 0) {
+        throw new Error("[wechat-compat] sync-buf helper returned invalid file path")
+      }
       input.saveGetUpdatesBuf(filePath, getUpdatesBuf)
     },
   }
@@ -41,7 +44,7 @@ export function createOpenClawSyncBufHelper(input: {
 export async function loadOpenClawSyncBufHelper(options: {
   syncBufModulePath?: string
 } = {}): Promise<{
-  persistGetUpdatesBuf?: PublicWeixinPersistGetUpdatesBuf
+  persistGetUpdatesBuf: PublicWeixinPersistGetUpdatesBuf
 }> {
   const require = createRequire(import.meta.url)
   const syncBufModulePath = require.resolve(options.syncBufModulePath ?? OPENCLAW_SYNC_BUF_MODULE)
@@ -51,7 +54,7 @@ export async function loadOpenClawSyncBufHelper(options: {
   }
 
   if (typeof syncBufModule.getSyncBufFilePath !== "function" || typeof syncBufModule.saveGetUpdatesBuf !== "function") {
-    return {}
+    throw new Error("[wechat-compat] sync-buf source helper unavailable")
   }
 
   return createOpenClawSyncBufHelper({
