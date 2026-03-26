@@ -39,17 +39,24 @@ export async function loadOpenClawQrGateway(
 ): Promise<{ gateway: WeixinQrGateway; pluginId: string }> {
   for (const payload of payloads) {
     const payloadPlugin = payload?.plugin
+    const resolvedPluginId =
+      typeof options.pluginId === "string" && options.pluginId.trim().length > 0
+        ? options.pluginId
+        : typeof (payloadPlugin as { id?: unknown } | null | undefined)?.id === "string" &&
+            String((payloadPlugin as { id?: unknown }).id).trim().length > 0
+          ? String((payloadPlugin as { id?: unknown }).id)
+          : "unknown"
     const gateway = payloadPlugin && typeof payloadPlugin === "object" ? (payloadPlugin as { gateway?: unknown }).gateway : null
     if (hasQrLoginMethods(gateway)) {
       return {
         gateway: createOpenClawQrGateway(gateway),
-        pluginId: options.pluginId ?? "unknown",
+        pluginId: resolvedPluginId,
       }
     }
     if (hasQrLoginMethods(payloadPlugin)) {
       return {
         gateway: createOpenClawQrGateway(payloadPlugin),
-        pluginId: options.pluginId ?? "unknown",
+        pluginId: resolvedPluginId,
       }
     }
   }

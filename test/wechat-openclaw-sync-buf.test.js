@@ -18,3 +18,9 @@ test("sync-buf wrapper persists updates buf via provided source helpers", async 
 
   assert.deepEqual(calls, [{ filePath: "state/acc-2x.buf", getUpdatesBuf: "buf-2x" }])
 })
+
+test("sync-buf module exports latest account state loader for assembly usage", async () => {
+  const mod = await import(DIST_SYNC_BUF_MODULE)
+
+  assert.equal(typeof mod.loadLatestWeixinAccountState, "function")
+})

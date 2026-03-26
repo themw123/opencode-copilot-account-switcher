@@ -1,7 +1,3 @@
-import { readFile } from "node:fs/promises"
-import { createRequire } from "node:module"
-import path from "node:path"
-import { createJiti } from "jiti"
 import { loadOpenClawAccountHelpers, type WeixinAccountHelpers } from "./openclaw-account-helpers.js"
 import {
   loadRegisteredWeixinPluginPayloads,
@@ -14,7 +10,11 @@ import {
   type PublicWeixinMessage,
   type PublicWeixinSendMessage,
 } from "./openclaw-updates-send.js"
-import { loadOpenClawSyncBufHelper, type PublicWeixinPersistGetUpdatesBuf } from "./openclaw-sync-buf.js"
+import {
+  loadLatestWeixinAccountState,
+  loadOpenClawSyncBufHelper,
+  type PublicWeixinPersistGetUpdatesBuf,
+} from "./openclaw-sync-buf.js"
 
 export const OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES = {
   stateDir: "@tencent-weixin/openclaw-weixin/src/storage/state-dir.ts",
@@ -22,71 +22,6 @@ export const OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES = {
   getUpdates: "@tencent-weixin/openclaw-weixin/src/api/api.ts",
   sendMessageWeixin: "@tencent-weixin/openclaw-weixin/src/messaging/send.ts",
 } as const
-
-let publicJitiLoader: ReturnType<typeof createJiti> | null = null
-
-function getPublicJiti() {
-  if (publicJitiLoader) {
-    return publicJitiLoader
-  }
-  publicJitiLoader = createJiti(import.meta.url, {
-    interopDefault: true,
-    extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
-  })
-  return publicJitiLoader
-}
-
-
-async function loadLatestWeixinAccountState(): Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null> {
-  const require = createRequire(import.meta.url)
-  const stateDirModulePath = require.resolve(OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.stateDir)
-  const stateDirModule = getPublicJiti()(stateDirModulePath) as { resolveStateDir?: () => string }
-  const stateDir = stateDirModule.resolveStateDir?.()
-  if (!stateDir) {
-    return null
-  }
-
-  const accountsIndexPath = path.join(stateDir, "openclaw-weixin", "accounts.json")
-  let accountIds: string[] = []
-  try {
-    const raw = await readFile(accountsIndexPath, "utf8")
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) {
-      accountIds = parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    }
-  } catch {
-    return null
-  }
-
-  const accountId = accountIds.at(-1)
-  if (!accountId) {
-    return null
-  }
-
-  try {
-    const accountFilePath = path.join(stateDir, "openclaw-weixin", "accounts", `${accountId}.json`)
-    const accountRaw = await readFile(accountFilePath, "utf8")
-    const account = JSON.parse(accountRaw) as { token?: unknown; baseUrl?: unknown }
-    const syncBufModulePath = require.resolve(OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.syncBuf)
-    const syncBufModule = getPublicJiti()(syncBufModulePath) as {
-      getSyncBufFilePath?: (accountId: string) => string
-      loadGetUpdatesBuf?: (filePath: string) => string | undefined
-    }
-    if (typeof account.token !== "string" || account.token.trim().length === 0) {
-      return null
-    }
-    const syncBufFilePath = syncBufModule.getSyncBufFilePath?.(accountId)
-    const persistedGetUpdatesBuf = syncBufFilePath ? syncBufModule.loadGetUpdatesBuf?.(syncBufFilePath) : undefined
-    return {
-      accountId,
-      token: account.token,
-      baseUrl: typeof account.baseUrl === "string" && account.baseUrl.trim().length > 0 ? account.baseUrl : "https://ilinkai.weixin.qq.com",
-      getUpdatesBuf: typeof persistedGetUpdatesBuf === "string" ? persistedGetUpdatesBuf : undefined,
-    }
-  } catch {
-    return null
-  }
-}
 
 export type OpenClawWeixinPublicHelpers = {
   entry: OpenClawWeixinPublicEntry
@@ -134,7 +69,10 @@ export async function loadOpenClawWeixinPublicHelpers(
         return (loaders.loadOpenClawQrGateway ?? loadOpenClawQrGateway)(payloads)
       })()
   const accountHelpers = await (loaders.loadOpenClawAccountHelpers ?? loadOpenClawAccountHelpers)()
-  const latestAccountState = await (loaders.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)()
+  const latestAccountState = await (loaders.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)({
+    stateDirModulePath: OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.stateDir,
+    syncBufModulePath: OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.syncBuf,
+  })
   const updatesSend = loaders.loadOpenClawUpdatesAndSendHelpers
     ? await loaders.loadOpenClawUpdatesAndSendHelpers()
     : await (async () => {
