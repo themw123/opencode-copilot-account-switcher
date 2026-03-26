@@ -36,11 +36,18 @@ function createUnifiedPublicHelpersLoader(overrides = {}) {
   })
 }
 
+async function runGuidedSmokeSilently(guided, options = {}) {
+  return guided.runGuidedSmoke({
+    writeLine: async () => {},
+    ...options,
+  })
+}
+
 test("guided smoke preflight writes 001-preflight evidence", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  await guided.runGuidedSmoke({
+  await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-001",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -58,7 +65,7 @@ test("guided smoke preflight records cwd node version dependency versions and ru
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  await guided.runGuidedSmoke({
+  await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-meta",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -86,7 +93,7 @@ test("guided smoke preflight validates public entry load and evidence directory 
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  await guided.runGuidedSmoke({
+  await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-checks",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -107,7 +114,7 @@ test("guided smoke preflight aborts when public helper self-test fails", async (
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
   let qrStageCalled = false
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-selftest-fail",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: false, reason: "self-test failed" }),
@@ -127,7 +134,7 @@ test("guided smoke command invokes self-test before qr login", async () => {
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
   const order = []
 
-  await guided.runGuidedSmoke({
+  await runGuidedSmokeSilently(guided, {
     runId: "run-order-check",
     evidenceBaseDir,
     runSelfTest: async () => {
@@ -160,7 +167,7 @@ test("guided smoke writes 002-qr-start evidence when loginWithQrStart fails", as
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-start-fail",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -183,7 +190,7 @@ test("guided smoke uses 480000ms as default loginWithQrWait timeout", async () =
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
   let observedTimeoutMs = 0
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-wait-timeout-default",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -204,7 +211,7 @@ test("guided smoke marks blocked and known-unknown when loginWithQrWait times ou
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-wait-timeout",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -220,7 +227,7 @@ test("guided smoke writes fixed slash command evidence files", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-slash-evidence-files",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -241,7 +248,7 @@ test("guided smoke stops before non-slash verification when slash sampling is in
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
   let nonSlashVerificationCalled = false
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-slash-incomplete",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -269,7 +276,7 @@ test("guided smoke returns blocked instead of throwing when evidence directory c
   const filePath = path.join(evidenceRoot, "not-a-directory")
   await writeFile(filePath, "occupied", "utf8")
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-dir-fail",
     evidenceBaseDir: filePath,
     runSelfTest: async () => ({ ok: true }),
@@ -285,7 +292,7 @@ test("guided smoke returns blocked when self-test throws", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-selftest-throw",
     evidenceBaseDir,
     runSelfTest: async () => {
@@ -302,7 +309,7 @@ test("guided smoke returns blocked when dependency resolution throws", async () 
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-preflight-deps-throw",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -331,7 +338,7 @@ test("guided smoke slash evidence sanitizes secrets and records outbound as none
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-slash-sanitize-outbound",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -365,7 +372,7 @@ test("guided smoke updates api-samples-sanitized doc after slash sampling", asyn
   const apiSamplesPath = path.join(docsDir, "api-samples-sanitized.md")
   await writeFile(apiSamplesPath, "# API Samples\n\n", "utf8")
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-update-api-samples",
     evidenceBaseDir,
     apiSamplesDocPath: apiSamplesPath,
@@ -391,7 +398,7 @@ test("guided smoke writes final evidence before blocked when slash sampling thro
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-slash-throw-final-evidence",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -417,7 +424,7 @@ test("guided smoke writes final evidence before blocked when non-slash verificat
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-throw-final-evidence",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -444,7 +451,7 @@ test("guided smoke treats invalid qr login result as blocked", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-invalid-result",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -461,7 +468,7 @@ test("guided smoke surfaces qr start failure message when plugin returns no qr p
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-start-message-only",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -498,7 +505,7 @@ test("guided smoke blocks when non-slash verification is not implemented", async
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-not-implemented",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -523,7 +530,7 @@ test("guided smoke uses default non-slash verification when no override is provi
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
   let getUpdatesCalls = 0
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-default-nonslash-wired",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -569,7 +576,7 @@ test("guided smoke non-slash verification requires 10\/10 and writes count evide
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-count-fail",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -589,7 +596,7 @@ test("guided smoke writes no-go with completed when non-slash is below 10/10", a
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-no-go-completed",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -611,7 +618,7 @@ test("guided smoke writes sequential non-slash evidence from 007-nonslash-warnin
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-sequential-files",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -647,7 +654,7 @@ test("guided smoke blocks when any non-slash attempt misses required three check
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-missing-checks",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -677,7 +684,7 @@ test("guided smoke blocks when sanitized non-slash evidence still contains sensi
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-nonslash-sensitive-residue",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -710,7 +717,7 @@ test("guided smoke updates go-no-go and writes 090-key-fields-check evidence", a
   const goNoGoPath = path.join(docsDir, "go-no-go.md")
   await writeFile(goNoGoPath, "# go-no-go\n\n", "utf8")
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-go-no-go-and-key-fields",
     evidenceBaseDir,
     goNoGoDocPath: goNoGoPath,
@@ -761,7 +768,7 @@ test("guided smoke updates go-no-go on no-go path when non-slash is below 10/10"
   const goNoGoPath = path.join(docsDir, "go-no-go.md")
   await writeFile(goNoGoPath, "# go-no-go\n\n", "utf8")
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-go-no-go-no-go-path",
     evidenceBaseDir,
     goNoGoDocPath: goNoGoPath,
@@ -787,7 +794,7 @@ test("guided smoke updates go-no-go on blocked path instead of only final status
   const goNoGoPath = path.join(docsDir, "go-no-go.md")
   await writeFile(goNoGoPath, "# go-no-go\n\n", "utf8")
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-go-no-go-blocked-path",
     evidenceBaseDir,
     goNoGoDocPath: goNoGoPath,
@@ -811,7 +818,7 @@ test("guided smoke slash evidence sanitizes contextToken camelCase field", async
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-slash-sanitize-context-token-camel",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -839,7 +846,7 @@ test("guided smoke records final status when go-no-go update fails", async () =>
   const docsRoot = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-docs-"))
   const blockedPath = path.join(docsRoot, "missing", "go-no-go.md")
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-go-no-go-update-fail",
     evidenceBaseDir,
     goNoGoDocPath: blockedPath,
@@ -877,7 +884,7 @@ test("guided smoke treats qr login result with unknown status as blocked", async
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-unknown-status",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -893,7 +900,7 @@ test("guided smoke default slash inbound capture must not fake real inbound pass
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-default-slash-no-fake",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -945,7 +952,7 @@ test("guided smoke accepts normalized real slash inbound structures without raw 
     },
   }
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-real-normalized-slash-structure",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1287,7 +1294,7 @@ test("guided smoke only uses unified helper loader boundary", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-unified-loader-boundary",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1323,7 +1330,7 @@ test("guided smoke slash evidence keeps outbound-none and stub semantics", async
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-slash-stub-outbound-none",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1395,7 +1402,7 @@ test("guided smoke treats qr success without explicit login confirmation as bloc
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-success-without-confirmation",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1414,7 +1421,7 @@ test("guided smoke treats qr wait connected false result as timeout-style blocke
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-connected-false",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1436,7 +1443,7 @@ test("guided smoke qr login no longer accepts legacy terminalQr-only payload", a
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
   let waitCalled = 0
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-legacy-terminal-only",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1468,7 +1475,7 @@ test("guided smoke qr login no longer accepts legacy loginUrl payload", async ()
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
   let waitCalled = 0
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-legacy-login-url",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
@@ -1500,7 +1507,7 @@ test("guided smoke qr login requires stable sessionKey and never falls back to a
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
   let waitCalled = 0
-  const result = await guided.runGuidedSmoke({
+  const result = await runGuidedSmokeSilently(guided, {
     runId: "run-qr-no-sessionkey-fallback",
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
