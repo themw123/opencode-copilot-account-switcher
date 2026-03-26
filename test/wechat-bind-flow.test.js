@@ -467,3 +467,67 @@ test("wechat bind flow rolls back operator binding when menu account build fails
 
   assert.equal(resetCalled, 1)
 })
+
+test("wechat bind flow falls back to resolved account userId when wait result omits it", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  const result = await runWechatBindFlow({
+    action: "wechat-bind",
+    loadPublicHelpers: async () => ({
+      latestAccountState: { accountId: "acc-real", token: "token", baseUrl: "https://internal.example" },
+      qrGateway: {
+        loginWithQrStart: () => ({ sessionKey: "s-real", qrUrl: "https://example.test/qr-real" }),
+        loginWithQrWait: () => ({ connected: true, accountId: "acc-real" }),
+      },
+      accountHelpers: {
+        listAccountIds: async () => ["acc-real"],
+        resolveAccount: async () => ({ enabled: true, name: "Real Account", userId: "user-from-account" }),
+        describeAccount: async () => ({ configured: true, userId: "user-from-describe" }),
+      },
+    }),
+    bindOperator: async (binding) => binding,
+    readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+    writeCommonSettings: async () => {},
+    now: () => 1717000000003,
+  })
+
+  assert.equal(result.accountId, "acc-real")
+  assert.equal(result.userId, "user-from-account")
+})
+
+test("wechat bind flow renders ascii qr when only qr url is returned", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  const writes = []
+  const qrRenderCalls = []
+
+  await runWechatBindFlow({
+    action: "wechat-bind",
+    loadPublicHelpers: async () => ({
+      latestAccountState: { accountId: "acc-ascii", token: "token", baseUrl: "https://internal.example" },
+      qrGateway: {
+        loginWithQrStart: () => ({ sessionKey: "s-ascii", qrUrl: "https://example.test/qr-ascii" }),
+        loginWithQrWait: () => ({ connected: true, userId: "user-ascii" }),
+      },
+      accountHelpers: {
+        listAccountIds: async () => ["acc-ascii"],
+        resolveAccount: async () => ({ enabled: true, name: "ASCII Account" }),
+        describeAccount: async () => ({ configured: true }),
+      },
+    }),
+    bindOperator: async (binding) => binding,
+    readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+    writeCommonSettings: async () => {},
+    writeLine: async (line) => {
+      writes.push(line)
+    },
+    renderQrTerminal: async (input) => {
+      qrRenderCalls.push(input)
+      return "ASCII-QR"
+    },
+    now: () => 1717000000004,
+  })
+
+  assert.deepEqual(qrRenderCalls, [{ value: "https://example.test/qr-ascii" }])
+  assert.deepEqual(writes, ["ASCII-QR", "QR URL fallback: https://example.test/qr-ascii"])
+})

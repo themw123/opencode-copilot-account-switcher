@@ -2,6 +2,7 @@ import { bindOperator, readOperatorBinding, rebindOperator, resetOperatorBinding
 import { loadOpenClawWeixinPublicHelpers } from "./compat/openclaw-public-helpers.js"
 import { buildOpenClawMenuAccount } from "./openclaw-account-adapter.js"
 import type { CommonSettingsStore } from "../common-settings-store.js"
+import qrcodeTerminal from "qrcode-terminal"
 
 type BindAction = "wechat-bind" | "wechat-rebind"
 const DEFAULT_QR_WAIT_TIMEOUT_MS = 480000
@@ -25,6 +26,7 @@ type WechatBindFlowInput = {
   readCommonSettings: () => Promise<CommonSettingsStore>
   writeCommonSettings: (settings: CommonSettingsStore) => Promise<void>
   writeLine?: (line: string) => Promise<void>
+  renderQrTerminal?: (input: { value: string }) => Promise<string | undefined>
   now?: () => number
 }
 
@@ -74,6 +76,14 @@ async function rollbackBinding(action: BindAction, previousOperatorBinding: Awai
   await clearOperatorBinding().catch(() => {})
 }
 
+async function renderQrTerminalDefault(input: { value: string }): Promise<string | undefined> {
+  return await new Promise((resolve) => {
+    qrcodeTerminal.generate(input.value, { small: true }, (output: string) => {
+      resolve(typeof output === "string" && output.trim().length > 0 ? output : undefined)
+    })
+  })
+}
+
 export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<WechatBindFlowResult> {
   const now = input.now ?? Date.now
   const loadPublicHelpers = input.loadPublicHelpers ?? loadOpenClawWeixinPublicHelpers
@@ -81,6 +91,7 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
   const persistOperatorRebinding = input.rebindOperator ?? rebindOperator
   const loadOperatorBinding = input.readOperatorBinding ?? readOperatorBinding
   const clearOperatorBinding = input.resetOperatorBinding ?? resetOperatorBinding
+  const renderQrTerminal = input.renderQrTerminal ?? renderQrTerminalDefault
   const writeLine = input.writeLine ?? (async (line: string) => {
     process.stdout.write(`${line}\n`)
   })
@@ -104,6 +115,10 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
     if (qrTerminal) {
       await writeLine(qrTerminal)
     } else if (qrUrl) {
+      const renderedQr = await renderQrTerminal({ value: qrUrl }).catch(() => undefined)
+      if (renderedQr) {
+        await writeLine(renderedQr)
+      }
       await writeLine(`QR URL fallback: ${qrUrl}`)
     } else {
       throw new Error(qrStartMessage || "invalid qr login result: missing qr code or qr url")
@@ -122,27 +137,24 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
       helpers.latestAccountState?.accountId,
       (await helpers.accountHelpers.listAccountIds()).at(-1),
     )
-    const userId = pickFirstNonEmptyString(
+    if (!accountId) {
+      throw new Error("missing accountId after qr login")
+    }
+
+    const boundAt = now()
+    const userIdFromWait = pickFirstNonEmptyString(
       (waited as { userId?: unknown } | null | undefined)?.userId,
       (waited as { openid?: unknown } | null | undefined)?.openid,
       (waited as { uid?: unknown } | null | undefined)?.uid,
     )
-
-    if (!accountId) {
-      throw new Error("missing accountId after qr login")
-    }
-    if (!userId) {
-      throw new Error("missing userId after qr login")
-    }
-
-    const boundAt = now()
     const operatorBinding = {
       wechatAccountId: accountId,
-      userId,
+      userId: "",
       boundAt,
     }
     const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined
     let menuAccount: Awaited<ReturnType<typeof buildOpenClawMenuAccount>>
+    let boundUserId = ""
     try {
       if (input.action === "wechat-rebind") {
         await persistOperatorRebinding(operatorBinding)
@@ -158,7 +170,7 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
               baseUrl: "https://ilinkai.weixin.qq.com",
             }),
             accountId,
-            userId,
+            ...(userIdFromWait ? { userId: userIdFromWait } : {}),
             boundAt,
           }
         : helpers.latestAccountState
@@ -166,6 +178,16 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
         latestAccountState: menuAccountState,
         accountHelpers: helpers.accountHelpers,
       })
+
+      const userId = pickFirstNonEmptyString(
+        userIdFromWait,
+        menuAccount?.userId,
+      )
+      if (!userId) {
+        throw new Error("missing userId after qr login")
+      }
+      boundUserId = userId
+      operatorBinding.userId = userId
 
       const settings = await input.readCommonSettings()
       const notifications = settings.wechat?.notifications ?? {
@@ -195,7 +217,7 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
 
     return {
       accountId,
-      userId,
+      userId: boundUserId,
       name: menuAccount?.name,
       enabled: menuAccount?.enabled,
       configured: menuAccount?.configured,
