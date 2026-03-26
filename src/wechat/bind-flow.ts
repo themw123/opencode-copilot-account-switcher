@@ -48,10 +48,7 @@ function toErrorMessage(error: unknown): string {
 
 function pickQrTerminal(value: unknown): string | undefined {
   return pickFirstNonEmptyString(
-    (value as { terminalQr?: unknown } | null | undefined)?.terminalQr,
     (value as { qrTerminal?: unknown } | null | undefined)?.qrTerminal,
-    (value as { qrText?: unknown } | null | undefined)?.qrText,
-    (value as { asciiQr?: unknown } | null | undefined)?.asciiQr,
   )
 }
 
@@ -59,8 +56,6 @@ function pickQrUrl(value: unknown): string | undefined {
   return pickFirstNonEmptyString(
     (value as { qrDataUrl?: unknown } | null | undefined)?.qrDataUrl,
     (value as { qrUrl?: unknown } | null | undefined)?.qrUrl,
-    (value as { url?: unknown } | null | undefined)?.url,
-    (value as { loginUrl?: unknown } | null | undefined)?.loginUrl,
   )
 }
 
@@ -108,9 +103,10 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
     )
     const sessionKey = pickFirstNonEmptyString(
       (started as { sessionKey?: unknown } | null | undefined)?.sessionKey,
-      (started as { key?: unknown } | null | undefined)?.key,
-      (started as { accountId?: unknown } | null | undefined)?.accountId,
     )
+    if (!sessionKey) {
+      throw new Error("missing sessionKey from qr start")
+    }
 
     if (qrTerminal) {
       await writeLine(qrTerminal)
@@ -144,8 +140,6 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
     const boundAt = now()
     const userIdFromWait = pickFirstNonEmptyString(
       (waited as { userId?: unknown } | null | undefined)?.userId,
-      (waited as { openid?: unknown } | null | undefined)?.openid,
-      (waited as { uid?: unknown } | null | undefined)?.uid,
     )
     const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined
     let menuAccount: Awaited<ReturnType<typeof buildOpenClawMenuAccount>>

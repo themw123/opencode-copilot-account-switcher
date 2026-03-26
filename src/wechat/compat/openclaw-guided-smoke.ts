@@ -137,6 +137,7 @@ export type RunGuidedSmokeOptions = {
   publicHelpersOptions?: OpenClawWeixinPublicHelpersLoaderOptions
   slashCaptureWaitTimeoutMs?: number
   slashCapturePollIntervalMs?: number
+  writeLine?: (line: string) => Promise<void> | void
 }
 
 type PreflightData = {
@@ -166,8 +167,12 @@ const DEFAULT_SLASH_CAPTURE_WAIT_TIMEOUT_MS = 180_000
 const DEFAULT_SLASH_CAPTURE_POLL_INTERVAL_MS = 2_000
 const DEFAULT_PUBLIC_GET_UPDATES_LONG_POLL_TIMEOUT_MS = 35_000
 
-function printGuidedPrompt(message: string): void {
-  process.stdout.write(`${message}\n`)
+async function writeLineDefault(line: string): Promise<void> {
+  process.stdout.write(`${line}\n`)
+}
+
+async function printGuidedPrompt(message: string, writeLine: (line: string) => Promise<void> | void): Promise<void> {
+  await writeLine(message)
 }
 
 function createRunId(): string {
@@ -579,7 +584,10 @@ async function captureNonSlashInboundFromPublicMessages(input: {
   return null
 }
 
-async function runQrLoginDefault(input: { waitTimeoutMs: number }): Promise<{ status: "success" | "timeout"; connected?: boolean; qrPrinted?: boolean; qrUrl?: string; qrDataUrl?: string }> {
+async function runQrLoginDefault(input: {
+  waitTimeoutMs: number
+  writeLine: (line: string) => Promise<void> | void
+}): Promise<{ status: "success" | "timeout"; connected?: boolean; qrPrinted?: boolean; qrUrl?: string; qrDataUrl?: string }> {
   const qrGateway = (input as { qrGateway?: OpenClawWeixinPublicHelpers["qrGateway"] }).qrGateway
   if (!qrGateway) {
     throw new Error("missing qrGateway helper")
@@ -591,14 +599,17 @@ async function runQrLoginDefault(input: { waitTimeoutMs: number }): Promise<{ st
     timeoutMs: input.waitTimeoutMs,
     verbose: false,
   }))
-  const qrTerminal = pickFirstString(startResult, ["terminalQr", "qrTerminal", "qrText", "asciiQr"])
-  const qrUrl = pickFirstString(startResult, ["qrDataUrl", "qrUrl", "url", "loginUrl"])
-  const sessionKey = pickFirstString(startResult, ["sessionKey", "accountId"])
+  const qrTerminal = pickFirstString(startResult, ["qrTerminal"])
+  const qrUrl = pickFirstString(startResult, ["qrDataUrl", "qrUrl"])
+  const sessionKey = pickFirstString(startResult, ["sessionKey"])
   const qrStartMessage = pickFirstString(startResult, ["message", "detail", "reason"])
+  if (!sessionKey) {
+    throw new Error("missing sessionKey from qr start")
+  }
   if (qrTerminal) {
-    process.stdout.write(`${qrTerminal}\n`)
+    await input.writeLine(qrTerminal)
   } else if (qrUrl) {
-    process.stdout.write(`QR URL fallback: ${qrUrl}\n`)
+    await input.writeLine(`QR URL fallback: ${qrUrl}`)
   } else {
     throw new Error(qrStartMessage || "invalid qr login result: missing qr code or qr url")
   }
@@ -878,6 +889,7 @@ export const runDefaultNonSlashVerificationForTest = runDefaultNonSlashVerificat
 async function runSlashSampling(
   run: GuidedSmokeRun,
   captureSlashInbound: (command: SlashOnlyCommand) => Promise<Record<string, unknown> | null>,
+  writeLine: (line: string) => Promise<void> | void,
 ): Promise<{ ok: boolean; reason?: string }> {
   const harness = createOpenClawSmokeHarness({ mode: "real-account" })
 
@@ -905,11 +917,11 @@ async function runSlashSampling(
     }
 
     if (step.command === "status") {
-      printGuidedPrompt("已收到 `/status`，下一步请发送 `/reply smoke`")
+      await printGuidedPrompt("已收到 `/status`，下一步请发送 `/reply smoke`", writeLine)
     } else if (step.command === "reply") {
-      printGuidedPrompt("已收到 `/reply smoke`，下一步请发送 `/allow once`")
+      await printGuidedPrompt("已收到 `/reply smoke`，下一步请发送 `/allow once`", writeLine)
     } else {
-      printGuidedPrompt("已收到 `/allow once`，下一步开始发送 10 条普通文本")
+      await printGuidedPrompt("已收到 `/allow once`，下一步开始发送 10 条普通文本", writeLine)
     }
   }
 
@@ -1121,6 +1133,7 @@ async function completeWithNoGoFinalEvidence(
 export async function runGuidedSmoke(options: RunGuidedSmokeOptions = {}): Promise<GuidedSmokeResult> {
   const run = createGuidedSmokeRun(options)
   const waitTimeoutMs = options.qrWaitTimeoutMs ?? DEFAULT_QR_WAIT_TIMEOUT_MS
+  const writeLine = options.writeLine ?? writeLineDefault
   const slashCaptureState: SlashCaptureState = {}
   const loadOpenClawPublicHelpers = options.loadOpenClawWeixinPublicHelpers ?? loadOpenClawWeixinPublicHelpers
   let cachedPublicHelpers: GuidedPublicHelpers | null = null
@@ -1142,7 +1155,15 @@ export async function runGuidedSmoke(options: RunGuidedSmokeOptions = {}): Promi
   const getDependencyVersions = options.getDependencyVersions ?? resolveDependencyVersionsFromPackageJson
   const runQrLogin = options.runQrLogin ?? (async (input: { waitTimeoutMs: number }) => {
     const helpers = await getPublicHelpers()
-    return runQrLoginDefault({ ...input, qrGateway: helpers.qrGateway } as { waitTimeoutMs: number; qrGateway: OpenClawWeixinPublicHelpers["qrGateway"] })
+    return runQrLoginDefault({
+      ...input,
+      qrGateway: helpers.qrGateway,
+      writeLine,
+    } as {
+      waitTimeoutMs: number
+      qrGateway: OpenClawWeixinPublicHelpers["qrGateway"]
+      writeLine: (line: string) => Promise<void> | void
+    })
   })
   const captureSlashInbound = options.captureSlashInbound ?? ((command: SlashOnlyCommand) => captureSlashInboundDefault(command, {
     state: slashCaptureState,
@@ -1271,7 +1292,7 @@ export async function runGuidedSmoke(options: RunGuidedSmokeOptions = {}): Promi
       }, goNoGoDocPath)
     }
     await writeLoginSuccessEvidence(run, "success", waitTimeoutMs)
-    printGuidedPrompt("二维码登录成功，下一步请发送 `/status`")
+    await printGuidedPrompt("二维码登录成功，下一步请发送 `/status`", writeLine)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     await writeQrStartEvidence(run, "fail", detail, waitTimeoutMs)
@@ -1285,7 +1306,7 @@ export async function runGuidedSmoke(options: RunGuidedSmokeOptions = {}): Promi
 
   let slashSampling: { ok: boolean; reason?: string }
   try {
-    slashSampling = await runSlashSampling(run, captureSlashInbound)
+    slashSampling = await runSlashSampling(run, captureSlashInbound, writeLine)
   } catch (error) {
     return failWithFinalEvidence(run, {
       stage: "slash-sampling",
@@ -1370,7 +1391,7 @@ export async function runGuidedSmoke(options: RunGuidedSmokeOptions = {}): Promi
         keyFields: nonSlashVerification.keyFieldsCheck,
       }, goNoGoDocPath)
     }
-    printGuidedPrompt(`普通文本验证进度：${index + 1}/${attempts.length}`)
+    await printGuidedPrompt(`普通文本验证进度：${index + 1}/${attempts.length}`, writeLine)
   }
 
   const nonSlashPassed = nonSlashVerification.passed === 10 && nonSlashVerification.total === 10

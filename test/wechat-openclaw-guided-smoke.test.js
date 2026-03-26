@@ -4,7 +4,6 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { Writable } from "node:stream"
 
 const DIST_GUIDED_MODULE = "../dist/wechat/compat/openclaw-guided-smoke.js"
 
@@ -1344,56 +1343,46 @@ test("guided smoke slash evidence keeps outbound-none and stub semantics", async
 test("guided smoke prints step-by-step prompts after each confirmed stage", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
-  const chunks = []
-  const originalStdoutWrite = process.stdout.write
+  const lines = []
 
-  const capture = new Writable({
-    write(chunk, _encoding, callback) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk))
-      callback()
+  await guided.runGuidedSmoke({
+    runId: "run-progress-prompts",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
+    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
+    captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
+    runNonSlashVerification: async () => ({
+      passed: 2,
+      total: 2,
+      failedChecks: [],
+      attempts: [
+        {
+          input: "hello 1",
+          inbound: { text: "hello 1" },
+          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          persisted: true,
+        },
+        {
+          input: "hello 2",
+          inbound: { text: "hello 2" },
+          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          persisted: true,
+        },
+      ],
+      keyFieldsCheck: {
+        login: { status: "pass" },
+        getupdates: { status: "pass" },
+        slashInbound: { status: "pass" },
+        warningReply: { status: "pass" },
+      },
+    }),
+    writeLine: async (line) => {
+      lines.push(line)
     },
   })
 
-  process.stdout.write = capture.write.bind(capture)
-  try {
-    await guided.runGuidedSmoke({
-      runId: "run-progress-prompts",
-      evidenceBaseDir,
-      runSelfTest: async () => ({ ok: true }),
-      loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-      runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
-      captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
-      runNonSlashVerification: async () => ({
-        passed: 2,
-        total: 2,
-        failedChecks: [],
-        attempts: [
-          {
-            input: "hello 1",
-            inbound: { text: "hello 1" },
-            warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
-            persisted: true,
-          },
-          {
-            input: "hello 2",
-            inbound: { text: "hello 2" },
-            warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
-            persisted: true,
-          },
-        ],
-        keyFieldsCheck: {
-          login: { status: "pass" },
-          getupdates: { status: "pass" },
-          slashInbound: { status: "pass" },
-          warningReply: { status: "pass" },
-        },
-      }),
-    })
-  } finally {
-    process.stdout.write = originalStdoutWrite
-  }
-
-  const output = chunks.join("")
+  const output = lines.join("\n")
   assert.match(output, /二维码登录成功.*下一步请发送 `\/status`/)
   assert.match(output, /已收到 `\/status`.*下一步请发送 `\/reply smoke`/)
   assert.match(output, /已收到 `\/reply smoke`.*下一步请发送 `\/allow once`/)
@@ -1440,4 +1429,100 @@ test("guided smoke treats qr wait connected false result as timeout-style blocke
   assert.equal(result.status, "blocked")
   assert.equal(result.conclusion, "known-unknown")
   assert.match(result.reason ?? "", /timeout/i)
+})
+
+test("guided smoke qr login no longer accepts legacy terminalQr-only payload", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+  const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
+
+  let waitCalled = 0
+  const result = await guided.runGuidedSmoke({
+    runId: "run-qr-legacy-terminal-only",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
+      qrGateway: {
+        loginWithQrStart: async () => ({
+          sessionKey: "s-legacy-terminal",
+          terminalQr: "LEGACY-TERMINAL",
+        }),
+        loginWithQrWait: async () => {
+          waitCalled += 1
+          return { status: "success", connected: true }
+        },
+      },
+    }),
+    captureSlashInbound: async () => {
+      throw new Error("should not enter slash stage")
+    },
+  })
+
+  assert.equal(result.status, "blocked")
+  assert.equal(result.conclusion, "known-unknown")
+  assert.match(result.reason ?? "", /invalid qr login result: missing qr code or qr url/i)
+  assert.equal(waitCalled, 0)
+})
+
+test("guided smoke qr login no longer accepts legacy loginUrl payload", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+  const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
+
+  let waitCalled = 0
+  const result = await guided.runGuidedSmoke({
+    runId: "run-qr-legacy-login-url",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
+      qrGateway: {
+        loginWithQrStart: async () => ({
+          sessionKey: "s-legacy-url",
+          loginUrl: "https://example.test/legacy-login-url",
+        }),
+        loginWithQrWait: async () => {
+          waitCalled += 1
+          return { status: "success", connected: true }
+        },
+      },
+    }),
+    captureSlashInbound: async () => {
+      throw new Error("should not enter slash stage")
+    },
+  })
+
+  assert.equal(result.status, "blocked")
+  assert.equal(result.conclusion, "known-unknown")
+  assert.match(result.reason ?? "", /invalid qr login result: missing qr code or qr url/i)
+  assert.equal(waitCalled, 0)
+})
+
+test("guided smoke qr login requires stable sessionKey and never falls back to accountId", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+  const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
+
+  let waitCalled = 0
+  const result = await guided.runGuidedSmoke({
+    runId: "run-qr-no-sessionkey-fallback",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
+      qrGateway: {
+        loginWithQrStart: async () => ({
+          accountId: "acc-legacy-session",
+          qrUrl: "https://example.test/qr",
+        }),
+        loginWithQrWait: async () => {
+          waitCalled += 1
+          return { status: "success", connected: true }
+        },
+      },
+    }),
+    captureSlashInbound: async () => {
+      throw new Error("should not enter slash stage")
+    },
+  })
+
+  assert.equal(result.status, "blocked")
+  assert.equal(result.conclusion, "known-unknown")
+  assert.match(result.reason ?? "", /missing sessionKey from qr start/i)
+  assert.equal(waitCalled, 0)
 })

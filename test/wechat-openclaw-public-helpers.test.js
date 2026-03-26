@@ -1,5 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 
 const DIST_PUBLIC_HELPERS_MODULE = "../dist/wechat/compat/openclaw-public-helpers.js"
 const DIST_ACCOUNT_ADAPTER_MODULE = "../dist/wechat/openclaw-account-adapter.js"
@@ -20,37 +21,27 @@ test("public helper loader returns guided-smoke required helpers", async () => {
   assert.equal(typeof loaded.sendMessageWeixin, "function")
 })
 
-test("public helper account wrappers pass cfg-aware signatures correctly", async () => {
+test("public helper loader bypasses config-surface account helpers and uses account wrapper source", async () => {
   const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
 
-  const calls = []
   const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
-    loadPublicWeixinAccountHelpers: async () => ({
+    loadPublicWeixinAccountHelpers: async () => {
+      throw new Error("must not read config surface")
+    },
+    loadOpenClawAccountHelpers: async () => ({
       listAccountIds: async () => ["acc-helper"],
-      resolveAccount: async (cfg, accountId) => {
-        const args = [cfg, accountId]
-        calls.push({ method: "resolveAccount", args })
-        return { accountId: args[1], enabled: true }
-      },
-      describeAccount: async (account) => {
-        const args = [account]
-        calls.push({ method: "describeAccount", args })
-        return { accountId: args[0]?.accountId ?? args[0], configured: true }
-      },
+      resolveAccount: async () => ({ accountId: "acc-helper", enabled: true, configured: true, userId: "u-helper" }),
+      describeAccount: async () => ({ accountId: "acc-helper", enabled: true, configured: true, userId: "u-helper" }),
     }),
   })
 
-  await loaded.accountHelpers.resolveAccount("acc-helper")
-  await loaded.accountHelpers.describeAccount("acc-helper")
-  await loaded.accountHelpers.describeAccount({ accountId: "acc-helper" })
-
-  assert.deepEqual(calls, [
-    { method: "resolveAccount", args: [undefined, "acc-helper"] },
-    { method: "resolveAccount", args: [undefined, "acc-helper"] },
-    { method: "describeAccount", args: [{ accountId: "acc-helper", enabled: true }] },
-    { method: "resolveAccount", args: [undefined, "acc-helper"] },
-    { method: "describeAccount", args: [{ accountId: "acc-helper", enabled: true }] },
-  ])
+  assert.deepEqual(await loaded.accountHelpers.listAccountIds(), ["acc-helper"])
+  assert.deepEqual(await loaded.accountHelpers.resolveAccount("acc-helper"), {
+    accountId: "acc-helper",
+    enabled: true,
+    configured: true,
+    userId: "u-helper",
+  })
 })
 
 test("account adapter exposes menu-safe display fields only", async () => {
@@ -172,4 +163,117 @@ test("public helper keeps JITI src helper modules as default route", async () =>
     getUpdates: "@tencent-weixin/openclaw-weixin/src/api/api.ts",
     sendMessageWeixin: "@tencent-weixin/openclaw-weixin/src/messaging/send.ts",
   })
+})
+
+test("public helper loader assembles wrappers without function-length probing", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadPublicWeixinQrGateway: async () => ({
+      gateway: {
+        loginWithQrStart: async (params) => ({ sessionKey: params?.accountId ?? "s" }),
+        loginWithQrWait: async (params) => ({ connected: true, accountId: params?.accountId ?? "acc" }),
+      },
+      pluginId: "wechat-2x",
+    }),
+    loadPublicWeixinAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-2x"],
+      resolveAccount: async (accountId) => ({ accountId, enabled: true }),
+      describeAccount: async (accountIdOrInput) => ({
+        accountId: typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId,
+        configured: true,
+      }),
+    }),
+  })
+
+  assert.equal(loaded.pluginId, "wechat-2x")
+  assert.equal(typeof loaded.accountHelpers.resolveAccount, "function")
+
+  const packageJsonRaw = await readFile(new URL("../package.json", import.meta.url), "utf8")
+  const packageJson = JSON.parse(packageJsonRaw)
+  assert.equal(packageJson.dependencies?.["@tencent-weixin/openclaw-weixin"], "2.0.1")
+})
+
+test("public helper assembly no longer depends on function-length probing", async () => {
+  const source = await import(DIST_PUBLIC_HELPERS_MODULE)
+  assert.equal("normalizeWeixinAccountHelpers" in source, false)
+})
+
+test("public helper loader uses account wrapper loader instead of config-surface helpers", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadPublicWeixinQrGateway: async () => ({
+      gateway: {
+        loginWithQrStart: async () => ({ sessionKey: "s" }),
+        loginWithQrWait: async () => ({ connected: true, accountId: "acc-wrapper" }),
+      },
+      pluginId: "wechat-2x",
+    }),
+    loadOpenClawAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-wrapper"],
+      resolveAccount: async () => ({ accountId: "acc-wrapper", enabled: true, configured: true, userId: "user-wrapper" }),
+      describeAccount: async (accountIdOrInput) => ({
+        accountId: typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId,
+        configured: true,
+      }),
+    }),
+    loadPublicWeixinHelpers: async () => ({
+      getUpdates: async () => ({ msgs: [], get_updates_buf: "buf" }),
+    }),
+    loadPublicWeixinSendHelper: async () => ({
+      sendMessageWeixin: async () => ({ messageId: "m-1" }),
+    }),
+    loadLatestWeixinAccountState: async () => null,
+  })
+
+  assert.deepEqual(await loaded.accountHelpers.listAccountIds(), ["acc-wrapper"])
+  assert.deepEqual(await loaded.accountHelpers.resolveAccount("acc-wrapper"), {
+    accountId: "acc-wrapper",
+    enabled: true,
+    configured: true,
+    userId: "user-wrapper",
+  })
+})
+
+test("public helper default assembly preserves pluginId from plugin object when payload has no plugin.id", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadRegisteredWeixinPluginContext: async () => ({
+      pluginId: "wechat-openclaw-weixin",
+      payloads: [
+        {
+          plugin: {
+            gateway: {
+              loginWithQrStart: async () => ({ sessionKey: "s-default" }),
+              loginWithQrWait: async () => ({ connected: true, accountId: "acc-default" }),
+            },
+          },
+        },
+      ],
+    }),
+    loadOpenClawUpdatesAndSendHelpers: async () => ({
+      getUpdates: async () => ({ msgs: [], get_updates_buf: "buf-default" }),
+      sendMessageWeixin: async () => ({ messageId: "msg-default" }),
+    }),
+    loadLatestWeixinAccountState: async () => null,
+    loadOpenClawAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-default"],
+      resolveAccount: async () => ({ accountId: "acc-default", enabled: true, configured: true }),
+      describeAccount: async (accountIdOrInput) => ({
+        accountId: typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId,
+        enabled: true,
+        configured: true,
+      }),
+    }),
+    resolveOpenClawWeixinPublicEntry: async () => ({
+      packageJsonPath: "virtual/package.json",
+      packageRoot: "virtual",
+      extensions: ["./index.ts"],
+      entryRelativePath: "./index.ts",
+      entryAbsolutePath: "virtual/index.ts",
+    }),
+  })
+
+  assert.equal(loaded.pluginId, "wechat-openclaw-weixin")
 })

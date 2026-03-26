@@ -63,8 +63,8 @@
   "dependencies": {
     "@opencode-ai/plugin": "^1.2.26",
     "@opencode-ai/sdk": "^1.2.26",
-    "@tencent-weixin/openclaw-weixin": "^1.0.3",
-    "openclaw": "2026.3.13",
+    "@tencent-weixin/openclaw-weixin": "2.0.1",
+    "openclaw": "2026.3.22",
     "xdg-basedir": "^5.1.0"
   }
 }
