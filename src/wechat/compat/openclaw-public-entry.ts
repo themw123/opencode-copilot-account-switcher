@@ -88,6 +88,14 @@ export async function loadOpenClawWeixinDefaultExport(): Promise<OpenClawWeixinP
 }
 
 export async function loadRegisteredWeixinPluginPayloads(): Promise<Array<{ plugin?: unknown }>> {
+  const context = await loadRegisteredWeixinPluginContext()
+  return context.payloads
+}
+
+export async function loadRegisteredWeixinPluginContext(): Promise<{
+  pluginId: string
+  payloads: Array<{ plugin?: unknown }>
+}> {
   const payloads: Array<{ plugin?: unknown }> = []
   const plugin = await loadOpenClawWeixinDefaultExport()
   plugin.register({
@@ -100,5 +108,8 @@ export async function loadRegisteredWeixinPluginPayloads(): Promise<Array<{ plug
     },
     registerCli() {},
   })
-  return payloads
+  return {
+    pluginId: typeof plugin.id === "string" && plugin.id.trim().length > 0 ? plugin.id : "wechat-openclaw-weixin",
+    payloads,
+  }
 }

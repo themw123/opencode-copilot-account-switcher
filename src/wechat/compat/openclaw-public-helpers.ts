@@ -1,5 +1,6 @@
 import { loadOpenClawAccountHelpers, type WeixinAccountHelpers } from "./openclaw-account-helpers.js"
 import {
+  loadRegisteredWeixinPluginContext,
   loadRegisteredWeixinPluginPayloads,
   resolveOpenClawWeixinPublicEntry,
   type OpenClawWeixinPublicEntry,
@@ -39,6 +40,7 @@ export type OpenClawWeixinPublicHelpers = {
 
 type OpenClawWeixinPublicHelpersLoaders = {
   resolveOpenClawWeixinPublicEntry?: typeof resolveOpenClawWeixinPublicEntry
+  loadRegisteredWeixinPluginContext?: typeof loadRegisteredWeixinPluginContext
   loadRegisteredWeixinPluginPayloads?: typeof loadRegisteredWeixinPluginPayloads
   loadOpenClawQrGateway?: (payloads: Array<{ plugin?: unknown }>) => Promise<{ gateway: WeixinQrGateway; pluginId: string }>
   loadPublicWeixinQrGateway?: () => Promise<{ gateway: WeixinQrGateway; pluginId?: string }>
@@ -65,8 +67,12 @@ export async function loadOpenClawWeixinPublicHelpers(
   const qrGatewayResult = loaders.loadPublicWeixinQrGateway
     ? await loaders.loadPublicWeixinQrGateway()
     : await (async () => {
-        const payloads = await (loaders.loadRegisteredWeixinPluginPayloads ?? loadRegisteredWeixinPluginPayloads)()
-        return (loaders.loadOpenClawQrGateway ?? loadOpenClawQrGateway)(payloads)
+        if (loaders.loadRegisteredWeixinPluginContext) {
+          const context = await loaders.loadRegisteredWeixinPluginContext()
+          return (loaders.loadOpenClawQrGateway ?? loadOpenClawQrGateway)(context.payloads, { pluginId: context.pluginId })
+        }
+        const context = await loadRegisteredWeixinPluginContext()
+        return (loaders.loadOpenClawQrGateway ?? loadOpenClawQrGateway)(context.payloads, { pluginId: context.pluginId })
       })()
   const accountHelpers = await (loaders.loadOpenClawAccountHelpers ?? loadOpenClawAccountHelpers)()
   const latestAccountState = await (loaders.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)({

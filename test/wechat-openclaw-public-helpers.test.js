@@ -229,3 +229,46 @@ test("public helper loader uses account wrapper loader instead of config-surface
     userId: "user-wrapper",
   })
 })
+
+test("public helper default assembly preserves pluginId from plugin object when payload has no plugin.id", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadRegisteredWeixinPluginContext: async () => ({
+      pluginId: "wechat-openclaw-weixin",
+      payloads: [
+        {
+          plugin: {
+            gateway: {
+              loginWithQrStart: async () => ({ sessionKey: "s-default" }),
+              loginWithQrWait: async () => ({ connected: true, accountId: "acc-default" }),
+            },
+          },
+        },
+      ],
+    }),
+    loadOpenClawUpdatesAndSendHelpers: async () => ({
+      getUpdates: async () => ({ msgs: [], get_updates_buf: "buf-default" }),
+      sendMessageWeixin: async () => ({ messageId: "msg-default" }),
+    }),
+    loadLatestWeixinAccountState: async () => null,
+    loadOpenClawAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-default"],
+      resolveAccount: async () => ({ accountId: "acc-default", enabled: true, configured: true }),
+      describeAccount: async (accountIdOrInput) => ({
+        accountId: typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId,
+        enabled: true,
+        configured: true,
+      }),
+    }),
+    resolveOpenClawWeixinPublicEntry: async () => ({
+      packageJsonPath: "virtual/package.json",
+      packageRoot: "virtual",
+      extensions: ["./index.ts"],
+      entryRelativePath: "./index.ts",
+      entryAbsolutePath: "virtual/index.ts",
+    }),
+  })
+
+  assert.equal(loaded.pluginId, "wechat-openclaw-weixin")
+})
