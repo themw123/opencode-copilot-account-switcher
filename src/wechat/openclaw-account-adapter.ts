@@ -47,21 +47,6 @@ function toBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") {
     return value
   }
-  if (value === 1) {
-    return true
-  }
-  if (value === 0) {
-    return false
-  }
-  return undefined
-}
-
-function firstNumber(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value
-    }
-  }
   return undefined
 }
 
@@ -96,29 +81,24 @@ export async function buildOpenClawMenuAccount(input: BuildOpenClawMenuAccountIn
   const describedRaw = asObject(await tryDescribeAccount(input.accountHelpers, accountId))
 
   const enabled =
-    toBoolean(resolvedRaw.enabled) ?? toBoolean(resolvedRaw.isEnabled) ?? toBoolean(describedRaw.enabled) ?? toBoolean(describedRaw.isEnabled) ?? false
+    toBoolean(resolvedRaw.enabled) ?? toBoolean(describedRaw.enabled) ?? false
   const configured =
-    toBoolean(describedRaw.configured) ?? toBoolean(describedRaw.isConfigured) ?? toBoolean(resolvedRaw.configured) ?? toBoolean(resolvedRaw.isConfigured) ?? false
+    toBoolean(describedRaw.configured) ?? toBoolean(resolvedRaw.configured) ?? false
 
   const userId = firstNonEmptyString(
     input.latestAccountState?.userId,
     resolvedRaw.userId,
-    resolvedRaw.user_id,
     describedRaw.userId,
-    describedRaw.user_id,
   )
-  const boundAt = firstNumber(
+  const boundAt = [
     input.latestAccountState?.boundAt,
-    input.latestAccountState?.savedAt,
     resolvedRaw.boundAt,
-    resolvedRaw.savedAt,
     describedRaw.boundAt,
-    describedRaw.savedAt,
-  )
+  ].find((value): value is number => typeof value === "number" && Number.isFinite(value))
 
   return {
     accountId,
-    name: firstNonEmptyString(resolvedRaw.name, resolvedRaw.displayName, describedRaw.name, describedRaw.displayName),
+    name: firstNonEmptyString(resolvedRaw.name, describedRaw.name),
     enabled,
     configured,
     userId,

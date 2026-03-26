@@ -52,7 +52,7 @@ test("guided smoke preflight writes 001-preflight evidence", async () => {
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 0, total: 10, failedChecks: ["preflight-only"] }),
   })
@@ -70,7 +70,7 @@ test("guided smoke preflight records cwd node version dependency versions and ru
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 0, total: 10, failedChecks: ["preflight-only"] }),
     getDependencyVersions: () => ({
@@ -98,7 +98,7 @@ test("guided smoke preflight validates public entry load and evidence directory 
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 0, total: 10, failedChecks: ["preflight-only"] }),
   })
@@ -143,6 +143,7 @@ test("guided smoke command invokes self-test before qr login", async () => {
     },
     runQrLogin: async () => {
       order.push("qr-login")
+      return { status: "success", connected: true, qrDataUrl: "https://example.test/qr" }
     },
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
   })
@@ -197,7 +198,7 @@ test("guided smoke uses 480000ms as default loginWithQrWait timeout", async () =
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
     runQrLogin: async ({ waitTimeoutMs }) => {
       observedTimeoutMs = waitTimeoutMs
-      return { status: "success", qrUrl: "https://example.test/qr" }
+      return { status: "success", connected: true, qrDataUrl: "https://example.test/qr" }
     },
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
@@ -232,7 +233,7 @@ test("guided smoke writes fixed slash command evidence files", async () => {
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
   })
@@ -253,7 +254,7 @@ test("guided smoke stops before non-slash verification when slash sampling is in
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => {
       if (command === "reply") {
         return null
@@ -343,7 +344,7 @@ test("guided smoke slash evidence sanitizes secrets and records outbound as none
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({
       command,
       context_token: "ctx-real-token",
@@ -378,7 +379,7 @@ test("guided smoke updates api-samples-sanitized doc after slash sampling", asyn
     apiSamplesDocPath: apiSamplesPath,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
   })
@@ -403,7 +404,7 @@ test("guided smoke writes final evidence before blocked when slash sampling thro
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async () => {
       throw new Error("capture slash exploded")
     },
@@ -429,7 +430,7 @@ test("guided smoke writes final evidence before blocked when non-slash verificat
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => {
       throw new Error("nonslash exploded")
@@ -501,6 +502,29 @@ test("guided smoke accepts qrDataUrl and connected success result from public pl
   })
 })
 
+test("guided smoke rejects success result when connected is missing even if qrDataUrl exists", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+
+  const normalized = guided.normalizeQrLoginResultForTest({
+    status: "success",
+    qrDataUrl: "https://example.test/qr-data-url",
+  })
+
+  assert.equal(normalized, null)
+})
+
+test("guided smoke rejects legacy qrUrl-only success shape", async () => {
+  const guided = await import(DIST_GUIDED_MODULE)
+
+  const normalized = guided.normalizeQrLoginResultForTest({
+    status: "success",
+    connected: true,
+    qrUrl: "https://example.test/legacy-qr-url",
+  })
+
+  assert.equal(normalized, null)
+})
+
 test("guided smoke blocks when non-slash verification is not implemented", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
@@ -510,7 +534,7 @@ test("guided smoke blocks when non-slash verification is not implemented", async
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 0, total: 10, failedChecks: ["non-slash verification not implemented"] }),
   })
@@ -535,7 +559,7 @@ test("guided smoke uses default non-slash verification when no override is provi
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({
       command,
       input: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}`,
@@ -581,7 +605,7 @@ test("guided smoke non-slash verification requires 10\/10 and writes count evide
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 8, total: 10, failedChecks: ["warn-reply"] }),
   })
@@ -601,7 +625,7 @@ test("guided smoke writes no-go with completed when non-slash is below 10/10", a
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 9, total: 10, failedChecks: ["attempt-10"] }),
   })
@@ -623,7 +647,7 @@ test("guided smoke writes sequential non-slash evidence from 007-nonslash-warnin
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({
       passed: 2,
@@ -659,7 +683,7 @@ test("guided smoke blocks when any non-slash attempt misses required three check
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({
       passed: 1,
@@ -689,7 +713,7 @@ test("guided smoke blocks when sanitized non-slash evidence still contains sensi
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({
       passed: 1,
@@ -723,7 +747,7 @@ test("guided smoke updates go-no-go and writes 090-key-fields-check evidence", a
     goNoGoDocPath: goNoGoPath,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({
       passed: 10,
@@ -774,7 +798,7 @@ test("guided smoke updates go-no-go on no-go path when non-slash is below 10/10"
     goNoGoDocPath: goNoGoPath,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 9, total: 10, failedChecks: ["attempt-10"] }),
   })
@@ -800,7 +824,7 @@ test("guided smoke updates go-no-go on blocked path instead of only final status
     goNoGoDocPath: goNoGoPath,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async () => {
       throw new Error("capture slash exploded")
     },
@@ -823,7 +847,7 @@ test("guided smoke slash evidence sanitizes contextToken camelCase field", async
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({
       command,
       contextToken: "ctx-camel-raw-token",
@@ -852,7 +876,7 @@ test("guided smoke records final status when go-no-go update fails", async () =>
     goNoGoDocPath: blockedPath,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({
       passed: 10,
@@ -889,7 +913,7 @@ test("guided smoke treats qr login result with unknown status as blocked", async
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "qr_expired", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "qr_expired", connected: true, qrDataUrl: "https://example.test/qr" }),
   })
 
   assert.equal(result.status, "blocked")
@@ -905,7 +929,7 @@ test("guided smoke default slash inbound capture must not fake real inbound pass
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     slashCaptureWaitTimeoutMs: 10,
     slashCapturePollIntervalMs: 5,
     loadOpenClawWeixinPublicHelpers: createUnifiedPublicHelpersLoader({
@@ -1307,7 +1331,7 @@ test("guided smoke only uses unified helper loader boundary", async () => {
       getUpdates: async () => ({ msgs: [], get_updates_buf: "buf-empty" }),
       sendMessageWeixin: async () => ({ messageId: "reply-mid" }),
     }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     loadLatestWeixinAccountState: async () => {
       throw new Error("legacy loadLatestWeixinAccountState should not be used")
     },
@@ -1335,7 +1359,7 @@ test("guided smoke slash evidence keeps outbound-none and stub semantics", async
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr" }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
     runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
   })
@@ -1357,7 +1381,7 @@ test("guided smoke prints step-by-step prompts after each confirmed stage", asyn
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
+    runQrLogin: async () => ({ status: "success", connected: true, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
     runNonSlashVerification: async () => ({
       passed: 2,
@@ -1407,17 +1431,17 @@ test("guided smoke treats qr success without explicit login confirmation as bloc
     evidenceBaseDir,
     runSelfTest: async () => ({ ok: true }),
     loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: false }),
+    runQrLogin: async () => ({ status: "success", connected: false, qrDataUrl: "https://example.test/qr" }),
     captureSlashInbound: async (command) => ({ command, userId: "u-1", messageId: `m-${command}` }),
     runNonSlashVerification: async () => ({ passed: 10, total: 10 }),
   })
 
   assert.equal(result.status, "blocked")
   assert.equal(result.conclusion, "known-unknown")
-  assert.match(result.reason ?? "", /timeout/i)
+  assert.match(result.reason ?? "", /invalid qr login result/i)
 })
 
-test("guided smoke treats qr wait connected false result as timeout-style blocked instead of invalid result", async () => {
+test("guided smoke treats qr wait connected false result as invalid-shape blocked", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
 
@@ -1435,7 +1459,7 @@ test("guided smoke treats qr wait connected false result as timeout-style blocke
 
   assert.equal(result.status, "blocked")
   assert.equal(result.conclusion, "known-unknown")
-  assert.match(result.reason ?? "", /timeout/i)
+  assert.match(result.reason ?? "", /invalid qr login result/i)
 })
 
 test("guided smoke qr login no longer accepts legacy terminalQr-only payload", async () => {

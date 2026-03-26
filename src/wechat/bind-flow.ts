@@ -55,7 +55,6 @@ function pickQrTerminal(value: unknown): string | undefined {
 function pickQrUrl(value: unknown): string | undefined {
   return pickFirstNonEmptyString(
     (value as { qrDataUrl?: unknown } | null | undefined)?.qrDataUrl,
-    (value as { qrUrl?: unknown } | null | undefined)?.qrUrl,
   )
 }
 
@@ -69,6 +68,16 @@ async function rollbackBinding(action: BindAction, previousOperatorBinding: Awai
     return
   }
   await clearOperatorBinding().catch(() => {})
+}
+
+function isSameOperatorBinding(
+  left: Awaited<ReturnType<typeof readOperatorBinding>>,
+  right: Awaited<ReturnType<typeof readOperatorBinding>>,
+): boolean {
+  if (!left || !right) {
+    return false
+  }
+  return left.wechatAccountId === right.wechatAccountId && left.userId === right.userId && left.boundAt === right.boundAt
 }
 
 async function renderQrTerminalDefault(input: { value: string }): Promise<string | undefined> {
@@ -130,58 +139,50 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
 
     const accountId = pickFirstNonEmptyString(
       (waited as { accountId?: unknown } | null | undefined)?.accountId,
-      helpers.latestAccountState?.accountId,
-      (await helpers.accountHelpers.listAccountIds()).at(-1),
     )
     if (!accountId) {
       throw new Error("missing accountId after qr login")
     }
 
     const boundAt = now()
+    const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined
     const userIdFromWait = pickFirstNonEmptyString(
       (waited as { userId?: unknown } | null | undefined)?.userId,
     )
-    const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined
     let menuAccount: Awaited<ReturnType<typeof buildOpenClawMenuAccount>>
     let boundUserId = ""
     let shouldRollbackBinding = false
+    let attemptedOperatorBinding: Awaited<ReturnType<typeof readOperatorBinding>>
     try {
-      const menuAccountState = accountId
-        ? {
-            ...(helpers.latestAccountState ?? {
-              accountId,
-              token: "",
-              baseUrl: "https://ilinkai.weixin.qq.com",
-            }),
-            accountId,
-            ...(userIdFromWait ? { userId: userIdFromWait } : {}),
-            boundAt,
-          }
-        : helpers.latestAccountState
+      const menuAccountState = {
+        accountId,
+        token: "",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+      }
       menuAccount = await buildOpenClawMenuAccount({
         latestAccountState: menuAccountState,
         accountHelpers: helpers.accountHelpers,
       })
 
       const userId = pickFirstNonEmptyString(
-        userIdFromWait,
         menuAccount?.userId,
+        userIdFromWait,
       )
       if (!userId) {
         throw new Error("missing userId after qr login")
       }
       boundUserId = userId
-      const operatorBinding = {
+      attemptedOperatorBinding = {
         wechatAccountId: accountId,
         userId,
         boundAt,
       }
-      shouldRollbackBinding = true
-
       if (input.action === "wechat-rebind") {
-        await persistOperatorRebinding(operatorBinding)
+        shouldRollbackBinding = true
+        await persistOperatorRebinding(attemptedOperatorBinding)
       } else {
-        await persistOperatorBinding(operatorBinding)
+        shouldRollbackBinding = true
+        await persistOperatorBinding(attemptedOperatorBinding)
       }
 
       const settings = await input.readCommonSettings()
@@ -207,7 +208,14 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
       await input.writeCommonSettings(settings)
     } catch (error) {
       if (shouldRollbackBinding) {
-        await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
+        if (input.action === "wechat-bind") {
+          const currentOperatorBinding = await loadOperatorBinding().catch(() => undefined)
+          if (isSameOperatorBinding(currentOperatorBinding, attemptedOperatorBinding)) {
+            await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
+          }
+        } else {
+          await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
+        }
       }
       throw error
     }

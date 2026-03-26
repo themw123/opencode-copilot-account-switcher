@@ -42,3 +42,21 @@ test("loadOpenClawQrGateway parses pluginId from payload plugin", async () => {
   assert.equal(typeof loaded.gateway.loginWithQrStart, "function")
   assert.equal(typeof loaded.gateway.loginWithQrWait, "function")
 })
+
+test("loadOpenClawQrGateway rejects legacy payload.plugin gateway shape", async () => {
+  const mod = await import(DIST_QR_GATEWAY_MODULE)
+
+  await assert.rejects(
+    () =>
+      mod.loadOpenClawQrGateway([
+        {
+          plugin: {
+            id: "wechat-plugin-legacy",
+            loginWithQrStart: async () => ({ sessionKey: "s-legacy" }),
+            loginWithQrWait: async () => ({ connected: true, accountId: "acc-legacy" }),
+          },
+        },
+      ]),
+    /registerChannel did not expose weixin gateway loginWithQrStart\/loginWithQrWait/,
+  )
+})

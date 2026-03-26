@@ -600,7 +600,7 @@ async function runQrLoginDefault(input: {
     verbose: false,
   }))
   const qrTerminal = pickFirstString(startResult, ["qrTerminal"])
-  const qrUrl = pickFirstString(startResult, ["qrDataUrl", "qrUrl"])
+  const qrUrl = pickFirstString(startResult, ["qrDataUrl"])
   const sessionKey = pickFirstString(startResult, ["sessionKey"])
   const qrStartMessage = pickFirstString(startResult, ["message", "detail", "reason"])
   if (!sessionKey) {
@@ -969,23 +969,13 @@ function normalizeQrLoginResult(result: unknown): { status: "success" | "timeout
   }
 
   if (candidate.status === "success") {
-    if (typeof candidate.connected === "boolean" && candidate.connected !== true) {
-      return {
-        status: "timeout",
-        qrPrinted: candidate.qrPrinted === true,
-        qrUrl: typeof candidate.qrDataUrl === "string" && candidate.qrDataUrl.trim().length > 0
-          ? candidate.qrDataUrl
-          : typeof candidate.qrUrl === "string"
-            ? candidate.qrUrl
-            : undefined,
-      }
+    if (candidate.connected !== true) {
+      return null
     }
     const hasPrintedQr = candidate.qrPrinted === true
     const qrUrl = typeof candidate.qrDataUrl === "string" && candidate.qrDataUrl.trim().length > 0
       ? candidate.qrDataUrl
-      : typeof candidate.qrUrl === "string" && candidate.qrUrl.trim().length > 0
-        ? candidate.qrUrl
-        : undefined
+      : undefined
     const hasQrUrl = Boolean(qrUrl)
     if (!hasPrintedQr && !hasQrUrl) {
       return null
@@ -994,9 +984,7 @@ function normalizeQrLoginResult(result: unknown): { status: "success" | "timeout
 
   const normalizedQrUrl = typeof candidate.qrDataUrl === "string" && candidate.qrDataUrl.trim().length > 0
     ? candidate.qrDataUrl
-    : typeof candidate.qrUrl === "string"
-      ? candidate.qrUrl
-      : undefined
+    : undefined
 
   return {
     status: candidate.status,
