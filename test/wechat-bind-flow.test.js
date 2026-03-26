@@ -438,50 +438,78 @@ test("writeCommonSettings failure in rebind restores previous operator binding",
   assert.equal(resetCalled, 0)
 })
 
-test("wechat bind flow prints terminal qr before waiting and uses accountId fallback as session key", async () => {
+test("wechat bind flow rejects qr start payload missing stable sessionKey", async () => {
   const { runWechatBindFlow } = await loadBindFlowOrFail()
 
   const writes = []
   const qrStartCalls = []
   const qrWaitCalls = []
 
-  const result = await runWechatBindFlow({
-    action: "wechat-bind",
-    loadPublicHelpers: async () => ({
-      latestAccountState: { accountId: "acc-stale", token: "token", baseUrl: "https://internal.example" },
-      qrGateway: {
-        loginWithQrStart: (input) => {
-          qrStartCalls.push(input)
-          return {
-            accountId: "acc-from-start",
-            terminalQr: "SCAN-ME",
-          }
+  await assert.rejects(
+    () => runWechatBindFlow({
+      action: "wechat-bind",
+      loadPublicHelpers: async () => ({
+        latestAccountState: { accountId: "acc-stale", token: "token", baseUrl: "https://internal.example" },
+        qrGateway: {
+          loginWithQrStart: (input) => {
+            qrStartCalls.push(input)
+            return {
+              accountId: "acc-from-start",
+              terminalQr: "SCAN-ME",
+            }
+          },
+          loginWithQrWait: (input) => {
+            qrWaitCalls.push(input)
+            return { connected: true, accountId: "acc-from-wait", userId: "user-from-wait" }
+          },
         },
-        loginWithQrWait: (input) => {
-          qrWaitCalls.push(input)
-          return { connected: true, accountId: "acc-from-wait", userId: "user-from-wait" }
+        accountHelpers: {
+          listAccountIds: async () => ["acc-old", "acc-from-wait"],
+          resolveAccount: async () => ({ enabled: true, name: "Wait Account" }),
+          describeAccount: async () => ({ configured: true }),
         },
+      }),
+      bindOperator: async (binding) => binding,
+      readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+      writeCommonSettings: async () => {},
+      writeLine: async (line) => {
+        writes.push(line)
       },
-      accountHelpers: {
-        listAccountIds: async () => ["acc-old", "acc-from-wait"],
-        resolveAccount: async () => ({ enabled: true, name: "Wait Account" }),
-        describeAccount: async () => ({ configured: true }),
-      },
+      now: () => 1717000000000,
     }),
-    bindOperator: async (binding) => binding,
-    readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
-    writeCommonSettings: async () => {},
-    writeLine: async (line) => {
-      writes.push(line)
-    },
-    now: () => 1717000000000,
-  })
+    /wechat bind failed: missing sessionKey from qr start/i,
+  )
 
-  assert.equal(result.accountId, "acc-from-wait")
-  assert.equal(result.userId, "user-from-wait")
   assert.deepEqual(qrStartCalls, [{ source: "menu", action: "wechat-bind" }])
-  assert.deepEqual(qrWaitCalls, [{ timeoutMs: 480000, sessionKey: "acc-from-start" }])
-  assert.deepEqual(writes, ["SCAN-ME"])
+  assert.deepEqual(qrWaitCalls, [])
+  assert.deepEqual(writes, [])
+})
+
+test("wechat bind flow fails fast when qr wait returns no accountId and no fallback state", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  await assert.rejects(
+    () => runWechatBindFlow({
+      action: "wechat-bind",
+      loadPublicHelpers: async () => ({
+        latestAccountState: null,
+        qrGateway: {
+          loginWithQrStart: () => ({ sessionKey: "s-missing-account", qrUrl: "https://example.test/qr-account" }),
+          loginWithQrWait: () => ({ connected: true, userId: "user-without-account" }),
+        },
+        accountHelpers: {
+          listAccountIds: async () => [],
+          resolveAccount: async () => ({ accountId: "", enabled: true, configured: true }),
+          describeAccount: async () => ({ accountId: "", enabled: true, configured: true }),
+        },
+      }),
+      bindOperator: async (binding) => binding,
+      readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+      writeCommonSettings: async () => {},
+      now: () => 1718000000000,
+    }),
+    /wechat bind failed: missing accountId after qr login/i,
+  )
 })
 
 test("wechat bind flow fails early when qr start returns no qr payload", async () => {
