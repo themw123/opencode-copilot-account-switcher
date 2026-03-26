@@ -30,6 +30,12 @@ type CreateWechatStatusRuntimeInput = {
   onRuntimeError?: (error: unknown) => void
   retryDelayMs?: number
   longPollTimeoutMs?: number
+  shouldReloadState?: (state: {
+    accountId: string
+    baseUrl: string
+    token: string
+    getUpdatesBuf: string
+  }) => boolean
 }
 
 export type WechatStatusRuntime = {
@@ -144,6 +150,7 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
   const onRuntimeError = input.onRuntimeError ?? (() => {})
   const retryDelayMs = normalizePositiveInteger(input.retryDelayMs, DEFAULT_RETRY_DELAY_MS)
   const longPollTimeoutMs = normalizePositiveInteger(input.longPollTimeoutMs, DEFAULT_LONG_POLL_TIMEOUT_MS)
+  const shouldReloadState = input.shouldReloadState ?? (() => false)
 
   let started = false
   let closed = false
@@ -161,6 +168,7 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
 
     while (!signal.aborted) {
       try {
+        let justInitialized = false
         if (!initialized) {
           const helpers = await withAbort(loadPublicHelpers(input.publicHelpersOptions), signal)
           const latestAccountState = helpers.latestAccountState
@@ -174,6 +182,17 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
             token: latestAccountState.token,
             getUpdatesBuf: typeof latestAccountState.getUpdatesBuf === "string" ? latestAccountState.getUpdatesBuf : "",
           }
+          justInitialized = true
+        }
+
+        if (!justInitialized && initialized && shouldReloadState({
+          accountId: initialized.accountId,
+          baseUrl: initialized.baseUrl,
+          token: initialized.token,
+          getUpdatesBuf: initialized.getUpdatesBuf,
+        })) {
+          initialized = null
+          continue
         }
 
         const response = await withAbort(

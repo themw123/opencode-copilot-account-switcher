@@ -3,9 +3,11 @@ import process from "node:process"
 import { readFileSync, rmSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
+import { createOpencodeClient as createOpencodeClientV2, type QuestionAnswer } from "@opencode-ai/sdk/v2"
 import { startBrokerServer } from "./broker-server.js"
 import { WECHAT_FILE_MODE, wechatStateRoot } from "./state-paths.js"
 import { createWechatStatusRuntime, type WechatStatusRuntime } from "./wechat-status-runtime.js"
+import type { WechatSlashCommand } from "./command-parser.js"
 
 type BrokerState = {
   pid: number
@@ -13,6 +15,8 @@ type BrokerState = {
   startedAt: number
   version: string
 }
+
+const BROKER_WECHAT_RUNTIME_AUTOSTART_DELAY_MS = 1_000
 
 async function readPackageVersion(): Promise<string> {
   const packageJsonPath = new URL("../../package.json", import.meta.url)
@@ -78,21 +82,88 @@ type BrokerWechatStatusRuntimeLifecycleDeps = {
 }
 
 export function shouldEnableBrokerWechatStatusRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.WECHAT_BROKER_ENABLE_STATUS_RUNTIME === "1"
+  void env
+  return true
+}
+
+type BrokerWechatSlashHandlerClient = {
+  question?: {
+    list?: (input?: { directory?: string }) => Promise<{ data?: Array<{ id?: string }> } | Array<{ id?: string }> | undefined>
+    reply?: (input: { requestID: string; directory?: string; answers?: Array<QuestionAnswer> }) => Promise<unknown>
+  }
+  permission?: {
+    list?: (input?: { directory?: string }) => Promise<{ data?: Array<{ id?: string }> } | Array<{ id?: string }> | undefined>
+    reply?: (input: { requestID: string; directory?: string; reply?: "once" | "always" | "reject"; message?: string }) => Promise<unknown>
+  }
+}
+
+function unwrapDataArray<T>(value: { data?: T[] } | T[] | undefined): T[] {
+  if (Array.isArray(value)) {
+    return value
+  }
+  return Array.isArray(value?.data) ? value.data : []
+}
+
+function withOptionalDirectory<T extends object>(input: T, directory: string | undefined): T & { directory?: string } {
+  if (typeof directory === "string" && directory.trim().length > 0) {
+    return {
+      ...input,
+      directory,
+    }
+  }
+  return input
+}
+
+export function createBrokerWechatSlashCommandHandler(input: {
+  handleStatusCommand: () => Promise<string>
+  client?: BrokerWechatSlashHandlerClient
+  directory?: string
+}): (command: WechatSlashCommand) => Promise<string> {
+  return async (command) => {
+    if (command.type === "status") {
+      return input.handleStatusCommand()
+    }
+
+    if (command.type === "reply") {
+      const questions = unwrapDataArray(await input.client?.question?.list?.(withOptionalDirectory({}, input.directory)))
+      const requestID = typeof questions[0]?.id === "string" ? questions[0].id : undefined
+      if (!requestID) {
+        return "当前没有待回复问题"
+      }
+      await input.client?.question?.reply?.(withOptionalDirectory({
+        requestID,
+        answers: [[command.text]],
+      }, input.directory))
+      return `已回复问题：${requestID}`
+    }
+
+    const permissions = unwrapDataArray(await input.client?.permission?.list?.(withOptionalDirectory({}, input.directory)))
+    const requestID = typeof permissions[0]?.id === "string" ? permissions[0].id : undefined
+    if (!requestID) {
+      return "当前没有待处理权限请求"
+    }
+    await input.client?.permission?.reply?.(withOptionalDirectory({
+      requestID,
+      reply: command.reply,
+      ...(command.message ? { message: command.message } : {}),
+    }, input.directory))
+    return `已处理权限请求：${requestID} (${command.reply})`
+  }
 }
 
 export function createBrokerWechatStatusRuntimeLifecycle(
   deps: BrokerWechatStatusRuntimeLifecycleDeps = {},
 ): BrokerWechatStatusRuntimeLifecycle {
   const onRuntimeError = deps.onRuntimeError ?? ((error) => console.error(error))
-  const handleWechatSlashCommand =
-    deps.handleWechatSlashCommand ??
-    (async (command) => {
-      if (command.type === "status") {
-        return "命令暂未实现：/status"
-      }
-      return `命令暂未实现：/${command.command}`
-    })
+  const v2Client = createOpencodeClientV2({
+    baseUrl: "http://localhost:4096",
+    directory: process.cwd(),
+  })
+  const handleWechatSlashCommand = deps.handleWechatSlashCommand ?? createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "命令暂未实现：/status",
+    client: v2Client,
+    directory: process.cwd(),
+  })
   const createStatusRuntime =
     deps.createStatusRuntime ??
     ((statusRuntimeDeps) =>
@@ -161,10 +232,19 @@ async function run() {
 
   await writeBrokerState(state, stateRoot)
   const wechatRuntimeLifecycle = createBrokerWechatStatusRuntimeLifecycle({
-    handleWechatSlashCommand: server.handleWechatSlashCommand,
+    handleWechatSlashCommand: createBrokerWechatSlashCommandHandler({
+      handleStatusCommand: async () => server.handleWechatSlashCommand({ type: "status" }),
+      client: createOpencodeClientV2({
+        baseUrl: "http://localhost:4096",
+        directory: stateRoot,
+      }),
+      directory: stateRoot,
+    }),
   })
   if (shouldEnableBrokerWechatStatusRuntime()) {
-    await wechatRuntimeLifecycle.start()
+    setTimeout(() => {
+      void wechatRuntimeLifecycle.start()
+    }, BROKER_WECHAT_RUNTIME_AUTOSTART_DELAY_MS)
   }
   const ownership: BrokerOwnership = {
     pid: state.pid,

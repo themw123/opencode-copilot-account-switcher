@@ -657,7 +657,11 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
       return result.reply
     }
 
-    return `命令暂未实现：/${command.command}`
+    if (command.type === "reply") {
+      return "命令暂未实现：/reply"
+    }
+
+    return "命令暂未实现：/allow"
   }
 
   const close = async () => {

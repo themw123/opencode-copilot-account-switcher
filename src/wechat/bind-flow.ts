@@ -4,6 +4,7 @@ import { buildOpenClawMenuAccount } from "./openclaw-account-adapter.js"
 import type { CommonSettingsStore } from "../common-settings-store.js"
 
 type BindAction = "wechat-bind" | "wechat-rebind"
+const DEFAULT_QR_WAIT_TIMEOUT_MS = 480000
 
 type WechatBindFlowResult = {
   accountId: string
@@ -23,6 +24,7 @@ type WechatBindFlowInput = {
   resetOperatorBinding?: typeof resetOperatorBinding
   readCommonSettings: () => Promise<CommonSettingsStore>
   writeCommonSettings: (settings: CommonSettingsStore) => Promise<void>
+  writeLine?: (line: string) => Promise<void>
   now?: () => number
 }
 
@@ -42,6 +44,36 @@ function toErrorMessage(error: unknown): string {
   return String(error)
 }
 
+function pickQrTerminal(value: unknown): string | undefined {
+  return pickFirstNonEmptyString(
+    (value as { terminalQr?: unknown } | null | undefined)?.terminalQr,
+    (value as { qrTerminal?: unknown } | null | undefined)?.qrTerminal,
+    (value as { qrText?: unknown } | null | undefined)?.qrText,
+    (value as { asciiQr?: unknown } | null | undefined)?.asciiQr,
+  )
+}
+
+function pickQrUrl(value: unknown): string | undefined {
+  return pickFirstNonEmptyString(
+    (value as { qrDataUrl?: unknown } | null | undefined)?.qrDataUrl,
+    (value as { qrUrl?: unknown } | null | undefined)?.qrUrl,
+    (value as { url?: unknown } | null | undefined)?.url,
+    (value as { loginUrl?: unknown } | null | undefined)?.loginUrl,
+  )
+}
+
+function isTimeoutWaitResult(value: unknown): boolean {
+  return Boolean(value && typeof value === "object" && "status" in value && String((value as { status?: unknown }).status) === "timeout")
+}
+
+async function rollbackBinding(action: BindAction, previousOperatorBinding: Awaited<ReturnType<typeof readOperatorBinding>>, persistOperatorRebinding: typeof rebindOperator, clearOperatorBinding: typeof resetOperatorBinding) {
+  if (action === "wechat-rebind" && previousOperatorBinding) {
+    await persistOperatorRebinding(previousOperatorBinding).catch(() => {})
+    return
+  }
+  await clearOperatorBinding().catch(() => {})
+}
+
 export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<WechatBindFlowResult> {
   const now = input.now ?? Date.now
   const loadPublicHelpers = input.loadPublicHelpers ?? loadOpenClawWeixinPublicHelpers
@@ -49,18 +81,45 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
   const persistOperatorRebinding = input.rebindOperator ?? rebindOperator
   const loadOperatorBinding = input.readOperatorBinding ?? readOperatorBinding
   const clearOperatorBinding = input.resetOperatorBinding ?? resetOperatorBinding
+  const writeLine = input.writeLine ?? (async (line: string) => {
+    process.stdout.write(`${line}\n`)
+  })
 
   try {
     const helpers = await loadPublicHelpers()
     const started = await Promise.resolve(helpers.qrGateway.loginWithQrStart({ source: "menu", action: input.action }))
+    const qrTerminal = pickQrTerminal(started)
+    const qrUrl = pickQrUrl(started)
+    const qrStartMessage = pickFirstNonEmptyString(
+      (started as { message?: unknown } | null | undefined)?.message,
+      (started as { detail?: unknown } | null | undefined)?.detail,
+      (started as { reason?: unknown } | null | undefined)?.reason,
+    )
     const sessionKey = pickFirstNonEmptyString(
       (started as { sessionKey?: unknown } | null | undefined)?.sessionKey,
       (started as { key?: unknown } | null | undefined)?.key,
+      (started as { accountId?: unknown } | null | undefined)?.accountId,
     )
-    const waited = await Promise.resolve(helpers.qrGateway.loginWithQrWait({ timeoutMs: 120000, sessionKey }))
+
+    if (qrTerminal) {
+      await writeLine(qrTerminal)
+    } else if (qrUrl) {
+      await writeLine(`QR URL fallback: ${qrUrl}`)
+    } else {
+      throw new Error(qrStartMessage || "invalid qr login result: missing qr code or qr url")
+    }
+
+    const waited = await Promise.resolve(helpers.qrGateway.loginWithQrWait({ timeoutMs: DEFAULT_QR_WAIT_TIMEOUT_MS, sessionKey }))
+    if (isTimeoutWaitResult(waited)) {
+      throw new Error("qr login timed out before completion")
+    }
+    if (waited && typeof waited === "object" && "connected" in waited && (waited as { connected?: unknown }).connected === false) {
+      throw new Error("qr login did not complete")
+    }
+
     const accountId = pickFirstNonEmptyString(
-      helpers.latestAccountState?.accountId,
       (waited as { accountId?: unknown } | null | undefined)?.accountId,
+      helpers.latestAccountState?.accountId,
       (await helpers.accountHelpers.listAccountIds()).at(-1),
     )
     const userId = pickFirstNonEmptyString(
@@ -83,44 +142,54 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
       boundAt,
     }
     const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined
-    if (input.action === "wechat-rebind") {
-      await persistOperatorRebinding(operatorBinding)
-    } else {
-      await persistOperatorBinding(operatorBinding)
-    }
-
-    const menuAccount = await buildOpenClawMenuAccount({
-      latestAccountState: helpers.latestAccountState,
-      accountHelpers: helpers.accountHelpers,
-    })
-
-    const settings = await input.readCommonSettings()
-    const notifications = settings.wechat?.notifications ?? {
-      enabled: true,
-      question: true,
-      permission: true,
-      sessionError: true,
-    }
-    settings.wechat = {
-      ...settings.wechat,
-      notifications,
-      primaryBinding: {
-        accountId,
-        userId,
-        name: menuAccount?.name,
-        enabled: menuAccount?.enabled,
-        configured: menuAccount?.configured,
-        boundAt,
-      },
-    }
+    let menuAccount: Awaited<ReturnType<typeof buildOpenClawMenuAccount>>
     try {
+      if (input.action === "wechat-rebind") {
+        await persistOperatorRebinding(operatorBinding)
+      } else {
+        await persistOperatorBinding(operatorBinding)
+      }
+
+      const menuAccountState = accountId
+        ? {
+            ...(helpers.latestAccountState ?? {
+              accountId,
+              token: "",
+              baseUrl: "https://ilinkai.weixin.qq.com",
+            }),
+            accountId,
+            userId,
+            boundAt,
+          }
+        : helpers.latestAccountState
+      menuAccount = await buildOpenClawMenuAccount({
+        latestAccountState: menuAccountState,
+        accountHelpers: helpers.accountHelpers,
+      })
+
+      const settings = await input.readCommonSettings()
+      const notifications = settings.wechat?.notifications ?? {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      }
+      settings.wechat = {
+        ...settings.wechat,
+        notifications,
+        primaryBinding: {
+          accountId,
+          userId,
+          name: menuAccount?.name,
+          enabled: menuAccount?.enabled,
+          configured: menuAccount?.configured,
+          boundAt,
+        },
+      }
+
       await input.writeCommonSettings(settings)
     } catch (error) {
-      if (input.action === "wechat-rebind" && previousOperatorBinding) {
-        await persistOperatorRebinding(previousOperatorBinding).catch(() => {})
-      } else {
-        await clearOperatorBinding().catch(() => {})
-      }
+      await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
       throw error
     }
 

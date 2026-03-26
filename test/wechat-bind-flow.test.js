@@ -50,7 +50,7 @@ test("wechat-bind action triggers real flow and keeps menu running", async () =>
         loadPublicHelpers: async () => ({
           latestAccountState: { accountId: "acc-flow", token: "token", baseUrl: "https://internal.example" },
           qrGateway: {
-            loginWithQrStart: () => ({ sessionKey: "s1" }),
+            loginWithQrStart: () => ({ sessionKey: "s1", qrUrl: "https://example.test/qr-flow" }),
             loginWithQrWait: () => ({ connected: true, userId: "user-flow" }),
           },
           accountHelpers: {
@@ -90,7 +90,7 @@ test("wechat bind flow writes binding status to common settings", async () => {
     loadPublicHelpers: async () => ({
       latestAccountState: { accountId: "acc-1", token: "token", baseUrl: "https://internal.example" },
       qrGateway: {
-        loginWithQrStart: () => ({ sessionKey: "s-1" }),
+        loginWithQrStart: () => ({ sessionKey: "s-1", qrUrl: "https://example.test/qr-1" }),
         loginWithQrWait: () => ({ connected: true, userId: "user-1" }),
       },
       accountHelpers: {
@@ -142,7 +142,7 @@ test("wechat bind flow throws explicit error when binding fails", async () => {
       loadPublicHelpers: async () => ({
         latestAccountState: { accountId: "acc-err", token: "token", baseUrl: "https://internal.example" },
         qrGateway: {
-          loginWithQrStart: () => ({ sessionKey: "s-err" }),
+          loginWithQrStart: () => ({ sessionKey: "s-err", qrUrl: "https://example.test/qr-err" }),
           loginWithQrWait: () => ({ connected: true, userId: "user-err" }),
         },
         accountHelpers: {
@@ -175,7 +175,7 @@ test("wechat rebind flow uses rebindOperator branch and keeps old binding on fai
       loadPublicHelpers: async () => ({
         latestAccountState: { accountId: "acc-rb", token: "token", baseUrl: "https://internal.example" },
         qrGateway: {
-          loginWithQrStart: () => ({ sessionKey: "s-rb" }),
+          loginWithQrStart: () => ({ sessionKey: "s-rb", qrUrl: "https://example.test/qr-rb" }),
           loginWithQrWait: () => ({ connected: true, userId: "user-rb" }),
         },
         accountHelpers: {
@@ -215,7 +215,7 @@ test("wechat bind and rebind keep consistent explicit error prefix", async () =>
       loadPublicHelpers: async () => ({
         latestAccountState: { accountId: "acc-a", token: "token", baseUrl: "https://internal.example" },
         qrGateway: {
-          loginWithQrStart: () => ({ sessionKey: "s-a" }),
+          loginWithQrStart: () => ({ sessionKey: "s-a", qrUrl: "https://example.test/qr-a" }),
           loginWithQrWait: () => ({ connected: true, userId: "user-a" }),
         },
         accountHelpers: {
@@ -240,7 +240,7 @@ test("wechat bind and rebind keep consistent explicit error prefix", async () =>
       loadPublicHelpers: async () => ({
         latestAccountState: { accountId: "acc-b", token: "token", baseUrl: "https://internal.example" },
         qrGateway: {
-          loginWithQrStart: () => ({ sessionKey: "s-b" }),
+          loginWithQrStart: () => ({ sessionKey: "s-b", qrUrl: "https://example.test/qr-b" }),
           loginWithQrWait: () => ({ connected: true, userId: "user-b" }),
         },
         accountHelpers: {
@@ -272,7 +272,7 @@ test("writeCommonSettings failure rolls back operator binding for retry safety",
       loadPublicHelpers: async () => ({
         latestAccountState: { accountId: "acc-rb2", token: "token", baseUrl: "https://internal.example" },
         qrGateway: {
-          loginWithQrStart: () => ({ sessionKey: "s-rb2" }),
+          loginWithQrStart: () => ({ sessionKey: "s-rb2", qrUrl: "https://example.test/qr-rb2" }),
           loginWithQrWait: () => ({ connected: true, userId: "user-rb2" }),
         },
         accountHelpers: {
@@ -318,7 +318,7 @@ test("writeCommonSettings failure in rebind restores previous operator binding",
       loadPublicHelpers: async () => ({
         latestAccountState: { accountId: "acc-new", token: "token", baseUrl: "https://internal.example" },
         qrGateway: {
-          loginWithQrStart: () => ({ sessionKey: "s-recover" }),
+          loginWithQrStart: () => ({ sessionKey: "s-recover", qrUrl: "https://example.test/qr-recover" }),
           loginWithQrWait: () => ({ connected: true, userId: "user-new" }),
         },
         accountHelpers: {
@@ -352,4 +352,118 @@ test("writeCommonSettings failure in rebind restores previous operator binding",
   })
   assert.deepEqual(rebindCalls[1], previousBinding)
   assert.equal(resetCalled, 0)
+})
+
+test("wechat bind flow prints terminal qr before waiting and uses accountId fallback as session key", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  const writes = []
+  const qrStartCalls = []
+  const qrWaitCalls = []
+
+  const result = await runWechatBindFlow({
+    action: "wechat-bind",
+    loadPublicHelpers: async () => ({
+      latestAccountState: { accountId: "acc-stale", token: "token", baseUrl: "https://internal.example" },
+      qrGateway: {
+        loginWithQrStart: (input) => {
+          qrStartCalls.push(input)
+          return {
+            accountId: "acc-from-start",
+            terminalQr: "SCAN-ME",
+          }
+        },
+        loginWithQrWait: (input) => {
+          qrWaitCalls.push(input)
+          return { connected: true, accountId: "acc-from-wait", userId: "user-from-wait" }
+        },
+      },
+      accountHelpers: {
+        listAccountIds: async () => ["acc-old", "acc-from-wait"],
+        resolveAccount: async () => ({ enabled: true, name: "Wait Account" }),
+        describeAccount: async () => ({ configured: true }),
+      },
+    }),
+    bindOperator: async (binding) => binding,
+    readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+    writeCommonSettings: async () => {},
+    writeLine: async (line) => {
+      writes.push(line)
+    },
+    now: () => 1717000000000,
+  })
+
+  assert.equal(result.accountId, "acc-from-wait")
+  assert.equal(result.userId, "user-from-wait")
+  assert.deepEqual(qrStartCalls, [{ source: "menu", action: "wechat-bind" }])
+  assert.deepEqual(qrWaitCalls, [{ timeoutMs: 480000, sessionKey: "acc-from-start" }])
+  assert.deepEqual(writes, ["SCAN-ME"])
+})
+
+test("wechat bind flow fails early when qr start returns no qr payload", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  let waitCalled = 0
+  await assert.rejects(
+    () => runWechatBindFlow({
+      action: "wechat-bind",
+      loadPublicHelpers: async () => ({
+        latestAccountState: { accountId: "acc-qr-missing", token: "token", baseUrl: "https://internal.example" },
+        qrGateway: {
+          loginWithQrStart: () => ({ sessionKey: "s-missing", detail: "upstream missing qr image" }),
+          loginWithQrWait: () => {
+            waitCalled += 1
+            return { connected: true, userId: "user-qr-missing" }
+          },
+        },
+        accountHelpers: {
+          listAccountIds: async () => ["acc-qr-missing"],
+          resolveAccount: async () => ({ enabled: true, name: "Missing QR" }),
+          describeAccount: async () => ({ configured: true }),
+        },
+      }),
+      bindOperator: async (binding) => binding,
+      readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+      writeCommonSettings: async () => {},
+      now: () => 1717000000001,
+    }),
+    /wechat bind failed: upstream missing qr image/i,
+  )
+
+  assert.equal(waitCalled, 0)
+})
+
+test("wechat bind flow rolls back operator binding when menu account build fails", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  let resetCalled = 0
+  await assert.rejects(
+    () => runWechatBindFlow({
+      action: "wechat-bind",
+      loadPublicHelpers: async () => ({
+        latestAccountState: { accountId: "acc-rollback-build", token: "token", baseUrl: "https://internal.example" },
+        qrGateway: {
+          loginWithQrStart: () => ({ sessionKey: "s-build", qrUrl: "https://example.test/qr" }),
+          loginWithQrWait: () => ({ connected: true, accountId: "acc-rollback-build", userId: "user-build" }),
+        },
+        accountHelpers: {
+          listAccountIds: async () => ["acc-rollback-build"],
+          resolveAccount: async () => {
+            throw new Error("account helper unavailable")
+          },
+          describeAccount: async () => ({ configured: true }),
+        },
+      }),
+      bindOperator: async (binding) => binding,
+      resetOperatorBinding: async () => {
+        resetCalled += 1
+      },
+      readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+      writeCommonSettings: async () => {},
+      now: () => 1717000000002,
+    }),
+    /wechat bind failed: account helper unavailable/i,
+  )
+
+  assert.equal(resetCalled, 1)
 })
