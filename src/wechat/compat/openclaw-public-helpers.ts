@@ -3,11 +3,18 @@ import { createRequire } from "node:module"
 import path from "node:path"
 import { createJiti } from "jiti"
 import { loadOpenClawAccountHelpers, type WeixinAccountHelpers } from "./openclaw-account-helpers.js"
-
-type OpenClawWeixinPlugin = {
-  id?: string
-  register(api: CompatHostApi): void
-}
+import {
+  loadRegisteredWeixinPluginPayloads,
+  resolveOpenClawWeixinPublicEntry,
+  type OpenClawWeixinPublicEntry,
+} from "./openclaw-public-entry.js"
+import { loadOpenClawQrGateway, type WeixinQrGateway } from "./openclaw-qr-gateway.js"
+import {
+  loadOpenClawUpdatesAndSendHelpers,
+  type PublicWeixinMessage,
+  type PublicWeixinSendMessage,
+} from "./openclaw-updates-send.js"
+import { loadOpenClawSyncBufHelper, type PublicWeixinPersistGetUpdatesBuf } from "./openclaw-sync-buf.js"
 
 export const OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES = {
   stateDir: "@tencent-weixin/openclaw-weixin/src/storage/state-dir.ts",
@@ -16,37 +23,7 @@ export const OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES = {
   sendMessageWeixin: "@tencent-weixin/openclaw-weixin/src/messaging/send.ts",
 } as const
 
-type WeixinQrGateway = {
-  loginWithQrStart: (input?: unknown) => unknown
-  loginWithQrWait: (input?: unknown) => unknown
-}
-
-type CompatHostApi = {
-  runtime?: {
-    channelRuntime?: unknown
-    gateway?: {
-      startAccount?: unknown
-    }
-  }
-  registerChannel?: (input: unknown) => void
-  registerCli?: (handler: unknown, options?: unknown) => void
-}
-
-export type OpenClawWeixinPublicEntry = {
-  packageJsonPath: string
-  packageRoot: string
-  extensions: string[]
-  entryRelativePath: string
-  entryAbsolutePath: string
-}
-
 let publicJitiLoader: ReturnType<typeof createJiti> | null = null
-
-function requireField(condition: boolean, message: string): void {
-  if (!condition) {
-    throw new Error(`[wechat-compat] ${message}`)
-  }
-}
 
 function getPublicJiti() {
   if (publicJitiLoader) {
@@ -59,92 +36,6 @@ function getPublicJiti() {
   return publicJitiLoader
 }
 
-function hasQrLoginMethods(value: unknown): value is WeixinQrGateway {
-  if (!value || typeof value !== "object") {
-    return false
-  }
-  const candidate = value as {
-    loginWithQrStart?: unknown
-    loginWithQrWait?: unknown
-  }
-  return typeof candidate.loginWithQrStart === "function" && typeof candidate.loginWithQrWait === "function"
-}
-
-async function resolveOpenClawWeixinPublicEntry(): Promise<OpenClawWeixinPublicEntry> {
-  const require = createRequire(import.meta.url)
-  const packageName = "@tencent-weixin/openclaw-weixin"
-  const packageJsonPath = require.resolve(`${packageName}/package.json`)
-  const packageJsonRaw = await readFile(packageJsonPath, "utf8")
-  const packageJson = JSON.parse(packageJsonRaw) as {
-    openclaw?: { extensions?: unknown }
-  }
-
-  const extensions = Array.isArray(packageJson.openclaw?.extensions)
-    ? packageJson.openclaw?.extensions.filter((it): it is string => typeof it === "string")
-    : []
-
-  requireField(extensions.length > 0, `${packageName} openclaw.extensions[0] is required`)
-  const entryRelativePath = extensions[0]
-  requireField(Boolean(entryRelativePath?.startsWith("./")), `${packageName} openclaw.extensions[0] must start with ./`)
-
-  const packageRoot = path.dirname(packageJsonPath)
-  const entryAbsolutePath = path.resolve(packageRoot, entryRelativePath)
-
-  return {
-    packageJsonPath,
-    packageRoot,
-    extensions,
-    entryRelativePath,
-    entryAbsolutePath,
-  }
-}
-
-async function loadOpenClawWeixinDefaultExport(): Promise<OpenClawWeixinPlugin> {
-  const entry = await resolveOpenClawWeixinPublicEntry()
-  const moduleNamespace = getPublicJiti()(entry.entryAbsolutePath) as {
-    default?: unknown
-  }
-  const plugin = moduleNamespace.default
-  if (!plugin || typeof plugin !== "object" || typeof (plugin as OpenClawWeixinPlugin).register !== "function") {
-    throw new Error("[wechat-compat] @tencent-weixin/openclaw-weixin public entry default export is missing register(api)")
-  }
-  return plugin as OpenClawWeixinPlugin
-}
-
-async function loadPublicWeixinQrGateway(): Promise<{ gateway: WeixinQrGateway; pluginId: string }> {
-  const registeredPayloads: unknown[] = []
-  const compatHostApi: CompatHostApi = {
-    runtime: {
-      channelRuntime: {
-        mode: "guided-smoke",
-      },
-      gateway: {
-        startAccount: {
-          source: "guided-smoke",
-        },
-      },
-    },
-    registerChannel(payload: unknown) {
-      registeredPayloads.push(payload)
-    },
-    registerCli() {},
-  }
-
-  const plugin = await loadOpenClawWeixinDefaultExport()
-  plugin.register(compatHostApi)
-  for (const payload of registeredPayloads) {
-    const payloadPlugin = (payload as { plugin?: unknown } | null | undefined)?.plugin
-    const gateway = payloadPlugin && typeof payloadPlugin === "object" ? (payloadPlugin as { gateway?: unknown }).gateway : null
-    if (hasQrLoginMethods(gateway)) {
-      return { gateway, pluginId: plugin.id ?? "unknown" }
-    }
-    if (hasQrLoginMethods(payloadPlugin)) {
-      return { gateway: payloadPlugin, pluginId: plugin.id ?? "unknown" }
-    }
-  }
-
-  throw new Error("registerChannel did not expose weixin gateway loginWithQrStart/loginWithQrWait")
-}
 
 async function loadLatestWeixinAccountState(): Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null> {
   const require = createRequire(import.meta.url)
@@ -197,32 +88,6 @@ async function loadLatestWeixinAccountState(): Promise<{ accountId: string; toke
   }
 }
 
-type PublicWeixinMessageItem = {
-  type?: number
-  text_item?: {
-    text?: string
-  }
-}
-
-export type PublicWeixinMessage = {
-  message_id?: number
-  from_user_id?: string
-  context_token?: string
-  create_time_ms?: number
-  item_list?: PublicWeixinMessageItem[]
-}
-
-export type PublicWeixinSendMessage = (params: {
-  to: string
-  text: string
-  opts: { baseUrl: string; token: string; contextToken?: string }
-}) => Promise<{ messageId: string }>
-
-export type PublicWeixinPersistGetUpdatesBuf = (params: {
-  accountId: string
-  getUpdatesBuf: string
-}) => Promise<void>
-
 export type OpenClawWeixinPublicHelpers = {
   entry: OpenClawWeixinPublicEntry
   pluginId: string
@@ -239,86 +104,54 @@ export type OpenClawWeixinPublicHelpers = {
 
 type OpenClawWeixinPublicHelpersLoaders = {
   resolveOpenClawWeixinPublicEntry?: typeof resolveOpenClawWeixinPublicEntry
+  loadRegisteredWeixinPluginPayloads?: typeof loadRegisteredWeixinPluginPayloads
+  loadOpenClawQrGateway?: (payloads: Array<{ plugin?: unknown }>) => Promise<{ gateway: WeixinQrGateway; pluginId: string }>
   loadPublicWeixinQrGateway?: () => Promise<{ gateway: WeixinQrGateway; pluginId?: string }>
   loadLatestWeixinAccountState?: typeof loadLatestWeixinAccountState
   loadOpenClawAccountHelpers?: typeof loadOpenClawAccountHelpers
-  loadPublicWeixinHelpers?: typeof loadPublicWeixinHelpers
-  loadPublicWeixinSendHelper?: typeof loadPublicWeixinSendHelper
+  loadOpenClawUpdatesAndSendHelpers?: typeof loadOpenClawUpdatesAndSendHelpers
+  loadOpenClawSyncBufHelper?: typeof loadOpenClawSyncBufHelper
+  loadPublicWeixinHelpers?: () => Promise<{
+    getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
+  }>
+  loadPublicWeixinSendHelper?: () => Promise<{
+    sendMessageWeixin: PublicWeixinSendMessage
+  }>
 }
 
 function missingHelperError(helperName: string): Error {
   return new Error(`[wechat-compat] required helper missing: ${helperName}`)
 }
 
-async function loadPublicWeixinHelpers(): Promise<{
-  getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-}> {
-  const require = createRequire(import.meta.url)
-  const getUpdatesModulePath = require.resolve(OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.getUpdates)
-  const getUpdatesModule = getPublicJiti()(getUpdatesModulePath) as {
-    getUpdates?: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{ msgs?: PublicWeixinMessage[]; get_updates_buf?: string }>
-  }
-  if (typeof getUpdatesModule.getUpdates !== "function") {
-    throw new Error("public getUpdates helper unavailable")
-  }
-  return {
-    getUpdates: getUpdatesModule.getUpdates,
-  }
-}
-
-async function loadPublicWeixinSendHelper(): Promise<{
-  sendMessageWeixin: PublicWeixinSendMessage
-}> {
-  const require = createRequire(import.meta.url)
-  const sendModulePath = require.resolve(OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.sendMessageWeixin)
-  const sendModule = getPublicJiti()(sendModulePath) as {
-    sendMessageWeixin?: PublicWeixinSendMessage
-  }
-  if (typeof sendModule.sendMessageWeixin !== "function") {
-    throw new Error("public sendMessageWeixin helper unavailable")
-  }
-  return {
-    sendMessageWeixin: sendModule.sendMessageWeixin,
-  }
-}
-
-async function loadPublicWeixinSyncBufHelpers(): Promise<{
-  persistGetUpdatesBuf?: PublicWeixinPersistGetUpdatesBuf
-}> {
-  const require = createRequire(import.meta.url)
-  const syncBufModulePath = require.resolve(OPENCLAW_WEIXIN_JITI_SRC_HELPER_MODULES.syncBuf)
-  const syncBufModule = getPublicJiti()(syncBufModulePath) as {
-    getSyncBufFilePath?: (accountId: string) => string
-    saveGetUpdatesBuf?: (filePath: string, getUpdatesBuf: string) => void
-  }
-
-  if (typeof syncBufModule.getSyncBufFilePath !== "function" || typeof syncBufModule.saveGetUpdatesBuf !== "function") {
-    return {}
-  }
-
-  return {
-    persistGetUpdatesBuf: async ({ accountId, getUpdatesBuf }) => {
-      const filePath = syncBufModule.getSyncBufFilePath!(accountId)
-      syncBufModule.saveGetUpdatesBuf!(filePath, getUpdatesBuf)
-    },
-  }
-}
-
 export async function loadOpenClawWeixinPublicHelpers(
   loaders: OpenClawWeixinPublicHelpersLoaders = {},
 ): Promise<OpenClawWeixinPublicHelpers> {
   const entry = await (loaders.resolveOpenClawWeixinPublicEntry ?? resolveOpenClawWeixinPublicEntry)()
-  const qrGatewayResult = await (loaders.loadPublicWeixinQrGateway ?? loadPublicWeixinQrGateway)()
+  const qrGatewayResult = loaders.loadPublicWeixinQrGateway
+    ? await loaders.loadPublicWeixinQrGateway()
+    : await (async () => {
+        const payloads = await (loaders.loadRegisteredWeixinPluginPayloads ?? loadRegisteredWeixinPluginPayloads)()
+        return (loaders.loadOpenClawQrGateway ?? loadOpenClawQrGateway)(payloads)
+      })()
   const accountHelpers = await (loaders.loadOpenClawAccountHelpers ?? loadOpenClawAccountHelpers)()
   const latestAccountState = await (loaders.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)()
-  const publicHelpers = await (loaders.loadPublicWeixinHelpers ?? loadPublicWeixinHelpers)()
-  const sendHelper = await (loaders.loadPublicWeixinSendHelper ?? loadPublicWeixinSendHelper)()
-  const syncBufHelpers = await loadPublicWeixinSyncBufHelpers()
+  const updatesSend = loaders.loadOpenClawUpdatesAndSendHelpers
+    ? await loaders.loadOpenClawUpdatesAndSendHelpers()
+    : await (async () => {
+        const defaults = await loadOpenClawUpdatesAndSendHelpers()
+        const maybeUpdates = loaders.loadPublicWeixinHelpers ? await loaders.loadPublicWeixinHelpers() : undefined
+        const maybeSend = loaders.loadPublicWeixinSendHelper ? await loaders.loadPublicWeixinSendHelper() : undefined
+        return {
+          getUpdates: loaders.loadPublicWeixinHelpers ? maybeUpdates?.getUpdates : defaults.getUpdates,
+          sendMessageWeixin: loaders.loadPublicWeixinSendHelper ? maybeSend?.sendMessageWeixin : defaults.sendMessageWeixin,
+        }
+      })()
+  const syncBufHelpers = await (loaders.loadOpenClawSyncBufHelper ?? loadOpenClawSyncBufHelper)()
 
   if (typeof qrGatewayResult?.gateway?.loginWithQrStart !== "function" || typeof qrGatewayResult?.gateway?.loginWithQrWait !== "function") {
     throw missingHelperError("qrGateway")
   }
-  if (typeof publicHelpers?.getUpdates !== "function") {
+  if (typeof updatesSend?.getUpdates !== "function") {
     throw missingHelperError("getUpdates")
   }
   if (
@@ -328,7 +161,7 @@ export async function loadOpenClawWeixinPublicHelpers(
   ) {
     throw missingHelperError("accountHelpers")
   }
-  if (typeof sendHelper?.sendMessageWeixin !== "function") {
+  if (typeof updatesSend?.sendMessageWeixin !== "function") {
     throw missingHelperError("sendMessageWeixin")
   }
 
@@ -338,10 +171,11 @@ export async function loadOpenClawWeixinPublicHelpers(
     qrGateway: qrGatewayResult.gateway,
     accountHelpers,
     latestAccountState,
-    getUpdates: publicHelpers.getUpdates,
-    sendMessageWeixin: sendHelper.sendMessageWeixin,
+    getUpdates: updatesSend.getUpdates,
+    sendMessageWeixin: updatesSend.sendMessageWeixin,
     persistGetUpdatesBuf: syncBufHelpers.persistGetUpdatesBuf,
   }
 }
 
 export type OpenClawWeixinPublicHelpersLoaderOptions = OpenClawWeixinPublicHelpersLoaders
+export type { PublicWeixinMessage, PublicWeixinSendMessage, PublicWeixinPersistGetUpdatesBuf }
