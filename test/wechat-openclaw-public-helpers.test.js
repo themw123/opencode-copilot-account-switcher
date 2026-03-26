@@ -20,6 +20,39 @@ test("public helper loader returns guided-smoke required helpers", async () => {
   assert.equal(typeof loaded.sendMessageWeixin, "function")
 })
 
+test("public helper account wrappers pass cfg-aware signatures correctly", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+
+  const calls = []
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadPublicWeixinAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-helper"],
+      resolveAccount: async (cfg, accountId) => {
+        const args = [cfg, accountId]
+        calls.push({ method: "resolveAccount", args })
+        return { accountId: args[1], enabled: true }
+      },
+      describeAccount: async (account) => {
+        const args = [account]
+        calls.push({ method: "describeAccount", args })
+        return { accountId: args[0]?.accountId ?? args[0], configured: true }
+      },
+    }),
+  })
+
+  await loaded.accountHelpers.resolveAccount("acc-helper")
+  await loaded.accountHelpers.describeAccount("acc-helper")
+  await loaded.accountHelpers.describeAccount({ accountId: "acc-helper" })
+
+  assert.deepEqual(calls, [
+    { method: "resolveAccount", args: [undefined, "acc-helper"] },
+    { method: "resolveAccount", args: [undefined, "acc-helper"] },
+    { method: "describeAccount", args: [{ accountId: "acc-helper", enabled: true }] },
+    { method: "resolveAccount", args: [undefined, "acc-helper"] },
+    { method: "describeAccount", args: [{ accountId: "acc-helper", enabled: true }] },
+  ])
+})
+
 test("account adapter exposes menu-safe display fields only", async () => {
   const adapter = await import(DIST_ACCOUNT_ADAPTER_MODULE)
 
