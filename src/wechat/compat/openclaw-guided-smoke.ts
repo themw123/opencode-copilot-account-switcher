@@ -591,10 +591,13 @@ async function runQrLoginDefault(input: { waitTimeoutMs: number }): Promise<{ st
     timeoutMs: input.waitTimeoutMs,
     verbose: false,
   }))
-  const qrTerminal = pickFirstString(startResult, ["terminalQr", "qrTerminal", "qrText", "asciiQr"])
-  const qrUrl = pickFirstString(startResult, ["qrDataUrl", "qrUrl", "url", "loginUrl"])
-  const sessionKey = pickFirstString(startResult, ["sessionKey", "accountId"])
+  const qrTerminal = pickFirstString(startResult, ["qrTerminal"])
+  const qrUrl = pickFirstString(startResult, ["qrDataUrl", "qrUrl"])
+  const sessionKey = pickFirstString(startResult, ["sessionKey"])
   const qrStartMessage = pickFirstString(startResult, ["message", "detail", "reason"])
+  if (!sessionKey) {
+    throw new Error("missing sessionKey from qr start")
+  }
   if (qrTerminal) {
     process.stdout.write(`${qrTerminal}\n`)
   } else if (qrUrl) {
