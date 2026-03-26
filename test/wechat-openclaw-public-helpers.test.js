@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 const DIST_PUBLIC_HELPERS_MODULE = "../dist/wechat/compat/openclaw-public-helpers.js"
+const DIST_ACCOUNT_ADAPTER_MODULE = "../dist/wechat/openclaw-account-adapter.js"
 
 test("public helper loader returns guided-smoke required helpers", async () => {
   const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
@@ -11,8 +12,90 @@ test("public helper loader returns guided-smoke required helpers", async () => {
   assert.equal(typeof loaded.qrGateway.loginWithQrStart, "function")
   assert.equal(typeof loaded.qrGateway.loginWithQrWait, "function")
   assert.equal(typeof loaded.latestAccountState, "object")
+  assert.equal(typeof loaded.accountHelpers, "object")
+  assert.equal(typeof loaded.accountHelpers?.listAccountIds, "function")
+  assert.equal(typeof loaded.accountHelpers?.resolveAccount, "function")
+  assert.equal(typeof loaded.accountHelpers?.describeAccount, "function")
   assert.equal(typeof loaded.getUpdates, "function")
   assert.equal(typeof loaded.sendMessageWeixin, "function")
+})
+
+test("account adapter exposes menu-safe display fields only", async () => {
+  const adapter = await import(DIST_ACCOUNT_ADAPTER_MODULE)
+
+  const account = await adapter.buildOpenClawMenuAccount({
+    latestAccountState: {
+      accountId: "acc-a",
+      token: "token-a",
+      baseUrl: "https://internal.example",
+      getUpdatesBuf: "buf-a",
+      userId: "u-1",
+      savedAt: 1710000000000,
+    },
+    accountHelpers: {
+      listAccountIds: async () => ["acc-a"],
+      resolveAccount: async (accountId) => ({
+        accountId,
+        name: "主账号",
+        enabled: true,
+      }),
+      describeAccount: async (accountId) => ({
+        accountId,
+        configured: true,
+      }),
+    },
+  })
+
+  assert.deepEqual(account, {
+    accountId: "acc-a",
+    name: "主账号",
+    enabled: true,
+    configured: true,
+    userId: "u-1",
+    boundAt: 1710000000000,
+  })
+  assert.equal("baseUrl" in account, false)
+  assert.equal("getUpdatesBuf" in account, false)
+})
+
+test("account adapter absorbs upstream shape differences inside adapter", async () => {
+  const adapter = await import(DIST_ACCOUNT_ADAPTER_MODULE)
+
+  const account = await adapter.buildOpenClawMenuAccount({
+    latestAccountState: {
+      accountId: "acc-b",
+      token: "token-b",
+      baseUrl: "https://internal.example",
+      getUpdatesBuf: "buf-b",
+    },
+    accountHelpers: {
+      listAccountIds: async () => ["acc-b"],
+      resolveAccount: async () => ({
+        id: "acc-b",
+        displayName: "2.0.1 账号",
+        isEnabled: 1,
+        user_id: "u-2",
+      }),
+      describeAccount: async (input) => {
+        if (typeof input === "object" && input !== null) {
+          return {
+            configured: true,
+            savedAt: 1711111111111,
+          }
+        }
+        return undefined
+      },
+    },
+  })
+
+  assert.deepEqual(account, {
+    accountId: "acc-b",
+    name: "2.0.1 账号",
+    enabled: true,
+    configured: true,
+    userId: "u-2",
+    boundAt: 1711111111111,
+  })
 })
 
 test("public helper loader exposes explicit helper-missing errors", async () => {

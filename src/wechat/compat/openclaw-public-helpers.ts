@@ -20,6 +20,12 @@ type WeixinQrGateway = {
   loginWithQrWait: (input?: unknown) => unknown
 }
 
+export type WeixinAccountHelpers = {
+  listAccountIds: () => Promise<string[]>
+  resolveAccount: (accountId: string) => Promise<unknown>
+  describeAccount: (accountIdOrInput: string | { accountId: string }) => Promise<unknown>
+}
+
 type CompatHostApi = {
   runtime?: {
     channelRuntime?: unknown
@@ -67,6 +73,26 @@ function hasQrLoginMethods(value: unknown): value is WeixinQrGateway {
     loginWithQrWait?: unknown
   }
   return typeof candidate.loginWithQrStart === "function" && typeof candidate.loginWithQrWait === "function"
+}
+
+function hasAccountHelpers(value: unknown): value is {
+  listAccountIds: (input?: unknown) => unknown
+  resolveAccount: (accountId: string) => unknown
+  describeAccount: (accountIdOrInput: unknown) => unknown
+} {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  const candidate = value as {
+    listAccountIds?: unknown
+    resolveAccount?: unknown
+    describeAccount?: unknown
+  }
+  return (
+    typeof candidate.listAccountIds === "function" &&
+    typeof candidate.resolveAccount === "function" &&
+    typeof candidate.describeAccount === "function"
+  )
 }
 
 async function resolveOpenClawWeixinPublicEntry(): Promise<OpenClawWeixinPublicEntry> {
@@ -143,6 +169,48 @@ async function loadPublicWeixinQrGateway(): Promise<{ gateway: WeixinQrGateway; 
   }
 
   throw new Error("registerChannel did not expose weixin gateway loginWithQrStart/loginWithQrWait")
+}
+
+async function loadPublicWeixinAccountHelpers(): Promise<WeixinAccountHelpers> {
+  const registeredPayloads: unknown[] = []
+  const compatHostApi: CompatHostApi = {
+    runtime: {
+      channelRuntime: {
+        mode: "guided-smoke",
+      },
+      gateway: {
+        startAccount: {
+          source: "guided-smoke",
+        },
+      },
+    },
+    registerChannel(payload: unknown) {
+      registeredPayloads.push(payload)
+    },
+    registerCli() {},
+  }
+
+  const plugin = await loadOpenClawWeixinDefaultExport()
+  plugin.register(compatHostApi)
+  for (const payload of registeredPayloads) {
+    const payloadPlugin = (payload as { plugin?: unknown } | null | undefined)?.plugin
+    const configCandidate = payloadPlugin && typeof payloadPlugin === "object"
+      ? (payloadPlugin as { config?: unknown }).config
+      : null
+    if (!hasAccountHelpers(configCandidate)) {
+      continue
+    }
+    return {
+      listAccountIds: async () => {
+        const result = await Promise.resolve(configCandidate.listAccountIds())
+        return Array.isArray(result) ? result.filter((item): item is string => typeof item === "string") : []
+      },
+      resolveAccount: async (accountId: string) => Promise.resolve(configCandidate.resolveAccount(accountId)),
+      describeAccount: async (accountIdOrInput: string | { accountId: string }) => Promise.resolve(configCandidate.describeAccount(accountIdOrInput)),
+    }
+  }
+
+  throw new Error(`${plugin.id ?? "weixin"} registerChannel did not expose config listAccountIds/resolveAccount/describeAccount`)
 }
 
 async function loadLatestWeixinAccountState(): Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null> {
@@ -226,6 +294,7 @@ export type OpenClawWeixinPublicHelpers = {
   entry: OpenClawWeixinPublicEntry
   pluginId: string
   qrGateway: WeixinQrGateway
+  accountHelpers: WeixinAccountHelpers
   latestAccountState: { accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null
   getUpdates: (params: { baseUrl: string; token?: string; get_updates_buf?: string; timeoutMs?: number }) => Promise<{
     msgs?: PublicWeixinMessage[]
@@ -239,6 +308,7 @@ type OpenClawWeixinPublicHelpersLoaders = {
   resolveOpenClawWeixinPublicEntry?: typeof resolveOpenClawWeixinPublicEntry
   loadPublicWeixinQrGateway?: () => Promise<{ gateway: WeixinQrGateway; pluginId?: string }>
   loadLatestWeixinAccountState?: typeof loadLatestWeixinAccountState
+  loadPublicWeixinAccountHelpers?: typeof loadPublicWeixinAccountHelpers
   loadPublicWeixinHelpers?: typeof loadPublicWeixinHelpers
   loadPublicWeixinSendHelper?: typeof loadPublicWeixinSendHelper
 }
@@ -306,6 +376,7 @@ export async function loadOpenClawWeixinPublicHelpers(
 ): Promise<OpenClawWeixinPublicHelpers> {
   const entry = await (loaders.resolveOpenClawWeixinPublicEntry ?? resolveOpenClawWeixinPublicEntry)()
   const qrGatewayResult = await (loaders.loadPublicWeixinQrGateway ?? loadPublicWeixinQrGateway)()
+  const accountHelpers = await (loaders.loadPublicWeixinAccountHelpers ?? loadPublicWeixinAccountHelpers)()
   const latestAccountState = await (loaders.loadLatestWeixinAccountState ?? loadLatestWeixinAccountState)()
   const publicHelpers = await (loaders.loadPublicWeixinHelpers ?? loadPublicWeixinHelpers)()
   const sendHelper = await (loaders.loadPublicWeixinSendHelper ?? loadPublicWeixinSendHelper)()
@@ -317,6 +388,13 @@ export async function loadOpenClawWeixinPublicHelpers(
   if (typeof publicHelpers?.getUpdates !== "function") {
     throw missingHelperError("getUpdates")
   }
+  if (
+    typeof accountHelpers?.listAccountIds !== "function" ||
+    typeof accountHelpers?.resolveAccount !== "function" ||
+    typeof accountHelpers?.describeAccount !== "function"
+  ) {
+    throw missingHelperError("accountHelpers")
+  }
   if (typeof sendHelper?.sendMessageWeixin !== "function") {
     throw missingHelperError("sendMessageWeixin")
   }
@@ -325,6 +403,7 @@ export async function loadOpenClawWeixinPublicHelpers(
     entry,
     pluginId: typeof qrGatewayResult.pluginId === "string" && qrGatewayResult.pluginId.length > 0 ? qrGatewayResult.pluginId : "unknown",
     qrGateway: qrGatewayResult.gateway,
+    accountHelpers,
     latestAccountState,
     getUpdates: publicHelpers.getUpdates,
     sendMessageWeixin: sendHelper.sendMessageWeixin,

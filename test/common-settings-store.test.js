@@ -56,10 +56,14 @@ test("common settings store migrates legacy copilot flags into dedicated setting
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
-    wechatNotificationsEnabled: true,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: true,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
   })
 
   await writeCommonSettingsStore(settings, { filePath: settingsFile })
@@ -70,10 +74,14 @@ test("common settings store migrates legacy copilot flags into dedicated setting
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
-    wechatNotificationsEnabled: true,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: true,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
   })
   assert.equal(Object.hasOwn(raw, "experimentalStatusSlashCommandEnabled"), false)
 })
@@ -116,10 +124,14 @@ test("common settings store prefers new settings and only backfills missing lega
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: false,
-    wechatNotificationsEnabled: true,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: true,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
   })
 })
 
@@ -157,10 +169,14 @@ test("common settings store migration is idempotent across repeated reads and wr
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: true,
     experimentalSlashCommandsEnabled: false,
-    wechatNotificationsEnabled: true,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: true,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
   })
 })
 
@@ -194,10 +210,14 @@ test("writing normalized defaults overrides legacy common settings instead of re
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: true,
-    wechatNotificationsEnabled: true,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: true,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
   })
 
   const settings = await readCommonSettingsStore({
@@ -210,23 +230,78 @@ test("writing normalized defaults overrides legacy common settings instead of re
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: true,
-    wechatNotificationsEnabled: true,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: true,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
   })
 })
 
-test("common settings store persists wechat notification toggles and keeps values after reload", async () => {
+test("common settings store migrates legacy flat wechat booleans into nested object", async () => {
+  const { readCommonSettingsStore } = await loadCommonSettingsStoreOrFail()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "common-settings-store-wechat-legacy-"))
+  const settingsFile = path.join(dir, "settings.json")
+
+  await writeFile(
+    settingsFile,
+    JSON.stringify({
+      wechatNotificationsEnabled: false,
+      wechatQuestionNotifyEnabled: true,
+      wechatPermissionNotifyEnabled: false,
+      wechatSessionErrorNotifyEnabled: true,
+    }, null, 2),
+    "utf8",
+  )
+
+  const settings = await readCommonSettingsStore({ filePath: settingsFile })
+  assert.deepEqual(settings.wechat, {
+    notifications: {
+      enabled: false,
+      question: true,
+      permission: false,
+      sessionError: true,
+    },
+  })
+})
+
+test("common settings store persists nested wechat settings with primaryBinding and future accounts", async () => {
   const { readCommonSettingsStore, writeCommonSettingsStore } = await loadCommonSettingsStoreOrFail()
   const dir = await mkdtemp(path.join(os.tmpdir(), "common-settings-store-wechat-"))
   const settingsFile = path.join(dir, "settings.json")
 
   await writeCommonSettingsStore({
-    wechatNotificationsEnabled: false,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: false,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      primaryBinding: {
+        accountId: "wechat-main",
+        userId: "u-1",
+        name: "主微信",
+        enabled: true,
+        configured: true,
+        boundAt: 1710000000000,
+      },
+      notifications: {
+        enabled: false,
+        question: true,
+        permission: false,
+        sessionError: true,
+      },
+      future: {
+        accounts: [
+          {
+            accountId: "wechat-main",
+            userId: "u-1",
+            name: "主微信",
+            enabled: true,
+            configured: true,
+            boundAt: 1710000000000,
+          },
+        ],
+      },
+    },
   }, { filePath: settingsFile })
 
   const raw = await readJson(settingsFile)
@@ -235,21 +310,81 @@ test("common settings store persists wechat notification toggles and keeps value
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
     experimentalSlashCommandsEnabled: true,
-    wechatNotificationsEnabled: false,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: false,
-    wechatSessionErrorNotifyEnabled: true,
+    wechat: {
+      primaryBinding: {
+        accountId: "wechat-main",
+        userId: "u-1",
+        name: "主微信",
+        enabled: true,
+        configured: true,
+        boundAt: 1710000000000,
+      },
+      notifications: {
+        enabled: false,
+        question: true,
+        permission: false,
+        sessionError: true,
+      },
+      future: {
+        accounts: [
+          {
+            accountId: "wechat-main",
+            userId: "u-1",
+            name: "主微信",
+            enabled: true,
+            configured: true,
+            boundAt: 1710000000000,
+          },
+        ],
+      },
+    },
   })
 
   const settings = await readCommonSettingsStore({ filePath: settingsFile })
-  assert.deepEqual(settings, {
-    loopSafetyEnabled: true,
-    loopSafetyProviderScope: "copilot-only",
-    networkRetryEnabled: false,
-    experimentalSlashCommandsEnabled: true,
-    wechatNotificationsEnabled: false,
-    wechatQuestionNotifyEnabled: true,
-    wechatPermissionNotifyEnabled: false,
-    wechatSessionErrorNotifyEnabled: true,
+  assert.equal(settings.wechat?.primaryBinding?.accountId, "wechat-main")
+  assert.deepEqual(settings.wechat?.notifications, {
+    enabled: false,
+    question: true,
+    permission: false,
+    sessionError: true,
+  })
+  assert.deepEqual(settings.wechat?.future?.accounts, [
+    {
+      accountId: "wechat-main",
+      userId: "u-1",
+      name: "主微信",
+      enabled: true,
+      configured: true,
+      boundAt: 1710000000000,
+    },
+  ])
+})
+
+test("common settings store keeps reading notifications when future accounts is absent", async () => {
+  const { readCommonSettingsStore } = await loadCommonSettingsStoreOrFail()
+  const dir = await mkdtemp(path.join(os.tmpdir(), "common-settings-store-wechat-future-"))
+  const settingsFile = path.join(dir, "settings.json")
+
+  await writeFile(
+    settingsFile,
+    JSON.stringify({
+      wechat: {
+        notifications: {
+          enabled: true,
+          question: false,
+          permission: true,
+          sessionError: false,
+        },
+      },
+    }, null, 2),
+    "utf8",
+  )
+
+  const settings = await readCommonSettingsStore({ filePath: settingsFile })
+  assert.deepEqual(settings.wechat?.notifications, {
+    enabled: true,
+    question: false,
+    permission: true,
+    sessionError: false,
   })
 })

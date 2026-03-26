@@ -23,7 +23,7 @@ async function loadMenuRuntimeOrFail() {
   }
 }
 
-test("wechat notifications submenu is visible with five minimal items in stable order", async () => {
+test("wechat entry is under common settings and detailed wechat actions are not on main menu", async () => {
   const { buildMenuItems } = await loadMenuModuleOrFail()
   const items = buildMenuItems({
     provider: "copilot",
@@ -39,14 +39,215 @@ test("wechat notifications submenu is visible with five minimal items in stable 
   })
 
   const labels = items.map((item) => item.label)
-  const submenuHeading = labels.indexOf("微信通知")
-  assert.notEqual(submenuHeading, -1)
+  const commonHeading = labels.indexOf("通用设置")
+  const commonEnd = items.findIndex((item, index) => index > commonHeading && item.separator === true)
+  const wechatEntry = labels.indexOf("微信通知")
 
-  assert.equal(labels[submenuHeading + 1], "绑定 / 重绑微信")
-  assert.equal(labels[submenuHeading + 2], "微信通知总开关：已开启")
-  assert.equal(labels[submenuHeading + 3], "问题通知：已关闭")
-  assert.equal(labels[submenuHeading + 4], "权限通知：已开启")
-  assert.equal(labels[submenuHeading + 5], "会话错误通知：已关闭")
+  assert.notEqual(commonHeading, -1)
+  assert.notEqual(commonEnd, -1)
+  assert.notEqual(wechatEntry, -1)
+  assert.equal(wechatEntry > commonHeading, true)
+  assert.equal(wechatEntry < commonEnd, true)
+  assert.equal(labels.includes("绑定 / 重绑微信"), false)
+  assert.equal(labels.includes("微信通知总开关：已开启"), false)
+  assert.equal(labels.includes("问题通知：已关闭"), false)
+  assert.equal(labels.includes("权限通知：已开启"), false)
+  assert.equal(labels.includes("会话错误通知：已关闭"), false)
+})
+
+test("wechat submenu selection returns explicit wechat-bind action", async () => {
+  const { showMenuWithDeps } = await loadMenuModuleOrFail()
+  const menuCalls = []
+
+  const result = await showMenuWithDeps([], {
+    provider: "copilot",
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: false,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: false,
+    language: "zh",
+  }, {
+    select: async (items) => {
+      menuCalls.push(items.map((item) => item.label))
+      if (menuCalls.length === 1) return { type: "wechat-menu" }
+      if (menuCalls.length === 2) return { type: "wechat-bind" }
+      return { type: "cancel" }
+    },
+    confirm: async () => true,
+    showAccountActions: async () => "back",
+  })
+
+  assert.equal(menuCalls.length, 2)
+  assert.equal(menuCalls[0].includes("绑定 / 重绑微信"), false)
+  assert.equal(menuCalls[1].includes("绑定 / 重绑微信"), true)
+  assert.equal(menuCalls[1].includes("微信通知总开关：已开启"), true)
+  assert.equal(menuCalls[1].includes("问题通知：已关闭"), true)
+  assert.equal(menuCalls[1].includes("权限通知：已开启"), true)
+  assert.equal(menuCalls[1].includes("会话错误通知：已关闭"), true)
+  assert.deepEqual(result, { type: "wechat-bind" })
+})
+
+test("wechat submenu shows bound account info and hides internal baseUrl", async () => {
+  const { showMenuWithDeps } = await loadMenuModuleOrFail()
+  const calls = []
+
+  await showMenuWithDeps([], {
+    provider: "copilot",
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
+    wechatPrimaryBinding: {
+      accountId: "acc-main",
+      name: "主账号",
+      enabled: true,
+      configured: true,
+      userId: "user-1",
+      boundAt: 1711000000000,
+      baseUrl: "https://internal.example",
+    },
+    language: "zh",
+  }, {
+    select: async (items) => {
+      calls.push(items.map((item) => item.label))
+      if (calls.length === 1) return { type: "wechat-menu" }
+      return { type: "cancel" }
+    },
+    confirm: async () => true,
+    showAccountActions: async () => "back",
+  })
+
+  assert.equal(calls.length, 3)
+  const labels = calls[1]
+  assert.equal(labels.some((label) => label.includes("当前绑定账号")), true)
+  assert.equal(labels.some((label) => label.includes("acc-main")), true)
+  assert.equal(labels.some((label) => label.includes("主账号")), true)
+  assert.equal(labels.some((label) => label.includes("user-1")), true)
+  assert.equal(labels.some((label) => label.includes("baseUrl")), false)
+  assert.equal(labels.some((label) => label.includes("internal.example")), false)
+})
+
+test("wechat submenu treats operator binding as bound when settings binding is missing", async () => {
+  const { showMenuWithDeps } = await loadMenuModuleOrFail()
+  const calls = []
+
+  const result = await showMenuWithDeps([], {
+    provider: "copilot",
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
+    wechatOperatorBinding: {
+      wechatAccountId: "acc-op-only",
+      userId: "user-op",
+      boundAt: 1713000000000,
+    },
+    language: "zh",
+  }, {
+    select: async (items) => {
+      calls.push(items.map((item) => item.label))
+      if (calls.length === 1) return { type: "wechat-menu" }
+      if (calls.length === 2) return { type: "wechat-rebind" }
+      return { type: "cancel" }
+    },
+    confirm: async () => true,
+    showAccountActions: async () => "back",
+  })
+
+  assert.deepEqual(result, { type: "wechat-rebind" })
+  const labels = calls[1]
+  assert.equal(labels.some((label) => label.includes("当前绑定账号")), true)
+  assert.equal(labels.some((label) => label.includes("acc-op-only")), true)
+  assert.equal(labels.some((label) => label.includes("user-op")), true)
+})
+
+test("wechat submenu hydrates binding details from settings/operator deps when menu input omits them", async () => {
+  const { showMenuWithDeps } = await loadMenuModuleOrFail()
+  const calls = []
+
+  const result = await showMenuWithDeps([], {
+    provider: "copilot",
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
+    language: "zh",
+  }, {
+    select: async (items) => {
+      calls.push(items.map((item) => item.label))
+      if (calls.length === 1) return { type: "wechat-menu" }
+      if (calls.length === 2) return { type: "wechat-rebind" }
+      return { type: "cancel" }
+    },
+    confirm: async () => true,
+    showAccountActions: async () => "back",
+    readCommonSettings: async () => ({
+      wechat: {
+        notifications: {
+          enabled: true,
+          question: true,
+          permission: true,
+          sessionError: true,
+        },
+        primaryBinding: {
+          accountId: "acc-from-settings",
+          userId: "user-from-settings",
+          name: "settings account",
+          enabled: true,
+          configured: true,
+          boundAt: 1715000000000,
+        },
+      },
+    }),
+    readOperatorBinding: async () => ({
+      wechatAccountId: "acc-from-operator",
+      userId: "user-from-operator",
+      boundAt: 1715000000001,
+    }),
+  })
+
+  assert.deepEqual(result, { type: "wechat-rebind" })
+  const labels = calls[1]
+  assert.equal(labels.some((label) => label.includes("当前绑定账号")), true)
+  assert.equal(labels.some((label) => label.includes("acc-from-settings")), true)
+  assert.equal(labels.some((label) => label.includes("settings account")), true)
+  assert.equal(labels.some((label) => label.includes("user-from-settings")), true)
+  assert.equal(labels.some((label) => label.includes("acc-from-operator")), false)
+})
+
+test("wechat submenu cancel returns to main menu and keeps back behavior stable", async () => {
+  const { showMenuWithDeps } = await loadMenuModuleOrFail()
+  const calls = []
+
+  const result = await showMenuWithDeps([], {
+    provider: "copilot",
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+    language: "zh",
+  }, {
+    select: async (items) => {
+      calls.push(items.map((item) => item.label))
+      if (calls.length === 1) return { type: "wechat-menu" }
+      if (calls.length === 2) return null
+      return { type: "cancel" }
+    },
+    confirm: async () => true,
+    showAccountActions: async () => "back",
+  })
+
+  assert.equal(calls.length, 3)
+  assert.equal(calls[0].includes("微信通知"), true)
+  assert.equal(calls[1].includes("绑定 / 重绑微信"), true)
+  assert.equal(calls[2].includes("微信通知"), true)
+  assert.deepEqual(result, { type: "cancel" })
 })
 
 test("wechat bind menu action maps to explicit provider action", async () => {

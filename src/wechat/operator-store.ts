@@ -61,6 +61,17 @@ export async function bindOperator(input: OperatorBinding): Promise<OperatorBind
   return next
 }
 
+export async function rebindOperator(input: OperatorBinding): Promise<OperatorBinding> {
+  const next = toBinding(input)
+  if (!isValidBinding(next)) {
+    throw new Error("invalid operator binding format")
+  }
+  await ensureWechatStateLayout()
+  await mkdir(path.dirname(operatorStatePath()), { recursive: true })
+  await writeFile(operatorStatePath(), JSON.stringify(next, null, 2), { mode: WECHAT_FILE_MODE })
+  return next
+}
+
 export async function resetOperatorBinding() {
   try {
     await unlink(operatorStatePath())

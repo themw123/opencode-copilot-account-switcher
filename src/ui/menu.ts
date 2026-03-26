@@ -1,6 +1,8 @@
 import { ANSI } from "./ansi.js"
 import { select, type MenuItem } from "./select.js"
 import { confirm } from "./confirm.js"
+import { readCommonSettingsStore, type CommonSettingsStore } from "../common-settings-store.js"
+import { readOperatorBinding, type OperatorBinding } from "../wechat/operator-store.js"
 
 export type AccountStatus = "active" | "expired" | "unknown"
 
@@ -42,7 +44,9 @@ export type MenuAction =
   | { type: "toggle-loop-safety-provider-scope" }
   | { type: "toggle-experimental-slash-commands" }
   | { type: "toggle-network-retry" }
+  | { type: "wechat-menu" }
   | { type: "wechat-bind" }
+  | { type: "wechat-rebind" }
   | { type: "toggle-wechat-notifications" }
   | { type: "toggle-wechat-question-notify" }
   | { type: "toggle-wechat-permission-notify" }
@@ -56,6 +60,42 @@ export type MenuAction =
 export type MenuLanguage = "zh" | "en"
 
 export type MenuProvider = "copilot" | "codex"
+
+export type MenuWechatPrimaryBinding = {
+  accountId: string
+  userId?: string
+  name?: string
+  enabled?: boolean
+  configured?: boolean
+  boundAt?: number
+}
+
+export type MenuWechatOperatorBinding = {
+  wechatAccountId: string
+  userId: string
+  boundAt: number
+}
+
+export type ShowMenuInput = {
+  provider?: MenuProvider
+  refresh?: { enabled: boolean; minutes: number }
+  lastQuotaRefresh?: number
+  modelAccountAssignmentCount?: number
+  defaultAccountGroupCount?: number
+  loopSafetyEnabled?: boolean
+  loopSafetyProviderScope?: "copilot-only" | "all-models"
+  networkRetryEnabled?: boolean
+  wechatNotificationsEnabled?: boolean
+  wechatQuestionNotifyEnabled?: boolean
+  wechatPermissionNotifyEnabled?: boolean
+  wechatSessionErrorNotifyEnabled?: boolean
+  wechatPrimaryBinding?: MenuWechatPrimaryBinding
+  wechatOperatorBinding?: MenuWechatOperatorBinding
+  syntheticAgentInitiatorEnabled?: boolean
+  experimentalSlashCommandsEnabled?: boolean
+  capabilities?: Partial<MenuCapabilities>
+  language?: MenuLanguage
+}
 
 type MenuCapabilities = {
   importAuth: boolean
@@ -340,6 +380,8 @@ export function buildMenuItems(input: {
   wechatQuestionNotifyEnabled?: boolean
   wechatPermissionNotifyEnabled?: boolean
   wechatSessionErrorNotifyEnabled?: boolean
+  wechatPrimaryBinding?: MenuWechatPrimaryBinding
+  wechatOperatorBinding?: MenuWechatOperatorBinding
   syntheticAgentInitiatorEnabled?: boolean
   experimentalSlashCommandsEnabled?: boolean
   capabilities?: Partial<MenuCapabilities>
@@ -431,6 +473,12 @@ export function buildMenuItems(input: {
       hint: copy.retryHint,
       disabled: !capabilities.networkRetry,
     },
+    {
+      label: copy.wechatNotificationsHeading,
+      value: { type: "wechat-menu" },
+      color: "cyan",
+      disabled: !capabilities.wechatNotificationsMenu,
+    },
   ]
 
   const providerSettings: MenuItem<MenuAction>[] = [
@@ -453,48 +501,12 @@ export function buildMenuItems(input: {
     })
   }
 
-  const wechatNotifications: MenuItem<MenuAction>[] = [
-    { label: copy.wechatNotificationsHeading, value: { type: "cancel" }, kind: "heading" },
-    {
-      label: copy.wechatBind,
-      value: { type: "wechat-bind" },
-      color: "cyan",
-      disabled: !capabilities.wechatNotificationsMenu,
-    },
-    {
-      label: wechatNotificationsEnabled ? copy.wechatNotificationsOn : copy.wechatNotificationsOff,
-      value: { type: "toggle-wechat-notifications" },
-      color: "cyan",
-      disabled: !capabilities.wechatNotificationsMenu,
-    },
-    {
-      label: wechatQuestionNotifyEnabled ? copy.wechatQuestionNotifyOn : copy.wechatQuestionNotifyOff,
-      value: { type: "toggle-wechat-question-notify" },
-      color: "cyan",
-      disabled: !capabilities.wechatNotificationsMenu,
-    },
-    {
-      label: wechatPermissionNotifyEnabled ? copy.wechatPermissionNotifyOn : copy.wechatPermissionNotifyOff,
-      value: { type: "toggle-wechat-permission-notify" },
-      color: "cyan",
-      disabled: !capabilities.wechatNotificationsMenu,
-    },
-    {
-      label: wechatSessionErrorNotifyEnabled ? copy.wechatSessionErrorNotifyOn : copy.wechatSessionErrorNotifyOff,
-      value: { type: "toggle-wechat-session-error-notify" },
-      color: "cyan",
-      disabled: !capabilities.wechatNotificationsMenu,
-    },
-  ]
-
   return [
     ...providerActions,
     { label: "", value: { type: "cancel" }, separator: true },
     ...commonSettings,
     { label: "", value: { type: "cancel" }, separator: true },
     ...providerSettings,
-    { label: "", value: { type: "cancel" }, separator: true },
-    ...wechatNotifications,
     { label: "", value: { type: "cancel" }, separator: true },
     { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
     ...input.accounts.map((account) => {
@@ -527,54 +539,146 @@ export function buildMenuItems(input: {
   ]
 }
 
+function buildWechatSubmenuItems(copy: ReturnType<typeof getMenuCopy>, input: {
+  wechatNotificationsEnabled: boolean
+  wechatQuestionNotifyEnabled: boolean
+  wechatPermissionNotifyEnabled: boolean
+  wechatSessionErrorNotifyEnabled: boolean
+  wechatPrimaryBinding?: MenuWechatPrimaryBinding
+  wechatOperatorBinding?: MenuWechatOperatorBinding
+  capabilities: MenuCapabilities
+  language: MenuLanguage
+}): MenuItem<MenuAction>[] {
+  const backLabel = input.language === "en" ? "Back" : "返回上级"
+  const effectiveBinding = input.wechatPrimaryBinding
+    ? {
+        accountId: input.wechatPrimaryBinding.accountId,
+        userId: input.wechatPrimaryBinding.userId,
+        name: input.wechatPrimaryBinding.name,
+        enabled: input.wechatPrimaryBinding.enabled,
+        configured: input.wechatPrimaryBinding.configured,
+        boundAt: input.wechatPrimaryBinding.boundAt,
+      }
+    : input.wechatOperatorBinding
+    ? {
+        accountId: input.wechatOperatorBinding.wechatAccountId,
+        userId: input.wechatOperatorBinding.userId,
+        boundAt: input.wechatOperatorBinding.boundAt,
+      }
+    : undefined
+  const bindActionType = effectiveBinding ? "wechat-rebind" : "wechat-bind"
+  const bindingRows: MenuItem<MenuAction>[] = []
+  if (effectiveBinding) {
+    const boundAtText = effectiveBinding.boundAt
+      ? new Date(effectiveBinding.boundAt).toLocaleString()
+      : "unknown"
+    bindingRows.push(
+      { label: input.language === "en" ? "Current binding" : "当前绑定账号", value: { type: "cancel" }, kind: "heading" },
+      {
+        label: `accountId: ${effectiveBinding.accountId}`,
+        value: { type: "cancel" },
+        disabled: true,
+      },
+      ...(effectiveBinding.name
+        ? [{ label: `name: ${effectiveBinding.name}`, value: { type: "cancel" }, disabled: true } as MenuItem<MenuAction>]
+        : []),
+      ...(effectiveBinding.userId
+        ? [{ label: `userId: ${effectiveBinding.userId}`, value: { type: "cancel" }, disabled: true } as MenuItem<MenuAction>]
+        : []),
+      {
+        label: `enabled: ${effectiveBinding.enabled === true ? "true" : "false"}`,
+        value: { type: "cancel" },
+        disabled: true,
+      },
+      {
+        label: `configured: ${effectiveBinding.configured === true ? "true" : "false"}`,
+        value: { type: "cancel" },
+        disabled: true,
+      },
+      {
+        label: `boundAt: ${boundAtText}`,
+        value: { type: "cancel" },
+        disabled: true,
+      },
+      { label: "", value: { type: "cancel" }, separator: true },
+    )
+  }
+  return [
+    { label: backLabel, value: { type: "cancel" } },
+    { label: "", value: { type: "cancel" }, separator: true },
+    ...bindingRows,
+    { label: copy.wechatNotificationsHeading, value: { type: "cancel" }, kind: "heading" },
+    {
+      label: copy.wechatBind,
+      value: { type: bindActionType },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: input.wechatNotificationsEnabled ? copy.wechatNotificationsOn : copy.wechatNotificationsOff,
+      value: { type: "toggle-wechat-notifications" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: input.wechatQuestionNotifyEnabled ? copy.wechatQuestionNotifyOn : copy.wechatQuestionNotifyOff,
+      value: { type: "toggle-wechat-question-notify" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: input.wechatPermissionNotifyEnabled ? copy.wechatPermissionNotifyOn : copy.wechatPermissionNotifyOff,
+      value: { type: "toggle-wechat-permission-notify" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: input.wechatSessionErrorNotifyEnabled ? copy.wechatSessionErrorNotifyOn : copy.wechatSessionErrorNotifyOff,
+      value: { type: "toggle-wechat-session-error-notify" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+  ]
+}
+
 export async function showMenu(
   accounts: AccountInfo[],
-  input: {
-    provider?: MenuProvider
-    refresh?: { enabled: boolean; minutes: number }
-    lastQuotaRefresh?: number
-    modelAccountAssignmentCount?: number
-    defaultAccountGroupCount?: number
-    loopSafetyEnabled?: boolean
-    loopSafetyProviderScope?: "copilot-only" | "all-models"
-    networkRetryEnabled?: boolean
-    wechatNotificationsEnabled?: boolean
-    wechatQuestionNotifyEnabled?: boolean
-    wechatPermissionNotifyEnabled?: boolean
-    wechatSessionErrorNotifyEnabled?: boolean
-    syntheticAgentInitiatorEnabled?: boolean
-    experimentalSlashCommandsEnabled?: boolean
-    capabilities?: Partial<MenuCapabilities>
-    language?: MenuLanguage
-  } = {},
+  input: ShowMenuInput = {},
 ): Promise<MenuAction> {
   return showMenuWithDeps(accounts, input)
 }
 
+function pickPrimaryBindingFromSettings(settings: CommonSettingsStore | undefined): MenuWechatPrimaryBinding | undefined {
+  const primary = settings?.wechat?.primaryBinding
+  if (!primary?.accountId) return undefined
+  return {
+    accountId: primary.accountId,
+    userId: primary.userId,
+    name: primary.name,
+    enabled: primary.enabled,
+    configured: primary.configured,
+    boundAt: primary.boundAt,
+  }
+}
+
+function pickOperatorBinding(binding: OperatorBinding | undefined): MenuWechatOperatorBinding | undefined {
+  if (!binding) return undefined
+  return {
+    wechatAccountId: binding.wechatAccountId,
+    userId: binding.userId,
+    boundAt: binding.boundAt,
+  }
+}
+
 export async function showMenuWithDeps(
   accounts: AccountInfo[],
-  input: {
-    provider?: MenuProvider
-    refresh?: { enabled: boolean; minutes: number }
-    lastQuotaRefresh?: number
-    modelAccountAssignmentCount?: number
-    defaultAccountGroupCount?: number
-    loopSafetyEnabled?: boolean
-    loopSafetyProviderScope?: "copilot-only" | "all-models"
-    networkRetryEnabled?: boolean
-    wechatNotificationsEnabled?: boolean
-    wechatQuestionNotifyEnabled?: boolean
-    wechatPermissionNotifyEnabled?: boolean
-    wechatSessionErrorNotifyEnabled?: boolean
-    syntheticAgentInitiatorEnabled?: boolean
-    experimentalSlashCommandsEnabled?: boolean
-    capabilities?: Partial<MenuCapabilities>
-    language?: MenuLanguage
-  } = {},
+  input: ShowMenuInput = {},
   deps: {
     select?: typeof select
     confirm?: typeof confirm
     showAccountActions?: typeof showAccountActions
+    readCommonSettings?: () => Promise<CommonSettingsStore>
+    readOperatorBinding?: () => Promise<OperatorBinding | undefined>
   } = {},
 ): Promise<MenuAction> {
   const selectMenu = deps.select ?? select
@@ -611,6 +715,39 @@ export async function showMenuWithDeps(
     })
 
     if (!result) return { type: "cancel" }
+    if (result.type === "wechat-menu") {
+      const [commonSettings, operatorBinding] = await Promise.all([
+        input.wechatPrimaryBinding
+          ? Promise.resolve(undefined)
+          : (deps.readCommonSettings ?? readCommonSettingsStore)().catch(() => undefined),
+        input.wechatOperatorBinding
+          ? Promise.resolve(undefined)
+          : (deps.readOperatorBinding ?? readOperatorBinding)().catch(() => undefined),
+      ])
+
+      const wechatItems = buildWechatSubmenuItems(copy, {
+        wechatNotificationsEnabled: input.wechatNotificationsEnabled !== false,
+        wechatQuestionNotifyEnabled: input.wechatQuestionNotifyEnabled !== false,
+        wechatPermissionNotifyEnabled: input.wechatPermissionNotifyEnabled !== false,
+        wechatSessionErrorNotifyEnabled: input.wechatSessionErrorNotifyEnabled !== false,
+        wechatPrimaryBinding: input.wechatPrimaryBinding ?? pickPrimaryBindingFromSettings(commonSettings),
+        wechatOperatorBinding: input.wechatOperatorBinding ?? pickOperatorBinding(operatorBinding),
+        capabilities: {
+          ...defaultMenuCapabilities(provider),
+          ...input.capabilities,
+        },
+        language: currentLanguage,
+      })
+      const wechatResult = await selectMenu(wechatItems, {
+        message: copy.wechatNotificationsHeading,
+        subtitle: copy.menuSubtitle,
+        clearScreen: true,
+      })
+      if (!wechatResult || wechatResult.type === "cancel") {
+        continue
+      }
+      return wechatResult
+    }
     if (result.type === "toggle-language") {
       currentLanguage = currentLanguage === "zh" ? "en" : "zh"
       continue

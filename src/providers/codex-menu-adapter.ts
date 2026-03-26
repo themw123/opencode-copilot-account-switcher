@@ -18,6 +18,7 @@ import {
   type CommonSettingsStore,
 } from "../common-settings-store.js"
 import { applyCommonSettingsAction } from "../common-settings-actions.js"
+import { runWechatBindFlow } from "../wechat/bind-flow.js"
 
 type WriteMeta = {
   reason?: string
@@ -460,8 +461,13 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         })
         return false
       }
-      if (action.name === "wechat-bind") {
-        return true
+      if (action.name === "wechat-bind" || action.name === "wechat-rebind") {
+        await runWechatBindFlow({
+          action: action.name,
+          readCommonSettings,
+          writeCommonSettings,
+        })
+        return false
       }
       return false
     },

@@ -5,6 +5,9 @@ export type CommonSettingsActionType =
   | "toggle-loop-safety-provider-scope"
   | "toggle-experimental-slash-commands"
   | "toggle-network-retry"
+  | "wechat-bind"
+  | "wechat-rebind"
+  | "wechat-unbind"
   | "toggle-wechat-notifications"
   | "toggle-wechat-question-notify"
   | "toggle-wechat-permission-notify"
@@ -22,6 +25,20 @@ export async function applyCommonSettingsAction(input: {
   writeSettings: (settings: CommonSettingsStore, meta?: WriteMeta) => Promise<void>
 }): Promise<boolean> {
   const settings = await input.readSettings()
+  const existingNotifications = settings.wechat?.notifications
+  const notifications = {
+    enabled: existingNotifications?.enabled !== false,
+    question: existingNotifications?.question !== false,
+    permission: existingNotifications?.permission !== false,
+    sessionError: existingNotifications?.sessionError !== false,
+  }
+  if (!settings.wechat) {
+    settings.wechat = {
+      notifications,
+    }
+  } else if (!settings.wechat.notifications) {
+    settings.wechat.notifications = notifications
+  }
 
   if (input.action.type === "toggle-loop-safety") {
     settings.loopSafetyEnabled = settings.loopSafetyEnabled !== true
@@ -66,7 +83,7 @@ export async function applyCommonSettingsAction(input: {
   }
 
   if (input.action.type === "toggle-wechat-notifications") {
-    settings.wechatNotificationsEnabled = settings.wechatNotificationsEnabled !== true
+    settings.wechat.notifications.enabled = settings.wechat.notifications.enabled !== true
     await input.writeSettings(settings, {
       reason: "toggle-wechat-notifications",
       source: "applyCommonSettingsAction",
@@ -76,7 +93,7 @@ export async function applyCommonSettingsAction(input: {
   }
 
   if (input.action.type === "toggle-wechat-question-notify") {
-    settings.wechatQuestionNotifyEnabled = settings.wechatQuestionNotifyEnabled !== true
+    settings.wechat.notifications.question = settings.wechat.notifications.question !== true
     await input.writeSettings(settings, {
       reason: "toggle-wechat-question-notify",
       source: "applyCommonSettingsAction",
@@ -86,7 +103,7 @@ export async function applyCommonSettingsAction(input: {
   }
 
   if (input.action.type === "toggle-wechat-permission-notify") {
-    settings.wechatPermissionNotifyEnabled = settings.wechatPermissionNotifyEnabled !== true
+    settings.wechat.notifications.permission = settings.wechat.notifications.permission !== true
     await input.writeSettings(settings, {
       reason: "toggle-wechat-permission-notify",
       source: "applyCommonSettingsAction",
@@ -96,12 +113,16 @@ export async function applyCommonSettingsAction(input: {
   }
 
   if (input.action.type === "toggle-wechat-session-error-notify") {
-    settings.wechatSessionErrorNotifyEnabled = settings.wechatSessionErrorNotifyEnabled !== true
+    settings.wechat.notifications.sessionError = settings.wechat.notifications.sessionError !== true
     await input.writeSettings(settings, {
       reason: "toggle-wechat-session-error-notify",
       source: "applyCommonSettingsAction",
       actionType: "toggle-wechat-session-error-notify",
     })
+    return true
+  }
+
+  if (input.action.type === "wechat-bind" || input.action.type === "wechat-rebind" || input.action.type === "wechat-unbind") {
     return true
   }
 

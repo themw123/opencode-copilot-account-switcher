@@ -11,15 +11,95 @@ export type CommonSettingsStore = {
   networkRetryEnabled?: boolean
   experimentalSlashCommandsEnabled?: boolean
   experimentalStatusSlashCommandEnabled?: boolean
+  wechat?: WechatMenuSettings
   wechatNotificationsEnabled?: boolean
   wechatQuestionNotifyEnabled?: boolean
   wechatPermissionNotifyEnabled?: boolean
   wechatSessionErrorNotifyEnabled?: boolean
 }
 
+export type WechatBinding = {
+  accountId: string
+  userId?: string
+  name?: string
+  enabled?: boolean
+  configured?: boolean
+  boundAt?: number
+}
+
+export type WechatMenuSettings = {
+  primaryBinding?: WechatBinding
+  notifications: {
+    enabled: boolean
+    question: boolean
+    permission: boolean
+    sessionError: boolean
+  }
+  future?: {
+    accounts?: WechatBinding[]
+  }
+}
+
+function normalizeWechatBinding(input: unknown): WechatBinding | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const value = input as Record<string, unknown>
+  if (typeof value.accountId !== "string" || value.accountId.length === 0) return undefined
+  const binding: WechatBinding = { accountId: value.accountId }
+  if (typeof value.userId === "string") binding.userId = value.userId
+  if (typeof value.name === "string") binding.name = value.name
+  if (typeof value.enabled === "boolean") binding.enabled = value.enabled
+  if (typeof value.configured === "boolean") binding.configured = value.configured
+  if (typeof value.boundAt === "number" && Number.isFinite(value.boundAt)) binding.boundAt = value.boundAt
+  return binding
+}
+
+function normalizeWechatSettings(source: CommonSettingsStore): WechatMenuSettings {
+  const wechatValue = source.wechat && typeof source.wechat === "object"
+    ? (source.wechat as Record<string, unknown>)
+    : undefined
+  const notificationsValue = wechatValue?.notifications && typeof wechatValue.notifications === "object"
+    ? (wechatValue.notifications as Record<string, unknown>)
+    : undefined
+  const futureValue = wechatValue?.future && typeof wechatValue.future === "object"
+    ? (wechatValue.future as Record<string, unknown>)
+    : undefined
+
+  const enabled = typeof notificationsValue?.enabled === "boolean"
+    ? notificationsValue.enabled
+    : source.wechatNotificationsEnabled !== false
+  const question = typeof notificationsValue?.question === "boolean"
+    ? notificationsValue.question
+    : source.wechatQuestionNotifyEnabled !== false
+  const permission = typeof notificationsValue?.permission === "boolean"
+    ? notificationsValue.permission
+    : source.wechatPermissionNotifyEnabled !== false
+  const sessionError = typeof notificationsValue?.sessionError === "boolean"
+    ? notificationsValue.sessionError
+    : source.wechatSessionErrorNotifyEnabled !== false
+
+  const primaryBinding = normalizeWechatBinding(wechatValue?.primaryBinding)
+  const accounts = Array.isArray(futureValue?.accounts)
+    ? futureValue.accounts
+      .map((account) => normalizeWechatBinding(account))
+      .filter((account): account is WechatBinding => Boolean(account))
+    : undefined
+
+  return {
+    ...(primaryBinding ? { primaryBinding } : {}),
+    notifications: {
+      enabled,
+      question,
+      permission,
+      sessionError,
+    },
+    ...(accounts ? { future: { accounts } } : {}),
+  }
+}
+
 function normalizeCommonSettingsStore(input: CommonSettingsStore | undefined): CommonSettingsStore {
   const source = input ?? {}
   const legacySlashCommandsEnabled = source.experimentalStatusSlashCommandEnabled
+  const wechat = normalizeWechatSettings(source)
   return {
     ...(source.loopSafetyEnabled !== false ? { loopSafetyEnabled: true } : { loopSafetyEnabled: false }),
     loopSafetyProviderScope: source.loopSafetyProviderScope === "all-models" ? "all-models" : "copilot-only",
@@ -30,12 +110,7 @@ function normalizeCommonSettingsStore(input: CommonSettingsStore | undefined): C
         : legacySlashCommandsEnabled === false
         ? false
         : true,
-    ...(source.wechatNotificationsEnabled === false ? { wechatNotificationsEnabled: false } : { wechatNotificationsEnabled: true }),
-    ...(source.wechatQuestionNotifyEnabled === false ? { wechatQuestionNotifyEnabled: false } : { wechatQuestionNotifyEnabled: true }),
-    ...(source.wechatPermissionNotifyEnabled === false ? { wechatPermissionNotifyEnabled: false } : { wechatPermissionNotifyEnabled: true }),
-    ...(source.wechatSessionErrorNotifyEnabled === false
-      ? { wechatSessionErrorNotifyEnabled: false }
-      : { wechatSessionErrorNotifyEnabled: true }),
+    wechat,
   }
 }
 
@@ -57,6 +132,9 @@ function parsePartialCommonSettingsStore(raw: string): CommonSettingsStore {
   }
   if (parsed.experimentalStatusSlashCommandEnabled === true || parsed.experimentalStatusSlashCommandEnabled === false) {
     partial.experimentalStatusSlashCommandEnabled = parsed.experimentalStatusSlashCommandEnabled
+  }
+  if (parsed.wechat && typeof parsed.wechat === "object") {
+    partial.wechat = parsed.wechat
   }
   if (parsed.wechatNotificationsEnabled === true || parsed.wechatNotificationsEnabled === false) {
     partial.wechatNotificationsEnabled = parsed.wechatNotificationsEnabled
@@ -94,6 +172,7 @@ function mergeCommonSettings(current: CommonSettingsStore, legacy: CommonSetting
       current.experimentalSlashCommandsEnabled ?? legacy.experimentalSlashCommandsEnabled,
     experimentalStatusSlashCommandEnabled:
       current.experimentalStatusSlashCommandEnabled ?? legacy.experimentalStatusSlashCommandEnabled,
+    wechat: current.wechat,
     wechatNotificationsEnabled: current.wechatNotificationsEnabled ?? legacy.wechatNotificationsEnabled,
     wechatQuestionNotifyEnabled: current.wechatQuestionNotifyEnabled ?? legacy.wechatQuestionNotifyEnabled,
     wechatPermissionNotifyEnabled: current.wechatPermissionNotifyEnabled ?? legacy.wechatPermissionNotifyEnabled,
@@ -171,10 +250,7 @@ export async function writeCommonSettingsStore(
     loopSafetyProviderScope: normalized.loopSafetyProviderScope,
     networkRetryEnabled: normalized.networkRetryEnabled,
     experimentalSlashCommandsEnabled: normalized.experimentalSlashCommandsEnabled,
-    wechatNotificationsEnabled: normalized.wechatNotificationsEnabled,
-    wechatQuestionNotifyEnabled: normalized.wechatQuestionNotifyEnabled,
-    wechatPermissionNotifyEnabled: normalized.wechatPermissionNotifyEnabled,
-    wechatSessionErrorNotifyEnabled: normalized.wechatSessionErrorNotifyEnabled,
+    wechat: normalized.wechat,
   }
 
   await fs.mkdir(path.dirname(file), { recursive: true })
