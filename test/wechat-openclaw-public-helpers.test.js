@@ -1,5 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 
 const DIST_PUBLIC_HELPERS_MODULE = "../dist/wechat/compat/openclaw-public-helpers.js"
 const DIST_ACCOUNT_ADAPTER_MODULE = "../dist/wechat/openclaw-account-adapter.js"
@@ -172,4 +173,32 @@ test("public helper keeps JITI src helper modules as default route", async () =>
     getUpdates: "@tencent-weixin/openclaw-weixin/src/api/api.ts",
     sendMessageWeixin: "@tencent-weixin/openclaw-weixin/src/messaging/send.ts",
   })
+})
+
+test("public helper loader assembles wrappers without function-length probing", async () => {
+  const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
+  const loaded = await helpers.loadOpenClawWeixinPublicHelpers({
+    loadPublicWeixinQrGateway: async () => ({
+      gateway: {
+        loginWithQrStart: async (params) => ({ sessionKey: params?.accountId ?? "s" }),
+        loginWithQrWait: async (params) => ({ connected: true, accountId: params?.accountId ?? "acc" }),
+      },
+      pluginId: "wechat-2x",
+    }),
+    loadPublicWeixinAccountHelpers: async () => ({
+      listAccountIds: async () => ["acc-2x"],
+      resolveAccount: async (accountId) => ({ accountId, enabled: true }),
+      describeAccount: async (accountIdOrInput) => ({
+        accountId: typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId,
+        configured: true,
+      }),
+    }),
+  })
+
+  assert.equal(loaded.pluginId, "wechat-2x")
+  assert.equal(typeof loaded.accountHelpers.resolveAccount, "function")
+
+  const packageJsonRaw = await readFile(new URL("../package.json", import.meta.url), "utf8")
+  const packageJson = JSON.parse(packageJsonRaw)
+  assert.equal(packageJson.dependencies?.["@tencent-weixin/openclaw-weixin"], "2.0.1")
 })
