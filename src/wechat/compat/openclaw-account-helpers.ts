@@ -49,8 +49,28 @@ function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
-function isEnabled(value: unknown): boolean {
-  return value !== false
+function toBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value
+  }
+  if (value === 1) {
+    return true
+  }
+  if (value === 0) {
+    return false
+  }
+  return undefined
+}
+
+function deriveEnabled(resolved: Record<string, unknown>, stored: Record<string, unknown>): boolean {
+  const explicitEnabled = toBoolean(resolved.enabled) ?? toBoolean(resolved.isEnabled) ?? toBoolean(stored.enabled) ?? toBoolean(stored.isEnabled)
+  if (explicitEnabled !== undefined) {
+    return explicitEnabled
+  }
+  if (resolved.disabled === true || stored.disabled === true) {
+    return false
+  }
+  return true
 }
 
 function isConfigured(resolved: Record<string, unknown>, stored: Record<string, unknown>): boolean {
@@ -65,24 +85,28 @@ function toAccountId(input: string | { accountId: string }): string {
 }
 
 export function createOpenClawAccountHelpers(input: OpenClawAccountSourceHelpers): WeixinAccountHelpers {
+  const resolveStableAccount = async (accountId: string) => {
+    const resolved = asObject(await input.resolveAccount(accountId))
+    const stored = asObject(await input.loadAccount(accountId))
+    return {
+      accountId,
+      enabled: deriveEnabled(resolved, stored),
+      configured: isConfigured(resolved, stored),
+      name: typeof resolved.name === "string" ? resolved.name : undefined,
+      userId: typeof stored.userId === "string" ? stored.userId : undefined,
+    }
+  }
+
   return {
     async listAccountIds() {
       const ids = await input.listAccountIds()
       return Array.isArray(ids) ? ids.filter((it): it is string => typeof it === "string" && it.length > 0) : []
     },
     async resolveAccount(accountId: string) {
-      const resolved = asObject(await input.resolveAccount(accountId))
-      const stored = asObject(await input.loadAccount(accountId))
-      return {
-        accountId,
-        enabled: isEnabled(resolved.enabled),
-        configured: isConfigured(resolved, stored),
-        name: typeof resolved.name === "string" ? resolved.name : undefined,
-        userId: typeof stored.userId === "string" ? stored.userId : undefined,
-      }
+      return resolveStableAccount(accountId)
     },
     async describeAccount(accountIdOrInput: string | { accountId: string }) {
-      return this.resolveAccount(toAccountId(accountIdOrInput))
+      return resolveStableAccount(toAccountId(accountIdOrInput))
     },
   }
 }
@@ -101,6 +125,6 @@ export async function loadOpenClawAccountHelpers(options: {
   return createOpenClawAccountHelpers({
     listAccountIds: () => accountsModule.listIndexedWeixinAccountIds!(),
     loadAccount: (accountId) => accountsModule.loadWeixinAccount!(accountId),
-    resolveAccount: (accountId) => ({ accountId, enabled: true }),
+    resolveAccount: (accountId) => ({ accountId }),
   })
 }
