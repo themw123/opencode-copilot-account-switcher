@@ -4,7 +4,6 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { Writable } from "node:stream"
 
 const DIST_GUIDED_MODULE = "../dist/wechat/compat/openclaw-guided-smoke.js"
 
@@ -1344,56 +1343,46 @@ test("guided smoke slash evidence keeps outbound-none and stub semantics", async
 test("guided smoke prints step-by-step prompts after each confirmed stage", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
-  const chunks = []
-  const originalStdoutWrite = process.stdout.write
+  const lines = []
 
-  const capture = new Writable({
-    write(chunk, _encoding, callback) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk))
-      callback()
+  await guided.runGuidedSmoke({
+    runId: "run-progress-prompts",
+    evidenceBaseDir,
+    runSelfTest: async () => ({ ok: true }),
+    loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
+    runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
+    captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
+    runNonSlashVerification: async () => ({
+      passed: 2,
+      total: 2,
+      failedChecks: [],
+      attempts: [
+        {
+          input: "hello 1",
+          inbound: { text: "hello 1" },
+          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          persisted: true,
+        },
+        {
+          input: "hello 2",
+          inbound: { text: "hello 2" },
+          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          persisted: true,
+        },
+      ],
+      keyFieldsCheck: {
+        login: { status: "pass" },
+        getupdates: { status: "pass" },
+        slashInbound: { status: "pass" },
+        warningReply: { status: "pass" },
+      },
+    }),
+    writeLine: async (line) => {
+      lines.push(line)
     },
   })
 
-  process.stdout.write = capture.write.bind(capture)
-  try {
-    await guided.runGuidedSmoke({
-      runId: "run-progress-prompts",
-      evidenceBaseDir,
-      runSelfTest: async () => ({ ok: true }),
-      loadPublicEntry: async () => ({ entryRelativePath: "./index.ts" }),
-      runQrLogin: async () => ({ status: "success", qrUrl: "https://example.test/qr", connected: true }),
-      captureSlashInbound: async (command) => ({ command, text: `/${command === "reply" ? "reply smoke" : command === "allow" ? "allow once" : "status"}` }),
-      runNonSlashVerification: async () => ({
-        passed: 2,
-        total: 2,
-        failedChecks: [],
-        attempts: [
-          {
-            input: "hello 1",
-            inbound: { text: "hello 1" },
-            warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
-            persisted: true,
-          },
-          {
-            input: "hello 2",
-            inbound: { text: "hello 2" },
-            warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
-            persisted: true,
-          },
-        ],
-        keyFieldsCheck: {
-          login: { status: "pass" },
-          getupdates: { status: "pass" },
-          slashInbound: { status: "pass" },
-          warningReply: { status: "pass" },
-        },
-      }),
-    })
-  } finally {
-    process.stdout.write = originalStdoutWrite
-  }
-
-  const output = chunks.join("")
+  const output = lines.join("\n")
   assert.match(output, /二维码登录成功.*下一步请发送 `\/status`/)
   assert.match(output, /已收到 `\/status`.*下一步请发送 `\/reply smoke`/)
   assert.match(output, /已收到 `\/reply smoke`.*下一步请发送 `\/allow once`/)

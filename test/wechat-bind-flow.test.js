@@ -3,7 +3,16 @@ import assert from "node:assert/strict"
 
 async function loadBindFlowOrFail() {
   try {
-    return await import("../dist/wechat/bind-flow.js")
+    const bindFlow = await import("../dist/wechat/bind-flow.js")
+    return {
+      ...bindFlow,
+      runWechatBindFlow(input) {
+        return bindFlow.runWechatBindFlow({
+          ...input,
+          writeLine: input?.writeLine ?? (async () => {}),
+        })
+      },
+    }
   } catch (error) {
     if (error?.code === "ERR_MODULE_NOT_FOUND") {
       assert.fail("wechat bind flow module is missing: ../dist/wechat/bind-flow.js")
