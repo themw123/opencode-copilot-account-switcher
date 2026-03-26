@@ -193,6 +193,11 @@ test("public helper loader assembles wrappers without function-length probing", 
   assert.equal(packageJson.dependencies?.["@tencent-weixin/openclaw-weixin"], "2.0.1")
 })
 
+test("public helper assembly no longer depends on function-length probing", async () => {
+  const source = await import(DIST_PUBLIC_HELPERS_MODULE)
+  assert.equal("normalizeWeixinAccountHelpers" in source, false)
+})
+
 test("public helper loader uses account wrapper loader instead of config-surface helpers", async () => {
   const helpers = await import(DIST_PUBLIC_HELPERS_MODULE)
 
