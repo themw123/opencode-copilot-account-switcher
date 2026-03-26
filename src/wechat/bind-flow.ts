@@ -147,21 +147,11 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
       (waited as { openid?: unknown } | null | undefined)?.openid,
       (waited as { uid?: unknown } | null | undefined)?.uid,
     )
-    const operatorBinding = {
-      wechatAccountId: accountId,
-      userId: "",
-      boundAt,
-    }
     const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined
     let menuAccount: Awaited<ReturnType<typeof buildOpenClawMenuAccount>>
     let boundUserId = ""
+    let shouldRollbackBinding = false
     try {
-      if (input.action === "wechat-rebind") {
-        await persistOperatorRebinding(operatorBinding)
-      } else {
-        await persistOperatorBinding(operatorBinding)
-      }
-
       const menuAccountState = accountId
         ? {
             ...(helpers.latestAccountState ?? {
@@ -187,7 +177,18 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
         throw new Error("missing userId after qr login")
       }
       boundUserId = userId
-      operatorBinding.userId = userId
+      const operatorBinding = {
+        wechatAccountId: accountId,
+        userId,
+        boundAt,
+      }
+      shouldRollbackBinding = true
+
+      if (input.action === "wechat-rebind") {
+        await persistOperatorRebinding(operatorBinding)
+      } else {
+        await persistOperatorBinding(operatorBinding)
+      }
 
       const settings = await input.readCommonSettings()
       const notifications = settings.wechat?.notifications ?? {
@@ -211,7 +212,9 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
 
       await input.writeCommonSettings(settings)
     } catch (error) {
-      await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
+      if (shouldRollbackBinding) {
+        await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
+      }
       throw error
     }
 

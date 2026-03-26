@@ -162,6 +162,41 @@ test("wechat bind flow throws explicit error when binding fails", async () => {
   )
 })
 
+test("wechat bind flow rolls back if bindOperator writes then throws", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  let rollbackCalled = 0
+  await assert.rejects(
+    () => runWechatBindFlow({
+      action: "wechat-bind",
+      loadPublicHelpers: async () => ({
+        latestAccountState: { accountId: "acc-bind-side-effect", token: "token", baseUrl: "https://internal.example" },
+        qrGateway: {
+          loginWithQrStart: () => ({ sessionKey: "s-bind-side-effect", qrUrl: "https://example.test/qr-bind-side-effect" }),
+          loginWithQrWait: () => ({ connected: true, userId: "user-bind-side-effect" }),
+        },
+        accountHelpers: {
+          listAccountIds: async () => ["acc-bind-side-effect"],
+          resolveAccount: async () => ({ enabled: true, name: "Bind Side Effect" }),
+          describeAccount: async () => ({ configured: true }),
+        },
+      }),
+      bindOperator: async () => {
+        throw new Error("bind wrote state before failing")
+      },
+      resetOperatorBinding: async () => {
+        rollbackCalled += 1
+      },
+      readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+      writeCommonSettings: async () => {},
+      now: () => 1712500000000,
+    }),
+    /wechat bind failed: bind wrote state before failing/i,
+  )
+
+  assert.equal(rollbackCalled, 1)
+})
+
 test("wechat rebind flow uses rebindOperator branch and keeps old binding on failure", async () => {
   const { runWechatBindFlow } = await loadBindFlowOrFail()
 
@@ -204,6 +239,55 @@ test("wechat rebind flow uses rebindOperator branch and keeps old binding on fai
   assert.equal(bindCalled, 0)
   assert.equal(rebindCalled, 1)
   assert.equal(writeCalled, 0)
+})
+
+test("wechat rebind flow restores previous binding if rebindOperator writes then throws", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  const previousBinding = {
+    wechatAccountId: "acc-prev-side-effect",
+    userId: "user-prev-side-effect",
+    boundAt: 1713499999999,
+  }
+  const rebindCalls = []
+
+  await assert.rejects(
+    () => runWechatBindFlow({
+      action: "wechat-rebind",
+      loadPublicHelpers: async () => ({
+        latestAccountState: { accountId: "acc-next-side-effect", token: "token", baseUrl: "https://internal.example" },
+        qrGateway: {
+          loginWithQrStart: () => ({ sessionKey: "s-next-side-effect", qrUrl: "https://example.test/qr-next-side-effect" }),
+          loginWithQrWait: () => ({ connected: true, userId: "user-next-side-effect" }),
+        },
+        accountHelpers: {
+          listAccountIds: async () => ["acc-next-side-effect"],
+          resolveAccount: async () => ({ enabled: true, name: "Rebind Side Effect" }),
+          describeAccount: async () => ({ configured: true }),
+        },
+      }),
+      rebindOperator: async (binding) => {
+        rebindCalls.push({ ...binding })
+        if (rebindCalls.length === 1) {
+          throw new Error("rebind wrote state before failing")
+        }
+        return binding
+      },
+      readOperatorBinding: async () => previousBinding,
+      resetOperatorBinding: async () => {
+        assert.fail("rebind rollback should restore previous binding instead of reset")
+      },
+      readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+      writeCommonSettings: async () => {},
+      now: () => 1713500000000,
+    }),
+    /wechat rebind failed: rebind wrote state before failing/i,
+  )
+
+  assert.deepEqual(rebindCalls, [
+    { wechatAccountId: "acc-next-side-effect", userId: "user-next-side-effect", boundAt: 1713500000000 },
+    previousBinding,
+  ])
 })
 
 test("wechat bind and rebind keep consistent explicit error prefix", async () => {
@@ -433,9 +517,10 @@ test("wechat bind flow fails early when qr start returns no qr payload", async (
   assert.equal(waitCalled, 0)
 })
 
-test("wechat bind flow rolls back operator binding when menu account build fails", async () => {
+test("wechat bind flow does not persist operator binding when menu account build fails", async () => {
   const { runWechatBindFlow } = await loadBindFlowOrFail()
 
+  let bindCalled = 0
   let resetCalled = 0
   await assert.rejects(
     () => runWechatBindFlow({
@@ -454,7 +539,10 @@ test("wechat bind flow rolls back operator binding when menu account build fails
           describeAccount: async () => ({ configured: true }),
         },
       }),
-      bindOperator: async (binding) => binding,
+      bindOperator: async (binding) => {
+        bindCalled += 1
+        return binding
+      },
       resetOperatorBinding: async () => {
         resetCalled += 1
       },
@@ -465,12 +553,14 @@ test("wechat bind flow rolls back operator binding when menu account build fails
     /wechat bind failed: account helper unavailable/i,
   )
 
-  assert.equal(resetCalled, 1)
+  assert.equal(bindCalled, 0)
+  assert.equal(resetCalled, 0)
 })
 
 test("wechat bind flow falls back to resolved account userId when wait result omits it", async () => {
   const { runWechatBindFlow } = await loadBindFlowOrFail()
 
+  const bindCalls = []
   const result = await runWechatBindFlow({
     action: "wechat-bind",
     loadPublicHelpers: async () => ({
@@ -485,12 +575,16 @@ test("wechat bind flow falls back to resolved account userId when wait result om
         describeAccount: async () => ({ configured: true, userId: "user-from-describe" }),
       },
     }),
-    bindOperator: async (binding) => binding,
+    bindOperator: async (binding) => {
+      bindCalls.push({ ...binding })
+      return binding
+    },
     readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
     writeCommonSettings: async () => {},
     now: () => 1717000000003,
   })
 
+  assert.deepEqual(bindCalls, [{ wechatAccountId: "acc-real", userId: "user-from-account", boundAt: 1717000000003 }])
   assert.equal(result.accountId, "acc-real")
   assert.equal(result.userId, "user-from-account")
 })
