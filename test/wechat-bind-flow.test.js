@@ -297,6 +297,7 @@ test("wechat rebind flow restores previous binding if rebindOperator writes then
     boundAt: 1713499999999,
   }
   const rebindCalls = []
+  let persistedBinding
 
   await assert.rejects(
     () => runWechatBindFlow({
@@ -316,11 +317,12 @@ test("wechat rebind flow restores previous binding if rebindOperator writes then
       rebindOperator: async (binding) => {
         rebindCalls.push({ ...binding })
         if (rebindCalls.length === 1) {
+          persistedBinding = { ...binding }
           throw new Error("rebind wrote state before failing")
         }
         return binding
       },
-      readOperatorBinding: async () => previousBinding,
+      readOperatorBinding: async () => persistedBinding ?? previousBinding,
       resetOperatorBinding: async () => {
         assert.fail("rebind rollback should restore previous binding instead of reset")
       },
@@ -440,6 +442,7 @@ test("writeCommonSettings failure in rebind restores previous operator binding",
 
   const rebindCalls = []
   let resetCalled = 0
+  let persistedBinding
   const previousBinding = {
     wechatAccountId: "acc-old",
     userId: "user-old",
@@ -462,10 +465,11 @@ test("writeCommonSettings failure in rebind restores previous operator binding",
         },
       }),
       rebindOperator: async (binding) => {
+        persistedBinding = { ...binding }
         rebindCalls.push(binding)
         return binding
       },
-      readOperatorBinding: async () => previousBinding,
+      readOperatorBinding: async () => persistedBinding ?? previousBinding,
       resetOperatorBinding: async () => {
         resetCalled += 1
       },

@@ -210,12 +210,8 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
       await input.writeCommonSettings(settings)
     } catch (error) {
       if (shouldRollbackBinding) {
-        if (input.action === "wechat-bind") {
-          const currentOperatorBinding = await loadOperatorBinding().catch(() => undefined)
-          if (isSameOperatorBinding(currentOperatorBinding, attemptedOperatorBinding)) {
-            await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
-          }
-        } else {
+        const currentOperatorBinding = await loadOperatorBinding().catch(() => undefined)
+        if (isSameOperatorBinding(currentOperatorBinding, attemptedOperatorBinding)) {
           await rollbackBinding(input.action, previousOperatorBinding, persistOperatorRebinding, clearOperatorBinding)
         }
       }

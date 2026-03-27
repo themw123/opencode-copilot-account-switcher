@@ -717,7 +717,7 @@ export async function showMenuWithDeps(
     if (!result) return { type: "cancel" }
     if (result.type === "wechat-menu") {
       const [commonSettings, operatorBinding] = await Promise.all([
-        input.wechatPrimaryBinding
+        input.wechatPrimaryBinding || input.wechatOperatorBinding
           ? Promise.resolve(undefined)
           : (deps.readCommonSettings ?? readCommonSettingsStore)().catch(() => undefined),
         input.wechatOperatorBinding

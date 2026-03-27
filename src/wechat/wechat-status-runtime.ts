@@ -23,11 +23,32 @@ type SlashCommandHandlerInput = {
   message: PublicWeixinMessage
 }
 
+export type WechatStatusRuntimeDiagnosticEvent =
+  | {
+      type: "messageSkipped"
+      reason: "missingFromUserId" | "missingText"
+      hasFromUserId: boolean
+      hasText: boolean
+    }
+  | {
+      type: "slashCommandRecognized"
+      command: WechatSlashCommand
+      text: string
+      to: string
+    }
+  | {
+      type: "replySendFailed"
+      to: string
+      error: string
+      commandType: WechatSlashCommand["type"] | null
+    }
+
 type CreateWechatStatusRuntimeInput = {
   loadPublicHelpers?: (options?: OpenClawWeixinPublicHelpersLoaderOptions) => Promise<PublicHelpersForRuntime>
   publicHelpersOptions?: OpenClawWeixinPublicHelpersLoaderOptions
   onSlashCommand?: (input: SlashCommandHandlerInput) => Promise<string>
   onRuntimeError?: (error: unknown) => void
+  onDiagnosticEvent?: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
   retryDelayMs?: number
   longPollTimeoutMs?: number
   shouldReloadState?: (state: {
@@ -140,6 +161,16 @@ function toNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+  if (typeof error === "string") {
+    return error
+  }
+  return String(error)
+}
+
 export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput = {}): WechatStatusRuntime {
   const loadPublicHelpers = input.loadPublicHelpers ?? loadOpenClawWeixinPublicHelpers
   const onSlashCommand =
@@ -148,6 +179,7 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
       return "/status 处理中"
     })
   const onRuntimeError = input.onRuntimeError ?? (() => {})
+  const onDiagnosticEvent = input.onDiagnosticEvent ?? (() => {})
   const retryDelayMs = normalizePositiveInteger(input.retryDelayMs, DEFAULT_RETRY_DELAY_MS)
   const longPollTimeoutMs = normalizePositiveInteger(input.longPollTimeoutMs, DEFAULT_LONG_POLL_TIMEOUT_MS)
   const shouldReloadState = input.shouldReloadState ?? (() => false)
@@ -156,6 +188,14 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
   let closed = false
   let stopController: AbortController | null = null
   let pollingTask: Promise<void> | null = null
+
+  const emitDiagnosticEvent = (event: WechatStatusRuntimeDiagnosticEvent) => {
+    void Promise.resolve()
+      .then(() => onDiagnosticEvent(event))
+      .catch((error) => {
+        onRuntimeError(error)
+      })
+  }
 
   const poll = async (signal: AbortSignal) => {
     let initialized: {
@@ -235,7 +275,23 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
 
           const to = toNonEmptyString(message.from_user_id)
           const text = extractMessageText(message)
-          if (!to || text.trim().length === 0) {
+          const hasText = text.trim().length > 0
+          if (!to) {
+            emitDiagnosticEvent({
+              type: "messageSkipped",
+              reason: "missingFromUserId",
+              hasFromUserId: false,
+              hasText,
+            })
+            continue
+          }
+          if (!hasText) {
+            emitDiagnosticEvent({
+              type: "messageSkipped",
+              reason: "missingText",
+              hasFromUserId: true,
+              hasText: false,
+            })
             continue
           }
 
@@ -243,6 +299,12 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
           let replyText = DEFAULT_NON_SLASH_REPLY_TEXT
 
           if (parsedCommand) {
+            emitDiagnosticEvent({
+              type: "slashCommandRecognized",
+              command: parsedCommand,
+              text,
+              to,
+            })
             try {
               replyText = await onSlashCommand({
                 command: parsedCommand,
@@ -272,6 +334,12 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
             if (isAbortError(error)) {
               return
             }
+            emitDiagnosticEvent({
+              type: "replySendFailed",
+              to,
+              error: toErrorMessage(error),
+              commandType: parsedCommand?.type ?? null,
+            })
             onRuntimeError(error)
           }
         }

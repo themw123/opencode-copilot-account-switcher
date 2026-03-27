@@ -1,12 +1,16 @@
 import path from "node:path"
 import process from "node:process"
 import { readFileSync, rmSync } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { createOpencodeClient as createOpencodeClientV2, type QuestionAnswer } from "@opencode-ai/sdk/v2"
 import { startBrokerServer } from "./broker-server.js"
-import { WECHAT_FILE_MODE, wechatStateRoot } from "./state-paths.js"
-import { createWechatStatusRuntime, type WechatStatusRuntime } from "./wechat-status-runtime.js"
+import { WECHAT_FILE_MODE, wechatStateRoot, wechatStatusRuntimeDiagnosticsPath } from "./state-paths.js"
+import {
+  createWechatStatusRuntime,
+  type WechatStatusRuntime,
+  type WechatStatusRuntimeDiagnosticEvent,
+} from "./wechat-status-runtime.js"
 import type { WechatSlashCommand } from "./command-parser.js"
 
 type BrokerState = {
@@ -76,9 +80,33 @@ type BrokerWechatStatusRuntimeLifecycle = {
 }
 
 type BrokerWechatStatusRuntimeLifecycleDeps = {
-  createStatusRuntime?: (deps: { onSlashCommand: (input: { command: import("./command-parser.js").WechatSlashCommand }) => Promise<string> }) => WechatStatusRuntime
+  createStatusRuntime?: (deps: {
+    onSlashCommand: (input: { command: import("./command-parser.js").WechatSlashCommand }) => Promise<string>
+    onDiagnosticEvent: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
+  }) => WechatStatusRuntime
   handleWechatSlashCommand?: (command: import("./command-parser.js").WechatSlashCommand) => Promise<string>
   onRuntimeError?: (error: unknown) => void
+  onDiagnosticEvent?: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
+  stateRoot?: string
+}
+
+function createWechatStatusRuntimeDiagnosticsFileWriter(input: {
+  stateRoot: string
+  onRuntimeError: (error: unknown) => void
+}): (event: WechatStatusRuntimeDiagnosticEvent) => Promise<void> {
+  return async (event) => {
+    try {
+      await mkdir(input.stateRoot, { recursive: true, mode: 0o700 })
+      const filePath = wechatStatusRuntimeDiagnosticsPath(input.stateRoot)
+      const line = `${JSON.stringify({
+        timestamp: Date.now(),
+        ...event,
+      })}\n`
+      await appendFile(filePath, line, { encoding: "utf8", mode: WECHAT_FILE_MODE })
+    } catch (error) {
+      input.onRuntimeError(error)
+    }
+  }
 }
 
 export function shouldEnableBrokerWechatStatusRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -155,6 +183,9 @@ export function createBrokerWechatStatusRuntimeLifecycle(
   deps: BrokerWechatStatusRuntimeLifecycleDeps = {},
 ): BrokerWechatStatusRuntimeLifecycle {
   const onRuntimeError = deps.onRuntimeError ?? ((error) => console.error(error))
+  const stateRoot = deps.stateRoot ?? wechatStateRoot()
+  const onDiagnosticEvent =
+    deps.onDiagnosticEvent ?? createWechatStatusRuntimeDiagnosticsFileWriter({ stateRoot, onRuntimeError })
   const v2Client = createOpencodeClientV2({
     baseUrl: "http://localhost:4096",
     directory: process.cwd(),
@@ -170,6 +201,7 @@ export function createBrokerWechatStatusRuntimeLifecycle(
       createWechatStatusRuntime({
         onSlashCommand: async ({ command }) => statusRuntimeDeps.onSlashCommand({ command }),
         onRuntimeError,
+        onDiagnosticEvent: statusRuntimeDeps.onDiagnosticEvent,
       }))
 
   let runtime: WechatStatusRuntime | null = null
@@ -181,6 +213,7 @@ export function createBrokerWechatStatusRuntimeLifecycle(
       }
       const created = createStatusRuntime({
         onSlashCommand: async ({ command }) => handleWechatSlashCommand(command),
+        onDiagnosticEvent,
       })
       runtime = created
       try {

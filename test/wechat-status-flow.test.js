@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import os from "node:os"
 import path from "node:path"
 import net from "node:net"
-import { mkdtemp } from "node:fs/promises"
+import { mkdtemp, readFile } from "node:fs/promises"
 
 const DIST_BROKER_SERVER_MODULE = "../dist/wechat/broker-server.js"
 const DIST_BROKER_CLIENT_MODULE = "../dist/wechat/broker-client.js"
@@ -1089,6 +1089,128 @@ test("wechat status runtime: /status /reply /allow 走各自 slash handler，非
   assert.equal(sendCalls[3].text, runtimeModule.DEFAULT_NON_SLASH_REPLY_TEXT)
 })
 
+test("wechat status runtime diagnostics: 记录 skipped/slash/send-failed 三类断点事件", async () => {
+  const runtimeModule = await import(`../dist/wechat/wechat-status-runtime.js?reload=${Date.now()}`)
+
+  const diagnostics = []
+  let pollCount = 0
+  const runtime = runtimeModule.createWechatStatusRuntime({
+    retryDelayMs: 0,
+    onDiagnosticEvent: (event) => {
+      diagnostics.push(event)
+    },
+    loadPublicHelpers: async () => ({
+      latestAccountState: {
+        accountId: "acc-diag",
+        token: "token-diag",
+        baseUrl: "https://wx.example.com",
+        getUpdatesBuf: "buf-diag",
+      },
+      getUpdates: async () => {
+        pollCount += 1
+        if (pollCount === 1) {
+          return {
+            get_updates_buf: "buf-diag-next",
+            msgs: [
+              {
+                item_list: [{ type: 1, text_item: { text: "/status" } }],
+              },
+              {
+                from_user_id: "user-empty",
+                item_list: [{ type: 1, text_item: { text: "   " } }],
+              },
+              {
+                from_user_id: "user-status",
+                context_token: "ctx-status",
+                item_list: [{ type: 1, text_item: { text: " /status " } }],
+              },
+            ],
+          }
+        }
+        return new Promise(() => {})
+      },
+      sendMessageWeixin: async () => {
+        throw new Error("send failed for diagnostics")
+      },
+    }),
+    onSlashCommand: async () => "status diagnostics reply",
+  })
+
+  await runtime.start()
+  try {
+    await waitFor(() => diagnostics.length >= 4)
+  } finally {
+    await runtime.close()
+  }
+
+  const skippedMissingFromUserId = diagnostics.find(
+    (event) => event?.type === "messageSkipped" && event?.reason === "missingFromUserId",
+  )
+  const skippedMissingText = diagnostics.find(
+    (event) => event?.type === "messageSkipped" && event?.reason === "missingText",
+  )
+  const recognizedStatus = diagnostics.find(
+    (event) => event?.type === "slashCommandRecognized" && event?.command?.type === "status",
+  )
+  const sendFailed = diagnostics.find(
+    (event) => event?.type === "replySendFailed" && event?.to === "user-status",
+  )
+
+  assert.ok(skippedMissingFromUserId)
+  assert.ok(skippedMissingText)
+  assert.ok(recognizedStatus)
+  assert.ok(sendFailed)
+})
+
+test("wechat status runtime diagnostics: 诊断写入挂起不阻塞 slash 回复发送", async () => {
+  const runtimeModule = await import(`../dist/wechat/wechat-status-runtime.js?reload=${Date.now()}`)
+
+  const sendCalls = []
+  let pollCount = 0
+  const runtime = runtimeModule.createWechatStatusRuntime({
+    retryDelayMs: 0,
+    onDiagnosticEvent: async () => new Promise(() => {}),
+    loadPublicHelpers: async () => ({
+      latestAccountState: {
+        accountId: "acc-diag-hang",
+        token: "token-diag-hang",
+        baseUrl: "https://wx.example.com",
+      },
+      getUpdates: async () => {
+        pollCount += 1
+        if (pollCount === 1) {
+          return {
+            get_updates_buf: "buf-after-poll-1",
+            msgs: [
+              {
+                from_user_id: "user-status",
+                context_token: "ctx-status",
+                item_list: [{ type: 1, text_item: { text: "/status" } }],
+              },
+            ],
+          }
+        }
+        return new Promise(() => {})
+      },
+      sendMessageWeixin: async (input) => {
+        sendCalls.push(input)
+        return { messageId: "m-1" }
+      },
+    }),
+    onSlashCommand: async () => "status reply unaffected by diagnostics",
+  })
+
+  await runtime.start()
+  try {
+    await waitFor(() => sendCalls.length === 1, 300)
+  } finally {
+    await runtime.close()
+  }
+
+  assert.equal(sendCalls[0].to, "user-status")
+  assert.equal(sendCalls[0].text, "status reply unaffected by diagnostics")
+})
+
 test("wechat status runtime: slash handler 抛错时返回稳定错误提示，不透出内部堆栈", async () => {
   const runtimeModule = await import(`../dist/wechat/wechat-status-runtime.js?reload=${Date.now()}`)
 
@@ -1557,4 +1679,41 @@ test("broker-entry runtime autostart gate: 默认始终开启，不再依赖环�
   } else {
     delete process.env[envKey]
   }
+})
+
+test("broker-entry runtime lifecycle: 默认把诊断事件写入稳定文件路径", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-diag-file`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-diag-path`)
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), "wechat-status-runtime-diagnostics-"))
+
+  const lifecycle = brokerEntry.createBrokerWechatStatusRuntimeLifecycle({
+    stateRoot,
+    createStatusRuntime: ({ onDiagnosticEvent }) => ({
+      start: async () => {
+        await onDiagnosticEvent?.({
+          type: "slashCommandRecognized",
+          command: { type: "status" },
+          text: "/status",
+          to: "u-diagnostic",
+        })
+      },
+      close: async () => {},
+    }),
+  })
+
+  await lifecycle.start()
+  await lifecycle.close()
+
+  const diagnosticsPath = statePaths.wechatStatusRuntimeDiagnosticsPath(stateRoot)
+  const raw = await readFile(diagnosticsPath, "utf8")
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  assert.equal(lines.length, 1)
+
+  const event = JSON.parse(lines[0])
+  assert.equal(event.type, "slashCommandRecognized")
+  assert.equal(event.command.type, "status")
+  assert.equal(event.to, "u-diagnostic")
 })
