@@ -39,6 +39,7 @@ test("plugin-hooks 仅接入 /status bridge 生命周期", async () => {
     project,
     directory,
     serverUrl,
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl: async (input) => {
       calls.push(input)
       return {
@@ -60,6 +61,99 @@ test("plugin-hooks 仅接入 /status bridge 生命周期", async () => {
   assert.equal(Object.hasOwn(plugin, "wechat.event.notify"), false)
   assert.equal(Object.hasOwn(plugin, "wechat.question.reply"), false)
   assert.equal(Object.hasOwn(plugin, "wechat.permission.reply"), false)
+})
+
+test("plugin-hooks 在实例初始化入口显式触发 broker 启动确保", async () => {
+  const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+  const client = {
+    session: {
+      list: async () => [],
+      status: async () => ({}),
+      todo: async () => [],
+      messages: async () => [],
+    },
+    question: {
+      list: async () => [],
+    },
+    permission: {
+      list: async () => [],
+    },
+  }
+  let ensureBrokerCalls = 0
+
+  buildPluginHooksRaw({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    client,
+    project: { id: "project-id", name: "wechat-stage-a" },
+    directory: "/workspace/wechat-stage-a",
+    serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => {
+      ensureBrokerCalls += 1
+      return { endpoint: "fake-endpoint" }
+    },
+    createWechatBridgeLifecycleImpl: async () => ({
+      close: async () => {},
+    }),
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(ensureBrokerCalls, 1)
+})
+
+test("plugin-hooks broker 启动确保失败时仍保持 lifecycle fail-open（reject/throw）", async () => {
+  const runCase = async (ensureWechatBrokerStarted) => {
+    const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+    const client = {
+      session: {
+        list: async () => [],
+        status: async () => ({}),
+        todo: async () => [],
+        messages: async () => [],
+      },
+      question: {
+        list: async () => [],
+      },
+      permission: {
+        list: async () => [],
+      },
+    }
+    let lifecycleCalls = 0
+
+    buildPluginHooksRaw({
+      auth: {
+        provider: "github-copilot",
+        methods: [],
+      },
+      client,
+      project: { id: "project-id", name: "wechat-stage-a" },
+      directory: `/workspace/wechat-stage-fail-open-${Math.random()}`,
+      serverUrl: new URL("http://127.0.0.1:4096"),
+      ensureWechatBrokerStarted,
+      createWechatBridgeLifecycleImpl: async () => {
+        lifecycleCalls += 1
+        return {
+          close: async () => {},
+        }
+      },
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    assert.equal(lifecycleCalls, 1)
+  }
+
+  await runCase(async () => {
+    throw new Error("ensure rejected")
+  })
+  await runCase(() => {
+    throw new Error("ensure thrown")
+  })
 })
 
 test("plugin-hooks 重复 build 不应重复初始化 bridge lifecycle", async () => {
@@ -86,6 +180,7 @@ test("plugin-hooks 重复 build 不应重复初始化 bridge lifecycle", async (
     project: { name: "wechat-stage-a" },
     directory: "/workspace/wechat-stage-a",
     serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl: async (input) => {
       calls.push(input)
       return {
@@ -100,6 +195,7 @@ test("plugin-hooks 重复 build 不应重复初始化 bridge lifecycle", async (
     project: { name: "wechat-stage-a" },
     directory: "/workspace/wechat-stage-a",
     serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl: async (input) => {
       calls.push(input)
       return {
@@ -152,6 +248,7 @@ test("plugin-hooks lifecycle key 变化时必须关闭旧实例，最终仅保�
     project: { name: "wechat-stage-a" },
     directory: "/workspace/wechat-stage-a-A",
     serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl,
   })
 
@@ -166,11 +263,13 @@ test("plugin-hooks lifecycle key 变化时必须关闭旧实例，最终仅保�
     project: { name: "wechat-stage-a" },
     directory: "/workspace/wechat-stage-a-B",
     serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl,
   })
 
   await Promise.resolve()
   await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
 
   assert.equal(closeCount, 1)
   assert.equal(active.size, 1)
@@ -221,6 +320,7 @@ test("plugin-hooks 旧 lifecycle 仍在初始化中时切 key，旧 promise reso
     project: { name: "wechat-stage-a" },
     directory: "/workspace/pending-old-A",
     serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl,
   })
 
@@ -230,12 +330,14 @@ test("plugin-hooks 旧 lifecycle 仍在初始化中时切 key，旧 promise reso
     project: { name: "wechat-stage-a" },
     directory: "/workspace/pending-old-B",
     serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
     createWechatBridgeLifecycleImpl,
   })
 
   await Promise.resolve()
   await Promise.resolve()
 
+  assert.equal(createCalls, 2)
   assert.equal(active.size, 1)
   assert.equal(closeCount, 0)
 
@@ -245,8 +347,9 @@ test("plugin-hooks 旧 lifecycle 仍在初始化中时切 key，旧 promise reso
     },
   })
 
-  await Promise.resolve()
-  await Promise.resolve()
+  for (let attempt = 0; attempt < 20 && closeCount === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
 
   assert.equal(closeCount, 1)
   assert.equal(active.size, 1)

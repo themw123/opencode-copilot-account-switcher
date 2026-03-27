@@ -63,6 +63,7 @@ import {
   type WechatBridgeLifecycle,
   type WechatBridgeLifecycleInput,
 } from "./wechat/bridge.js"
+import { connectOrSpawnBroker } from "./wechat/broker-launcher.js"
 
 type AuthLoader = NonNullable<CopilotPluginHooks["auth"]>["loader"]
 type AuthProvider = Parameters<NonNullable<AuthLoader>>[1]
@@ -789,6 +790,7 @@ export function buildPluginHooks(input: {
   }
   directory?: CopilotRetryContext["directory"]
   serverUrl?: CopilotRetryContext["serverUrl"]
+  ensureWechatBrokerStarted?: () => Promise<unknown>
   createWechatBridgeLifecycleImpl?: (input: WechatBridgeLifecycleInput) => Promise<{ close: () => Promise<void> }>
   clearAccountSwitchContext?: (lastAccountSwitchAt?: number) => Promise<void>
   now?: () => number
@@ -889,6 +891,7 @@ export function buildPluginHooks(input: {
   const appendRouteDecisionEventImpl = input.appendRouteDecisionEventImpl ?? appendRouteDecisionEvent
   const readRoutingStateImpl = input.readRoutingStateImpl ?? readRoutingState
   const triggerBillingCompensation = input.triggerBillingCompensation ?? (async () => {})
+  const ensureWechatBrokerStarted = input.ensureWechatBrokerStarted ?? (async () => connectOrSpawnBroker())
   const createWechatBridgeLifecycleImpl = input.createWechatBridgeLifecycleImpl ?? createWechatBridgeLifecycle
 
   if (input.serverUrl && hasWechatBridgeClientShape(input.client)) {
@@ -901,13 +904,18 @@ export function buildPluginHooks(input: {
     attachWechatBridgeAutoClose()
     void ensureWechatBridgeLifecycle({
       key: lifecycleKey,
-      create: () => createWechatBridgeLifecycleImpl({
-        client: wechatBridgeClient,
-        project: input.project,
-        directory: input.directory,
-        serverUrl: input.serverUrl,
-        statusCollectionEnabled: true,
-      }),
+      create: async () => {
+        void Promise.resolve()
+          .then(() => ensureWechatBrokerStarted())
+          .catch(() => {})
+        return createWechatBridgeLifecycleImpl({
+          client: wechatBridgeClient,
+          project: input.project,
+          directory: input.directory,
+          serverUrl: input.serverUrl,
+          statusCollectionEnabled: true,
+        })
+      },
     }).catch(() => {})
   }
 
