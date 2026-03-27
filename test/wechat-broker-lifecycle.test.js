@@ -675,6 +675,7 @@ test("两个 launcher 并发时只会有一个 broker 被真正拉起，且 laun
     stateRoot,
     brokerJsonPath,
     launchLockPath,
+    expectedVersion: "test",
     backoffMs: 20,
     maxAttempts: 30,
     endpointFactory: () => endpoint,
@@ -736,6 +737,7 @@ test("锁持有者消失后，后续 launcher 可重新竞争并完成 spawn", a
     stateRoot,
     brokerJsonPath,
     launchLockPath,
+    expectedVersion: "test",
     backoffMs: 20,
     maxAttempts: 30,
     endpointFactory: () => endpoint,
@@ -763,6 +765,7 @@ test("launcher 仅传入自定义 stateRoot 时，默认 broker/lock 路径与�
 
   const result = await launcher.connectOrSpawnBroker({
     stateRoot: customStateRoot,
+    expectedVersion: "test",
     backoffMs: 10,
     maxAttempts: 10,
     endpointFactory: () => endpoint,
@@ -787,6 +790,55 @@ test("launcher 仅传入自定义 stateRoot 时，默认 broker/lock 路径与�
   assert.equal(result.endpoint, endpoint)
   assert.equal(typeof customLockSeen?.pid, "number")
   assert.equal(typeof customLockSeen?.acquiredAt, "number")
+})
+
+test("launcher 不复用版本落后的存活 broker，会重新拉起当前版本 broker", async () => {
+  const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-launcher-version-mismatch-"))
+  const stateRoot = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat")
+  const brokerJsonPath = path.join(stateRoot, "broker.json")
+  const oldEndpoint = createBrokerEndpoint(sandboxConfigHome)
+  const newEndpoint = createBrokerEndpoint(sandboxConfigHome)
+
+  mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
+  await writeFile(
+    brokerJsonPath,
+    JSON.stringify({ pid: 48000, endpoint: oldEndpoint, startedAt: Date.now() - 1000, version: "0.13.6" }, null, 2),
+    "utf8",
+  )
+
+  let spawned = 0
+  let metadata = {
+    pid: 48000,
+    endpoint: oldEndpoint,
+    startedAt: Date.now() - 1000,
+    version: "0.13.6",
+  }
+
+  const result = await launcher.connectOrSpawnBroker({
+    stateRoot,
+    brokerJsonPath,
+    expectedVersion: "0.14.9",
+    backoffMs: 10,
+    maxAttempts: 10,
+    endpointFactory: () => newEndpoint,
+    pingImpl: async (candidateEndpoint) => candidateEndpoint === metadata.endpoint,
+    spawnImpl: () => {
+      spawned += 1
+      metadata = {
+        pid: 49000,
+        endpoint: newEndpoint,
+        startedAt: Date.now(),
+        version: "0.14.9",
+      }
+      void writeFile(brokerJsonPath, JSON.stringify(metadata, null, 2), "utf8")
+      return { pid: metadata.pid, unref() {} }
+    },
+  })
+
+  assert.equal(spawned, 1)
+  assert.equal(result.endpoint, newEndpoint)
+  assert.equal(result.version, "0.14.9")
 })
 
 test("真实默认 spawn + 自定义 stateRoot 时，broker.json 写入自定义 root 且不触碰默认 wechat 根目录", async () => {

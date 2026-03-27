@@ -26,6 +26,7 @@ type LaunchOptions = {
   launchLockPath?: string
   backoffMs?: number
   maxAttempts?: number
+  expectedVersion?: string
   endpointFactory?: () => string
   spawnImpl?: (endpoint: string, stateRoot: string) => { pid?: number | undefined; unref?: (() => void) | undefined }
   pingImpl?: (endpoint: string) => Promise<boolean>
@@ -45,6 +46,17 @@ function isFiniteNumber(value: unknown): value is number {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function readCurrentPackageVersion(): Promise<string> {
+  try {
+    const packageJsonPath = new URL("../../package.json", import.meta.url)
+    const raw = await readFile(packageJsonPath, "utf8")
+    const parsed = JSON.parse(raw) as { version?: unknown }
+    return isNonEmptyString(parsed.version) ? parsed.version : "unknown"
+  } catch {
+    return "unknown"
+  }
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -155,9 +167,17 @@ async function acquireLaunchLock(filePath: string): Promise<LaunchLockContent | 
   }
 }
 
-async function isBrokerAlive(brokerFilePath: string, pingImpl: (endpoint: string) => Promise<boolean>): Promise<BrokerMetadata | null> {
+async function isBrokerAlive(
+  brokerFilePath: string,
+  pingImpl: (endpoint: string) => Promise<boolean>,
+  expectedVersion?: string,
+): Promise<BrokerMetadata | null> {
   const metadata = await readBrokerMetadata(brokerFilePath)
   if (!metadata) {
+    return null
+  }
+
+  if (isNonEmptyString(expectedVersion) && metadata.version !== expectedVersion) {
     return null
   }
 
@@ -185,6 +205,7 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
   const launchLockFile = options.launchLockPath ?? path.join(stateRoot, "launch.lock")
   const backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
+  const expectedVersion = options.expectedVersion ?? await readCurrentPackageVersion()
   const pingImpl = options.pingImpl ?? defaultPingImpl
   const spawnImpl = options.spawnImpl ?? defaultSpawnImpl
   const endpointFactory = options.endpointFactory ?? (() => {
@@ -198,7 +219,7 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
   await mkdir(stateRoot, { recursive: true, mode: 0o700 })
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const running = await isBrokerAlive(brokerJsonFile, pingImpl)
+    const running = await isBrokerAlive(brokerJsonFile, pingImpl, expectedVersion)
     if (running) {
       return running
     }
@@ -212,7 +233,7 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
     options.onLockAcquired?.(lock)
 
     try {
-      const secondCheck = await isBrokerAlive(brokerJsonFile, pingImpl)
+      const secondCheck = await isBrokerAlive(brokerJsonFile, pingImpl, expectedVersion)
       if (secondCheck) {
         return secondCheck
       }
@@ -223,7 +244,7 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
 
       for (let n = 0; n < 20; n += 1) {
         await delay(100)
-        const spawned = await isBrokerAlive(brokerJsonFile, pingImpl)
+        const spawned = await isBrokerAlive(brokerJsonFile, pingImpl, expectedVersion)
         if (spawned) {
           return spawned
         }
