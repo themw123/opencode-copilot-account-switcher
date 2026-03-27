@@ -894,8 +894,22 @@ export function buildPluginHooks(input: {
   const ensureWechatBrokerStarted = input.ensureWechatBrokerStarted ?? (async () => connectOrSpawnBroker())
   const createWechatBridgeLifecycleImpl = input.createWechatBridgeLifecycleImpl ?? createWechatBridgeLifecycle
 
-  if (input.serverUrl && hasWechatBridgeClientShape(input.client)) {
-    const wechatBridgeClient = input.client
+  const wechatBridgeClient = hasWechatBridgeClientShape(input.client) ? input.client : undefined
+  if (wechatBridgeClient) {
+    void showStatusToast({
+      client: input.client,
+      message: "正在尝试连接或拉起 WeChat broker...",
+      variant: "info",
+      warn: (scope, error) => {
+        console.warn(`[${scope}] failed to show toast`, error)
+      },
+    })
+    void Promise.resolve()
+      .then(() => ensureWechatBrokerStarted())
+      .catch(() => {})
+  }
+
+  if (input.serverUrl && wechatBridgeClient) {
     const lifecycleKey = buildWechatBridgeLifecycleKey({
       directory: input.directory,
       serverUrl: input.serverUrl,
@@ -905,9 +919,6 @@ export function buildPluginHooks(input: {
     void ensureWechatBridgeLifecycle({
       key: lifecycleKey,
       create: async () => {
-        void Promise.resolve()
-          .then(() => ensureWechatBrokerStarted())
-          .catch(() => {})
         return createWechatBridgeLifecycleImpl({
           client: wechatBridgeClient,
           project: input.project,

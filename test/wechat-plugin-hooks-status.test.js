@@ -105,6 +105,61 @@ test("plugin-hooks 在实例初始化入口显式触发 broker 启动确保", as
   assert.equal(ensureBrokerCalls, 1)
 })
 
+test("plugin-hooks 在无 serverUrl 时仍尝试拉起 broker 并给出可见提示", async () => {
+  const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+  const toastCalls = []
+  const client = {
+    session: {
+      list: async () => [],
+      status: async () => ({}),
+      todo: async () => [],
+      messages: async () => [],
+    },
+    question: {
+      list: async () => [],
+    },
+    permission: {
+      list: async () => [],
+    },
+    tui: {
+      showToast: async (options) => {
+        toastCalls.push(options)
+      },
+    },
+  }
+  let ensureBrokerCalls = 0
+  let lifecycleCalls = 0
+
+  buildPluginHooksRaw({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    client,
+    project: { id: "project-id", name: "wechat-stage-a" },
+    directory: "/workspace/wechat-stage-a",
+    ensureWechatBrokerStarted: async () => {
+      ensureBrokerCalls += 1
+      return { endpoint: "fake-endpoint" }
+    },
+    createWechatBridgeLifecycleImpl: async () => {
+      lifecycleCalls += 1
+      return {
+        close: async () => {},
+      }
+    },
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(ensureBrokerCalls, 1)
+  assert.equal(lifecycleCalls, 0)
+  assert.equal(toastCalls.length, 1)
+  assert.equal(toastCalls[0]?.body?.variant, "info")
+  assert.match(String(toastCalls[0]?.body?.message ?? ""), /broker/i)
+})
+
 test("plugin-hooks broker 启动确保失败时仍保持 lifecycle fail-open（reject/throw）", async () => {
   const runCase = async (ensureWechatBrokerStarted) => {
     const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()

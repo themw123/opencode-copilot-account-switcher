@@ -21,6 +21,10 @@ function createTempRoutingStateDirectory() {
 function buildPluginHooks(input = {}) {
   return buildPluginHooksRaw({
     ...input,
+    ensureWechatBrokerStarted: input.ensureWechatBrokerStarted ?? (async () => ({ endpoint: "test-broker" })),
+    createWechatBridgeLifecycleImpl: input.createWechatBridgeLifecycleImpl ?? (async () => ({
+      close: async () => {},
+    })),
     routingStateDirectory: input.routingStateDirectory ?? createTempRoutingStateDirectory(),
   })
 }
