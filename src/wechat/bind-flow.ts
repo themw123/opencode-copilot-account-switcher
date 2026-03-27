@@ -2,6 +2,7 @@ import { bindOperator, readOperatorBinding, rebindOperator, resetOperatorBinding
 import { loadOpenClawWeixinPublicHelpers } from "./compat/openclaw-public-helpers.js"
 import { buildOpenClawMenuAccount } from "./openclaw-account-adapter.js"
 import type { CommonSettingsStore } from "../common-settings-store.js"
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-id"
 import qrcodeTerminal from "qrcode-terminal"
 
 type BindAction = "wechat-bind" | "wechat-rebind"
@@ -137,12 +138,13 @@ export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<Wec
       throw new Error("qr login did not complete")
     }
 
-    const accountId = pickFirstNonEmptyString(
+    const rawAccountId = pickFirstNonEmptyString(
       (waited as { accountId?: unknown } | null | undefined)?.accountId,
     )
-    if (!accountId) {
+    if (!rawAccountId) {
       throw new Error("missing accountId after qr login")
     }
+    const accountId = normalizeAccountId(rawAccountId)
 
     const boundAt = now()
     const previousOperatorBinding = input.action === "wechat-rebind" ? await loadOperatorBinding() : undefined

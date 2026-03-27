@@ -653,6 +653,52 @@ test("wechat bind flow accepts qr wait userId as supplemental local value", asyn
   assert.equal(result.userId, "user-from-wait-only")
 })
 
+test("wechat bind flow normalizes qr wait accountId before helper lookup and binding", async () => {
+  const { runWechatBindFlow } = await loadBindFlowOrFail()
+
+  const bindCalls = []
+  const resolvedAccountIds = []
+  const describedAccountIds = []
+  const rawAccountId = "bot-123@im.bot"
+  const normalizedAccountId = "bot-123-im-bot"
+
+  const result = await runWechatBindFlow({
+    action: "wechat-bind",
+    loadPublicHelpers: async () => ({
+      latestAccountState: null,
+      qrGateway: {
+        loginWithQrStart: () => ({ sessionKey: "s-normalized", qrDataUrl: "https://example.test/qr-normalized" }),
+        loginWithQrWait: () => ({ connected: true, accountId: rawAccountId }),
+      },
+      accountHelpers: {
+        listAccountIds: async () => [normalizedAccountId],
+        resolveAccount: async (accountId) => {
+          resolvedAccountIds.push(accountId)
+          return { enabled: true, name: "Normalized Account", userId: accountId === normalizedAccountId ? "user-normalized" : undefined }
+        },
+        describeAccount: async (accountIdOrInput) => {
+          const accountId = typeof accountIdOrInput === "string" ? accountIdOrInput : accountIdOrInput.accountId
+          describedAccountIds.push(accountId)
+          return { configured: true }
+        },
+      },
+    }),
+    bindOperator: async (binding) => {
+      bindCalls.push({ ...binding })
+      return binding
+    },
+    readCommonSettings: async () => ({ wechat: { notifications: { enabled: true, question: true, permission: true, sessionError: true } } }),
+    writeCommonSettings: async () => {},
+    now: () => 1718000000004,
+  })
+
+  assert.deepEqual(resolvedAccountIds, [normalizedAccountId])
+  assert.deepEqual(describedAccountIds, [normalizedAccountId])
+  assert.deepEqual(bindCalls, [{ wechatAccountId: normalizedAccountId, userId: "user-normalized", boundAt: 1718000000004 }])
+  assert.equal(result.accountId, normalizedAccountId)
+  assert.equal(result.userId, "user-normalized")
+})
+
 test("wechat bind flow fails early when qr start returns no qr payload", async () => {
   const { runWechatBindFlow } = await loadBindFlowOrFail()
 
