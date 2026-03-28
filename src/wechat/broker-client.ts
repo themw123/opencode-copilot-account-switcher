@@ -1,4 +1,4 @@
-import net from "node:net"
+import { createBrokerSocket } from "./broker-endpoint.js"
 import {
   parseEnvelopeLine,
   serializeEnvelope,
@@ -69,7 +69,7 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
     throw new Error("broker client options are ambiguous: provide either bridge or onCollectStatus")
   }
 
-  const socket = net.createConnection(endpoint)
+  const socket = createBrokerSocket(endpoint)
   let sequence = 0
   let pendingResolve: ((value: BrokerEnvelope) => void) | null = null
   let pendingReject: ((reason?: unknown) => void) | null = null

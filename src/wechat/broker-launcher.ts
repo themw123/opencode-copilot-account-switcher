@@ -1,9 +1,9 @@
-import net from "node:net"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { mkdir, open, readFile, rm } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { createBrokerSocket, createDefaultBrokerEndpoint } from "./broker-endpoint.js"
 import { wechatStateRoot } from "./state-paths.js"
 import { parseEnvelopeLine, serializeEnvelope } from "./protocol.js"
 
@@ -48,6 +48,8 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+export { createDefaultBrokerEndpoint }
+
 async function readCurrentPackageVersion(): Promise<string> {
   try {
     const packageJsonPath = new URL("../../package.json", import.meta.url)
@@ -88,7 +90,7 @@ async function readBrokerMetadata(filePath: string): Promise<BrokerMetadata | nu
 
 async function defaultPingImpl(endpoint: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = net.createConnection(endpoint)
+    const socket = createBrokerSocket(endpoint)
     let buffer = ""
     const timer = setTimeout(() => {
       socket.destroy()
@@ -208,13 +210,7 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
   const expectedVersion = options.expectedVersion ?? await readCurrentPackageVersion()
   const pingImpl = options.pingImpl ?? defaultPingImpl
   const spawnImpl = options.spawnImpl ?? defaultSpawnImpl
-  const endpointFactory = options.endpointFactory ?? (() => {
-    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
-    if (process.platform === "win32") {
-      return `\\\\.\\pipe\\wechat-broker-${process.pid}-${suffix}`
-    }
-    return path.join(stateRoot, `broker-${suffix}.sock`)
-  })
+  const endpointFactory = options.endpointFactory ?? (() => createDefaultBrokerEndpoint({ stateRoot }))
 
   await mkdir(stateRoot, { recursive: true, mode: 0o700 })
 

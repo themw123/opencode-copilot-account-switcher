@@ -1,6 +1,7 @@
 import net from "node:net"
 import path from "node:path"
 import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises"
+import { createBrokerSocket, isTcpBrokerEndpoint, listenOnBrokerEndpoint } from "./broker-endpoint.js"
 import { registerConnection, revokeSessionToken, validateSessionToken } from "./ipc-auth.js"
 import {
   createErrorEnvelope,
@@ -493,7 +494,7 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
 }
 
 async function tightenEndpointPermission(endpoint: string) {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || isTcpBrokerEndpoint(endpoint)) {
     return
   }
 
@@ -506,7 +507,7 @@ async function tightenEndpointPermission(endpoint: string) {
 
 async function ensureCurrentUserCanAccess(endpoint: string) {
   await new Promise<void>((resolve, reject) => {
-    const probe = net.createConnection(endpoint)
+    const probe = createBrokerSocket(endpoint)
     probe.once("connect", () => {
       probe.end()
       resolve()
@@ -516,7 +517,7 @@ async function ensureCurrentUserCanAccess(endpoint: string) {
 }
 
 async function prepareEndpoint(endpoint: string) {
-  if (process.platform === "win32") {
+  if (process.platform === "win32" || isTcpBrokerEndpoint(endpoint)) {
     return
   }
 
@@ -580,17 +581,11 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     })
   })
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject)
-    server.listen(endpoint, () => {
-      server.off("error", reject)
-      resolve()
-    })
-  })
+  const boundEndpoint = await listenOnBrokerEndpoint(server, endpoint)
 
   try {
-    await tightenEndpointPermission(endpoint)
-    await ensureCurrentUserCanAccess(endpoint)
+    await tightenEndpointPermission(boundEndpoint)
+    await ensureCurrentUserCanAccess(boundEndpoint)
   } catch (error) {
     await new Promise<void>((resolve) => {
       server.close(() => resolve())
@@ -686,7 +681,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
       server.close(() => resolve())
     })
 
-    if (process.platform !== "win32") {
+    if (process.platform !== "win32" && !isTcpBrokerEndpoint(endpoint)) {
       await rm(endpoint, { force: true })
     }
 
@@ -694,7 +689,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
   }
 
   return {
-    endpoint,
+    endpoint: boundEndpoint,
     startedAt: Date.now(),
     collectStatus,
     handleWechatSlashCommand,
