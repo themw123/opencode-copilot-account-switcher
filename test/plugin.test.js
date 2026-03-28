@@ -4,6 +4,7 @@ import { existsSync, promises as fs } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { pathToFileURL } from "node:url"
 
 import { ACCOUNT_SWITCH_TTL_MS } from "../dist/copilot-retry-notifier.js"
@@ -72,6 +73,15 @@ async function toggleAllModelsPolicy(plugin) {
     ),
     (error) => error?.name === "PolicyScopeCommandHandledError",
   )
+}
+
+async function waitForCondition(predicate, timeoutMs = 800) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return
+    await delay(10)
+  }
+  assert.equal(predicate(), true)
 }
 
 test("plugin exposes auth and experimental chat system transform hooks", () => {
@@ -7728,6 +7738,7 @@ test("github-copilot auth methods no longer include Codex entry", async () => {
       },
     },
     directory: process.cwd(),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
   })
 
   assert.equal(plugin.auth?.provider, "github-copilot")
@@ -7769,6 +7780,7 @@ test("openai auth provider is wired to Codex menu entry and codex auth loader", 
       },
     },
     directory: process.cwd(),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
   })
 
   assert.equal(plugin.auth?.provider, "openai")
@@ -7799,6 +7811,55 @@ test("OpenAICodexAccountSwitcher 插件入口加载时会显式触发 broker 启
   await Promise.resolve()
 
   assert.equal(calls.length, 1)
+})
+
+test("CopilotAccountSwitcher 在 broker 启动失败时会稳定写入诊断文件并保持 fail-open", async () => {
+  const { CopilotAccountSwitcher } = await import(`../dist/plugin.js?copilot-broker-diagnostics-${Date.now()}`)
+  const { brokerStartupDiagnosticsPath } = await import(`../dist/wechat/state-paths.js?copilot-broker-diagnostics-${Date.now()}`)
+  const diagnosticsPath = brokerStartupDiagnosticsPath()
+  await fs.rm(diagnosticsPath, { force: true })
+
+  await CopilotAccountSwitcher({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+    },
+    directory: process.cwd(),
+    ensureWechatBrokerStarted: async () => {
+      throw new Error("broker bootstrap failed for test")
+    },
+  })
+
+  await waitForCondition(() => existsSync(diagnosticsPath))
+  const diagnostics = await fs.readFile(diagnosticsPath, "utf8")
+  assert.match(diagnostics, /broker bootstrap failed for test/)
+})
+
+test("CopilotAccountSwitcher 在 broker 启动失败时会给出最小 toast 提示并保持 fail-open", async () => {
+  const { CopilotAccountSwitcher } = await import(`../dist/plugin.js?copilot-broker-toast-${Date.now()}`)
+  const toasts = []
+
+  await CopilotAccountSwitcher({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+      tui: {
+        showToast: async (options) => {
+          toasts.push(options)
+        },
+      },
+    },
+    directory: process.cwd(),
+    ensureWechatBrokerStarted: async () => {
+      throw new Error("broker bootstrap failed for toast")
+    },
+  })
+
+  await waitForCondition(() => toasts.length === 1)
+  assert.equal(toasts.length, 1)
+  assert.match(String(toasts[0]?.body?.message ?? ""), /broker|微信|wechat/i)
 })
 
 test("provider descriptor contract keeps Copilot assembled and Codex enabled", async () => {

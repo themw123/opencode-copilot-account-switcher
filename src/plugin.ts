@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { appendFile } from "node:fs/promises"
 import { normalizeDomain } from "./copilot-api-helpers.js"
 import {
   listAssignableAccountsForModel,
@@ -15,6 +16,7 @@ import {
   type CommonSettingsStore,
 } from "./common-settings-store.js"
 import { connectOrSpawnBroker } from "./wechat/broker-launcher.js"
+import { brokerStartupDiagnosticsPath, ensureWechatStateLayout } from "./wechat/state-paths.js"
 import { createCodexMenuAdapter } from "./providers/codex-menu-adapter.js"
 import { createCopilotMenuAdapter } from "./providers/copilot-menu-adapter.js"
 import { createProviderRegistry } from "./providers/registry.js"
@@ -25,6 +27,48 @@ import { readAuth, readStore, writeStore, type AccountEntry, type StoreFile, typ
 
 function now() {
   return Date.now()
+}
+
+function formatBrokerStartupError(error: unknown) {
+  if (error instanceof Error) {
+    return error.stack ?? `${error.name}: ${error.message}`
+  }
+  if (typeof error === "string") return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
+
+async function recordBrokerStartupFailure(input: {
+  provider: "github-copilot" | "openai"
+  diagnosticsPath: string
+  error: unknown
+  showToast?: (options: { body: { message: string; variant: "warning" } }) => Promise<unknown>
+}) {
+  const reason = formatBrokerStartupError(input.error)
+  const line = JSON.stringify({
+    at: new Date().toISOString(),
+    provider: input.provider,
+    reason,
+  })
+
+  try {
+    await ensureWechatStateLayout()
+    await appendFile(input.diagnosticsPath, `${line}\n`, "utf8")
+  } catch {
+  }
+
+  try {
+    await input.showToast?.({
+      body: {
+        message: `Wechat broker 启动失败，已写入诊断文件：${input.diagnosticsPath}`,
+        variant: "warning",
+      },
+    })
+  } catch {
+  }
 }
 
 function toSharedRuntimeAction(action: UiMenuAction): RuntimeMenuAction | undefined {
@@ -249,9 +293,22 @@ async function createAccountSwitcherPlugin(
   const ensureWechatBrokerStarted = (input as {
     ensureWechatBrokerStarted?: () => Promise<unknown>
   }).ensureWechatBrokerStarted ?? (async () => connectOrSpawnBroker())
+  const diagnosticsPath = brokerStartupDiagnosticsPath()
+  const showToast = (input as {
+    client?: {
+      tui?: {
+        showToast?: (options: { body: { message: string; variant: "warning" } }) => Promise<unknown>
+      }
+    }
+  }).client?.tui?.showToast
   void Promise.resolve()
     .then(() => ensureWechatBrokerStarted())
-    .catch(() => {})
+    .catch((error) => recordBrokerStartupFailure({
+      provider,
+      diagnosticsPath,
+      error,
+      showToast,
+    }))
   const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => writeStore(store, { debug: meta })
   const codexClient = {
     auth: {
