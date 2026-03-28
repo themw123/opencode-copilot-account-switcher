@@ -865,6 +865,19 @@ test("Windows Bun runtime 下默认 broker endpoint 应切到 tcp 回环地址",
   )
 })
 
+test("Windows opencode.exe runtime 下 broker launcher 应改用同目录 bun.exe", async () => {
+  const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
+
+  assert.equal(
+    launcher.resolveBrokerSpawnCommand({
+      platform: "win32",
+      execPath: "C:\\Users\\34404\\.bun\\bin\\opencode.exe",
+      bunPathExists: (candidate) => candidate === "C:\\Users\\34404\\.bun\\bin\\bun.exe",
+    }),
+    "C:\\Users\\34404\\.bun\\bin\\bun.exe",
+  )
+})
+
 test("Windows Node runtime 下默认 broker endpoint 也使用 tcp 回环地址", async () => {
   const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
 
