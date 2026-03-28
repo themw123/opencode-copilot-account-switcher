@@ -7736,6 +7736,29 @@ test("github-copilot auth methods no longer include Codex entry", async () => {
   ])
 })
 
+test("CopilotAccountSwitcher 插件入口加载时会显式触发 broker 启动确保", async () => {
+  const { CopilotAccountSwitcher } = await import(`../dist/plugin.js?copilot-broker-${Date.now()}`)
+  const calls = []
+
+  await CopilotAccountSwitcher({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+    },
+    directory: process.cwd(),
+    ensureWechatBrokerStarted: async () => {
+      calls.push("copilot")
+      return { endpoint: "fake-endpoint" }
+    },
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(calls.length, 1)
+})
+
 test("openai auth provider is wired to Codex menu entry and codex auth loader", async () => {
   const { OpenAICodexAccountSwitcher } = await import(`../dist/plugin.js?codex-auth-${Date.now()}`)
 
@@ -7753,6 +7776,29 @@ test("openai auth provider is wired to Codex menu entry and codex auth loader", 
   assert.deepEqual(plugin.auth?.methods?.map((method) => method.label), [
     "Manage OpenAI Codex accounts",
   ])
+})
+
+test("OpenAICodexAccountSwitcher 插件入口加载时会显式触发 broker 启动确保", async () => {
+  const { OpenAICodexAccountSwitcher } = await import(`../dist/plugin.js?codex-broker-${Date.now()}`)
+  const calls = []
+
+  await OpenAICodexAccountSwitcher({
+    client: {
+      auth: {
+        set: async () => {},
+      },
+    },
+    directory: process.cwd(),
+    ensureWechatBrokerStarted: async () => {
+      calls.push("codex")
+      return { endpoint: "fake-endpoint" }
+    },
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(calls.length, 1)
 })
 
 test("provider descriptor contract keeps Copilot assembled and Codex enabled", async () => {

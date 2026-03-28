@@ -14,6 +14,7 @@ import {
   writeCommonSettingsStore,
   type CommonSettingsStore,
 } from "./common-settings-store.js"
+import { connectOrSpawnBroker } from "./wechat/broker-launcher.js"
 import { createCodexMenuAdapter } from "./providers/codex-menu-adapter.js"
 import { createCopilotMenuAdapter } from "./providers/copilot-menu-adapter.js"
 import { createProviderRegistry } from "./providers/registry.js"
@@ -245,6 +246,12 @@ async function createAccountSwitcherPlugin(
   const client = input.client
   const directory = input.directory
   const serverUrl = (input as { serverUrl?: URL }).serverUrl
+  const ensureWechatBrokerStarted = (input as {
+    ensureWechatBrokerStarted?: () => Promise<unknown>
+  }).ensureWechatBrokerStarted ?? (async () => connectOrSpawnBroker())
+  void Promise.resolve()
+    .then(() => ensureWechatBrokerStarted())
+    .catch(() => {})
   const persistStore = (store: StoreFile, meta?: StoreWriteDebugMeta) => writeStore(store, { debug: meta })
   const codexClient = {
     auth: {
@@ -435,6 +442,7 @@ async function createAccountSwitcherPlugin(
     client,
     directory,
     serverUrl,
+    ensureWechatBrokerStarted: async () => {},
     loadCommonSettings: readCommonSettingsStore,
     loadCommonSettingsSync: readCommonSettingsStoreSync,
   })
