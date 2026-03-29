@@ -7,6 +7,7 @@ import type {
   SessionStatus,
   Todo,
 } from "@opencode-ai/sdk/v2"
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { appendFile, mkdir } from "node:fs/promises"
 import { connect } from "./broker-client.js"
@@ -69,6 +70,7 @@ export type WechatBridgeInput = {
   directory: string
   client: WechatBridgeClient
   liveReadTimeoutMs?: number
+  getActiveSessionID?: () => string | undefined
   onDiagnosticEvent?: (event: WechatBridgeDiagnosticEvent) => Promise<void> | void
 }
 
@@ -86,6 +88,7 @@ export type WechatBridgeLifecycleInput = {
   serverUrl?: URL
   statusCollectionEnabled?: boolean
   heartbeatIntervalMs?: number
+  getActiveSessionID?: () => string | undefined
 }
 
 export type WechatBridgeLifecycle = {
@@ -94,6 +97,7 @@ export type WechatBridgeLifecycle = {
 
 const DEFAULT_LIVE_READ_TIMEOUT_MS = 2_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000
+const PROCESS_INSTANCE_ID = toSafeInstanceID(`wechat-${process.pid}-${randomUUID().slice(0, 8)}`)
 
 type WechatBridgeLifecycleDeps = {
   connectOrSpawnBrokerImpl?: typeof connectOrSpawnBroker
@@ -108,6 +112,10 @@ function toSafeInstanceID(input: string): string {
     return `wechat-${process.pid}`
   }
   return normalized.slice(0, 64)
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
 }
 
 function toProjectName(project: WechatBridgeLifecycleInput["project"]): string | undefined {
@@ -288,6 +296,30 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
       : DEFAULT_LIVE_READ_TIMEOUT_MS
     const unavailable = new Set<InstanceUnavailableKind>()
     const onDiagnosticEvent = input.onDiagnosticEvent
+    const activeSessionID = input.getActiveSessionID?.()
+
+    if (input.getActiveSessionID && !isNonEmptyString(activeSessionID)) {
+      const snapshot = {
+        instanceID: input.instanceID,
+        instanceName: input.instanceName,
+        pid: input.pid,
+        projectName: input.projectName,
+        directory: input.directory,
+        collectedAt: Date.now(),
+        sessions: [] as SessionDigest[],
+        unavailable: undefined,
+      }
+
+      void Promise.resolve(onDiagnosticEvent?.({
+        type: "collectStatusCompleted",
+        instanceID: input.instanceID,
+        durationMs: Date.now() - startedAt,
+        sessionCount: 0,
+        unavailable: snapshot.unavailable,
+      })).catch(() => {})
+
+      return snapshot
+    }
 
     const [sessionListResult, statusResult, questionResult, permissionResult] = await Promise.allSettled([
       wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.list", onDiagnosticEvent }, () =>
@@ -305,7 +337,9 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     ])
 
     const sessions = sessionListResult.status === "fulfilled" ? sessionListResult.value : []
-    const recentSessions = pickRecentSessions(sessions, 3)
+    const recentSessions = isNonEmptyString(activeSessionID)
+      ? sessions.filter((session) => session.id === activeSessionID).slice(0, 1)
+      : pickRecentSessions(sessions, 3)
     if (sessionListResult.status === "rejected") {
       unavailable.add("sessionStatus")
     }
@@ -413,7 +447,7 @@ export async function createWechatBridgeLifecycle(
 
   const directory = toDirectory(input.directory)
   const projectName = toProjectName(input.project)
-  const instanceID = toInstanceID(projectName, directory)
+  const instanceID = PROCESS_INSTANCE_ID
   const bridge = createWechatBridge({
     instanceID,
     instanceName: toInstanceName(projectName, directory),
@@ -421,6 +455,7 @@ export async function createWechatBridgeLifecycle(
     projectName,
     directory,
     client: input.client,
+    getActiveSessionID: input.getActiveSessionID,
     onDiagnosticEvent: createWechatBridgeDiagnosticsWriter(),
   })
 

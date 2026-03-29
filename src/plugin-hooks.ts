@@ -126,8 +126,65 @@ type WechatBridgeLifecycleState = {
   closeRequested: boolean
 }
 
+type WechatBridgeSessionState = {
+  key: string
+  selectedSessionID?: string
+  interactedSessionID?: string
+}
+
 let wechatBridgeLifecycleState: WechatBridgeLifecycleState | undefined
+let wechatBridgeSessionState: WechatBridgeSessionState | undefined
 let wechatBridgeAutoCloseAttached = false
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function ensureWechatBridgeSessionState(key: string): WechatBridgeSessionState {
+  if (wechatBridgeSessionState?.key === key) {
+    return wechatBridgeSessionState
+  }
+
+  const state: WechatBridgeSessionState = { key }
+  wechatBridgeSessionState = state
+  return state
+}
+
+function trackWechatBridgeSelectedSession(state: WechatBridgeSessionState | undefined, sessionID: unknown) {
+  if (!state || !isNonEmptyString(sessionID)) {
+    return
+  }
+  state.selectedSessionID = sessionID
+}
+
+function trackWechatBridgeInteractedSession(state: WechatBridgeSessionState | undefined, sessionID: unknown) {
+  if (!state || !isNonEmptyString(sessionID)) {
+    return
+  }
+  state.interactedSessionID = sessionID
+}
+
+function getWechatBridgeActiveSessionID(state: WechatBridgeSessionState | undefined): string | undefined {
+  return state?.selectedSessionID ?? state?.interactedSessionID
+}
+
+function handleWechatBridgeEvent(state: WechatBridgeSessionState | undefined, event: unknown) {
+  if (!state || typeof event !== "object" || event === null) {
+    return
+  }
+
+  const payload = event as {
+    type?: unknown
+    properties?: {
+      sessionID?: unknown
+    }
+  }
+  if (payload.type !== "tui.session.select") {
+    return
+  }
+
+  trackWechatBridgeSelectedSession(state, payload.properties?.sessionID)
+}
 
 function buildWechatBridgeLifecycleKey(input: {
   directory?: string
@@ -939,6 +996,17 @@ export function buildPluginHooks(input: {
   const createWechatBridgeLifecycleImpl = input.createWechatBridgeLifecycleImpl ?? createWechatBridgeLifecycle
 
   const wechatBridgeClient = toWechatBridgeClient(input.client)
+  const wechatBridgeLifecycleKey = input.serverUrl && wechatBridgeClient
+    ? buildWechatBridgeLifecycleKey({
+        directory: input.directory,
+        serverUrl: input.serverUrl,
+        project: input.project,
+      })
+    : undefined
+  const wechatBridgeSessionContext = wechatBridgeLifecycleKey
+    ? ensureWechatBridgeSessionState(wechatBridgeLifecycleKey)
+    : undefined
+
   if (wechatBridgeClient) {
     void showStatusToast({
       client: input.client,
@@ -953,15 +1021,10 @@ export function buildPluginHooks(input: {
       .catch(() => {})
   }
 
-  if (input.serverUrl && wechatBridgeClient) {
-    const lifecycleKey = buildWechatBridgeLifecycleKey({
-      directory: input.directory,
-      serverUrl: input.serverUrl,
-      project: input.project,
-    })
+  if (input.serverUrl && wechatBridgeClient && wechatBridgeLifecycleKey) {
     attachWechatBridgeAutoClose()
     void ensureWechatBridgeLifecycle({
-      key: lifecycleKey,
+      key: wechatBridgeLifecycleKey,
       create: async () => {
         return createWechatBridgeLifecycleImpl({
           client: wechatBridgeClient,
@@ -969,6 +1032,7 @@ export function buildPluginHooks(input: {
           directory: input.directory,
           serverUrl: input.serverUrl,
           statusCollectionEnabled: true,
+          getActiveSessionID: () => getWechatBridgeActiveSessionID(wechatBridgeSessionContext),
         })
       },
     }).catch(() => {})
@@ -1671,6 +1735,8 @@ export function buildPluginHooks(input: {
     : Promise.resolve(async () => {})
 
   const chatHeaders: ChatHeadersHook = async (hookInput, output) => {
+    trackWechatBridgeInteractedSession(wechatBridgeSessionContext, hookInput.sessionID)
+
     if (enableCodexAuthLoader) {
       if (hookInput.model.providerID !== authProvider) return
       await (await officialChatHeaders)(hookInput, output)
@@ -1788,6 +1854,9 @@ export function buildPluginHooks(input: {
   }
 
   return {
+    event: async ({ event }) => {
+      handleWechatBridgeEvent(wechatBridgeSessionContext, event)
+    },
     auth: {
       ...input.auth,
       provider: authProvider,
@@ -1830,6 +1899,7 @@ export function buildPluginHooks(input: {
       }
     },
     "command.execute.before": async (hookInput) => {
+      trackWechatBridgeInteractedSession(wechatBridgeSessionContext, hookInput.sessionID)
       const store = await loadMergedStore()
       if (hookInput.command === "copilot-inject") {
         if (!enableCopilotAuthLoader) return
@@ -1894,11 +1964,13 @@ export function buildPluginHooks(input: {
       }
     },
     "tool.execute.before": async (hookInput) => {
+      trackWechatBridgeInteractedSession(wechatBridgeSessionContext, hookInput.sessionID)
       if (!injectArmed) return
       if (hookInput.tool !== "question") return
       injectArmed = false
     },
     "tool.execute.after": async (hookInput, output) => {
+      trackWechatBridgeInteractedSession(wechatBridgeSessionContext, hookInput.sessionID)
       if (hookInput.tool === "question") {
         injectArmed = false
         return

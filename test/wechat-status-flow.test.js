@@ -538,6 +538,60 @@ test("bridge live snapshot diagnostics: 记录超时阶段与总耗时", async (
   assert.equal(typeof completedEvent?.durationMs, "number")
 })
 
+test("bridge live snapshot: 未知当前前台 session 时显式返回 no active sessions", async () => {
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const statusFormat = await import(`../dist/wechat/status-format.js?reload=${Date.now()}`)
+  const calls = []
+
+  const bridge = bridgeModule.createWechatBridge({
+    instanceID: "bridge-instance-no-known-session",
+    instanceName: "Bridge No Known Session",
+    projectName: "project-no-known-session",
+    directory: "/repo",
+    pid: 42348,
+    getActiveSessionID: () => undefined,
+    client: {
+      session: {
+        list: async () => {
+          calls.push("session.list")
+          return [{ id: "s-1", title: "s1", directory: "/repo", time: { updated: 100 } }]
+        },
+        status: async () => {
+          calls.push("session.status")
+          return { "s-1": { type: "busy" } }
+        },
+        todo: async () => {
+          calls.push("session.todo")
+          return []
+        },
+        messages: async () => {
+          calls.push("session.messages")
+          return []
+        },
+      },
+      question: {
+        list: async () => {
+          calls.push("question.list")
+          return []
+        },
+      },
+      permission: {
+        list: async () => {
+          calls.push("permission.list")
+          return []
+        },
+      },
+    },
+  })
+
+  const snapshot = await bridge.collectStatusSnapshot()
+  const reply = statusFormat.formatInstanceStatusSnapshot(snapshot)
+
+  assert.equal(snapshot.sessions.length, 0)
+  assert.deepEqual(calls, [])
+  assert.match(reply, /no active sessions/i)
+})
+
 test("broker-client collectStatus handler: 仅在请求时触发 bridge live 读取，且同一 bridge 可重复响应", async () => {
   const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
   const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)

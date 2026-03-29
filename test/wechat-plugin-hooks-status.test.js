@@ -100,6 +100,69 @@ test("plugin-hooks 对根 SDK client 应包装出带 question/permission 的 bri
   assert.equal(calls[0]?.statusCollectionEnabled, true)
 })
 
+test("plugin-hooks 用事件与请求作用域共同维护当前前台 session", async () => {
+  const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+  const client = {
+    session: {
+      list: async () => [],
+      status: async () => ({}),
+      todo: async () => [],
+      messages: async () => [],
+    },
+    question: {
+      list: async () => [],
+    },
+    permission: {
+      list: async () => [],
+    },
+  }
+  let lifecycleInput
+
+  const plugin = buildPluginHooksRaw({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    client,
+    project: { id: "project-id", name: "wechat-stage-a" },
+    directory: "/workspace/wechat-stage-a",
+    serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
+    createWechatBridgeLifecycleImpl: async (input) => {
+      lifecycleInput = input
+      return {
+        close: async () => {},
+      }
+    },
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(lifecycleInput?.getActiveSessionID?.(), undefined)
+  assert.equal(typeof plugin.event, "function")
+
+  await plugin.event?.({
+    event: {
+      type: "tui.session.select",
+      properties: {
+        sessionID: "sess-ui",
+      },
+    },
+  })
+  assert.equal(lifecycleInput?.getActiveSessionID?.(), "sess-ui")
+
+  await plugin["tool.execute.before"]?.(
+    {
+      tool: "bash",
+      sessionID: "sess-request",
+      callID: "call-1",
+    },
+    { args: {} },
+  )
+  assert.equal(lifecycleInput?.getActiveSessionID?.(), "sess-ui")
+})
+
 test("plugin-hooks 在实例初始化入口显式触发 broker 启动确保", async () => {
   const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
   const client = {
@@ -485,6 +548,45 @@ test("bridge lifecycle register 失败时会回收已建立 brokerClient", async
   )
 
   assert.equal(closed, 1)
+})
+
+test("bridge lifecycle 生成的 instanceID 应按进程唯一，而不是目录派生", async () => {
+  const { createWechatBridgeLifecycle } = await importBridgeModule()
+  let registeredInstanceID = ""
+
+  const deps = {
+    connectOrSpawnBrokerImpl: async () => ({ endpoint: "fake-endpoint" }),
+    connectImpl: async () => ({
+      registerInstance: async (meta) => {
+        registeredInstanceID = meta.instanceID
+        return { sessionToken: "token", registeredAt: Date.now(), brokerPid: process.pid }
+      },
+      heartbeat: async () => ({}),
+      close: async () => {},
+    }),
+    setIntervalImpl: () => ({ id: Symbol("timer") }),
+    clearIntervalImpl: () => {},
+  }
+
+  const lifecycle = await createWechatBridgeLifecycle({
+    statusCollectionEnabled: true,
+    client: {
+      session: {
+        list: async () => [],
+        status: async () => ({}),
+        todo: async () => [],
+        messages: async () => [],
+      },
+      question: { list: async () => [] },
+      permission: { list: async () => [] },
+    },
+    directory: "/workspace/wechat-stage-a",
+  }, deps)
+
+  assert.match(registeredInstanceID, new RegExp(String(process.pid)))
+  assert.doesNotMatch(registeredInstanceID, /wechat-stage-a|workspace/i)
+
+  await lifecycle.close()
 })
 
 test("bridge lifecycle heartbeat 与 close 边界：仅定时心跳，close 清理且幂等", async () => {
