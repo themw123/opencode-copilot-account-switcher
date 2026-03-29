@@ -416,7 +416,7 @@ test("bridge live snapshot: 兼容 SDK 默认的 fields-style 返回结构", asy
   assert.equal(digest.pendingQuestionCount, 1)
   assert.equal(digest.pendingPermissionCount, 1)
   assert.deepEqual(todoArgs, [{ sessionID: "s-1" }])
-  assert.deepEqual(messageArgs, [{ sessionID: "s-1" }])
+  assert.deepEqual(messageArgs, [{ sessionID: "s-1", limit: 1 }])
 })
 
 test("bridge live snapshot: permission.list() hang 触发实例级 timeout unavailable，不阻塞整体返回", async () => {

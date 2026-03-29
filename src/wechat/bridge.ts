@@ -38,7 +38,7 @@ type WechatBridgeClient = {
     list: () => Promise<SdkReadResult<SessionLite[]>>
     status: () => Promise<SdkReadResult<Record<string, SessionStatus | undefined>>>
     todo: (parameters: { sessionID: string } | string) => Promise<SdkReadResult<Todo[]>>
-    messages: (parameters: { sessionID: string } | string) => Promise<SdkReadResult<SessionMessages>>
+    messages: (parameters: { sessionID: string; limit?: number } | string) => Promise<SdkReadResult<SessionMessages>>
   }
   question: {
     list: () => Promise<SdkReadResult<QuestionRequest[]>>
@@ -341,7 +341,7 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
           wrapDiagnosticStage({ instanceID: input.instanceID, stage: `session.messages:${session.id}`, onDiagnosticEvent }, () =>
             withTimeout(
               async () => unwrapSdkReadResult(
-                await input.client.session.messages({ sessionID: session.id }),
+                await input.client.session.messages({ sessionID: session.id, limit: 1 }),
                 `session.messages:${session.id}`,
               ),
               liveReadTimeoutMs,
