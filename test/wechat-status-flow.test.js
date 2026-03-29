@@ -326,6 +326,47 @@ test("bridge live snapshot: messages() 失败仅 session 级降级，permission.
   assert.equal(digest.unavailable.includes("messages"), true)
 })
 
+test("bridge live snapshot: 兼容 SDK 默认的 fields-style 返回结构", async () => {
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const wrap = (data) => ({
+    data,
+    error: null,
+    request: new Request("http://localhost"),
+    response: new Response("{}", { status: 200 }),
+  })
+
+  const bridge = bridgeModule.createWechatBridge({
+    instanceID: "bridge-instance-fields-style",
+    instanceName: "Bridge Fields Style",
+    projectName: "project-fields-style",
+    directory: "/repo",
+    pid: 42346,
+    client: {
+      session: {
+        list: async () => wrap([{ id: "s-1", title: "s1", directory: "/repo", time: { updated: 100 } }]),
+        status: async () => wrap({ "s-1": { type: "busy" } }),
+        todo: async () => wrap([{ id: "todo-1", status: "in_progress" }]),
+        messages: async () => wrap([{ info: { id: "m-1" }, parts: [] }]),
+      },
+      question: {
+        list: async () => wrap([{ id: "q-1", sessionID: "s-1", text: "Q1" }]),
+      },
+      permission: {
+        list: async () => wrap([{ id: "p-1", sessionID: "s-1", tool: "bash", command: "ls" }]),
+      },
+    },
+  })
+
+  const snapshot = await bridge.collectStatusSnapshot()
+  const digest = snapshot.sessions[0]
+
+  assert.equal(snapshot.sessions.length, 1)
+  assert.equal(digest.sessionID, "s-1")
+  assert.equal(digest.status, "busy")
+  assert.equal(digest.pendingQuestionCount, 1)
+  assert.equal(digest.pendingPermissionCount, 1)
+})
+
 test("bridge live snapshot: permission.list() hang 触发实例级 timeout unavailable，不阻塞整体返回", async () => {
   const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
 

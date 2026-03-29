@@ -21,18 +21,27 @@ type SessionMessages = Array<{ info: Message; parts: Part[] }>
 
 type SessionLite = Pick<Session, "id" | "title" | "directory" | "time">
 
+type SdkFieldsResult<T> = {
+  data: T | undefined
+  error?: unknown
+  request?: unknown
+  response?: unknown
+}
+
+type SdkReadResult<T> = T | SdkFieldsResult<T>
+
 type WechatBridgeClient = {
   session: {
-    list: () => Promise<SessionLite[]>
-    status: () => Promise<Record<string, SessionStatus | undefined>>
-    todo: (sessionID: string) => Promise<Todo[]>
-    messages: (sessionID: string) => Promise<SessionMessages>
+    list: () => Promise<SdkReadResult<SessionLite[]>>
+    status: () => Promise<SdkReadResult<Record<string, SessionStatus | undefined>>>
+    todo: (sessionID: string) => Promise<SdkReadResult<Todo[]>>
+    messages: (sessionID: string) => Promise<SdkReadResult<SessionMessages>>
   }
   question: {
-    list: () => Promise<QuestionRequest[]>
+    list: () => Promise<SdkReadResult<QuestionRequest[]>>
   }
   permission: {
-    list: () => Promise<PermissionRequest[]>
+    list: () => Promise<SdkReadResult<PermissionRequest[]>>
   }
 }
 
@@ -159,6 +168,28 @@ function withTimeout<T>(task: () => Promise<T>, timeoutMs: number, name: string)
   })
 }
 
+function isSdkFieldsResult<T>(value: SdkReadResult<T>): value is SdkFieldsResult<T> {
+  return typeof value === "object"
+    && value !== null
+    && ("data" in value || "error" in value)
+}
+
+function unwrapSdkReadResult<T>(value: SdkReadResult<T>, name: string): T {
+  if (!isSdkFieldsResult(value)) {
+    return value
+  }
+
+  if (value.error != null) {
+    throw value.error instanceof Error ? value.error : new Error(`${name} failed`)
+  }
+
+  if (value.data === undefined) {
+    throw new Error(`${name} returned no data`)
+  }
+
+  return value.data
+}
+
 export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
   const collectStatusSnapshot = async (): Promise<WechatInstanceStatusSnapshot> => {
     const liveReadTimeoutMs =
@@ -168,10 +199,10 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     const unavailable = new Set<InstanceUnavailableKind>()
 
     const [sessionListResult, statusResult, questionResult, permissionResult] = await Promise.allSettled([
-      withTimeout(() => input.client.session.list(), liveReadTimeoutMs, "session.list"),
-      withTimeout(() => input.client.session.status(), liveReadTimeoutMs, "session.status"),
-      withTimeout(() => input.client.question.list(), liveReadTimeoutMs, "question.list"),
-      withTimeout(() => input.client.permission.list(), liveReadTimeoutMs, "permission.list"),
+      withTimeout(async () => unwrapSdkReadResult(await input.client.session.list(), "session.list"), liveReadTimeoutMs, "session.list"),
+      withTimeout(async () => unwrapSdkReadResult(await input.client.session.status(), "session.status"), liveReadTimeoutMs, "session.status"),
+      withTimeout(async () => unwrapSdkReadResult(await input.client.question.list(), "question.list"), liveReadTimeoutMs, "question.list"),
+      withTimeout(async () => unwrapSdkReadResult(await input.client.permission.list(), "permission.list"), liveReadTimeoutMs, "permission.list"),
     ])
 
     const sessions = sessionListResult.status === "fulfilled" ? sessionListResult.value : []
@@ -198,9 +229,13 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     const sessionDigests = await Promise.all(
       recentSessions.map(async (session) => {
         const [todoResult, messagesResult] = await Promise.allSettled([
-          withTimeout(() => input.client.session.todo(session.id), liveReadTimeoutMs, `session.todo:${session.id}`),
           withTimeout(
-            () => input.client.session.messages(session.id),
+            async () => unwrapSdkReadResult(await input.client.session.todo(session.id), `session.todo:${session.id}`),
+            liveReadTimeoutMs,
+            `session.todo:${session.id}`,
+          ),
+          withTimeout(
+            async () => unwrapSdkReadResult(await input.client.session.messages(session.id), `session.messages:${session.id}`),
             liveReadTimeoutMs,
             `session.messages:${session.id}`,
           ),
