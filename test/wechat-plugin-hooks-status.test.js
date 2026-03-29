@@ -63,6 +63,44 @@ test("plugin-hooks 仅接入 /status bridge 生命周期", async () => {
   assert.equal(Object.hasOwn(plugin, "wechat.permission.reply"), false)
 })
 
+test("plugin-hooks 对仅含 session 能力的 SDK client 也应接入 /status bridge 生命周期", async () => {
+  const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+  const calls = []
+  const client = {
+    session: {
+      list: async () => [],
+      status: async () => ({}),
+      todo: async () => [],
+      messages: async () => [],
+    },
+  }
+
+  buildPluginHooksRaw({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    client,
+    project: { id: "project-id", name: "wechat-stage-a" },
+    directory: "/workspace/wechat-stage-a",
+    serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
+    createWechatBridgeLifecycleImpl: async (input) => {
+      calls.push(input)
+      return {
+        close: async () => {},
+      }
+    },
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.client, client)
+  assert.equal(calls[0]?.statusCollectionEnabled, true)
+})
+
 test("plugin-hooks 在实例初始化入口显式触发 broker 启动确保", async () => {
   const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
   const client = {

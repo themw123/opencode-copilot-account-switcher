@@ -28,11 +28,11 @@ type WechatBridgeClient = {
     todo: (sessionID: string) => Promise<Todo[]>
     messages: (sessionID: string) => Promise<SessionMessages>
   }
-  question: {
-    list: () => Promise<QuestionRequest[]>
+  question?: {
+    list?: () => Promise<QuestionRequest[]>
   }
-  permission: {
-    list: () => Promise<PermissionRequest[]>
+  permission?: {
+    list?: () => Promise<PermissionRequest[]>
   }
 }
 
@@ -166,12 +166,18 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
       ? Math.max(1, Math.floor(input.liveReadTimeoutMs))
       : DEFAULT_LIVE_READ_TIMEOUT_MS
     const unavailable = new Set<InstanceUnavailableKind>()
+    const questionList = input.client.question?.list
+    const permissionList = input.client.permission?.list
 
     const [sessionListResult, statusResult, questionResult, permissionResult] = await Promise.allSettled([
       withTimeout(() => input.client.session.list(), liveReadTimeoutMs, "session.list"),
       withTimeout(() => input.client.session.status(), liveReadTimeoutMs, "session.status"),
-      withTimeout(() => input.client.question.list(), liveReadTimeoutMs, "question.list"),
-      withTimeout(() => input.client.permission.list(), liveReadTimeoutMs, "permission.list"),
+      typeof questionList === "function"
+        ? withTimeout(() => questionList(), liveReadTimeoutMs, "question.list")
+        : Promise.reject(new Error("question.list unavailable")),
+      typeof permissionList === "function"
+        ? withTimeout(() => permissionList(), liveReadTimeoutMs, "permission.list")
+        : Promise.reject(new Error("permission.list unavailable")),
     ])
 
     const sessions = sessionListResult.status === "fulfilled" ? sessionListResult.value : []

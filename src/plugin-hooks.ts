@@ -519,8 +519,6 @@ function hasWechatBridgeClientShape(value: unknown): value is WechatBridgeClient
     && typeof client.session?.status === "function"
     && typeof client.session?.todo === "function"
     && typeof client.session?.messages === "function"
-    && typeof client.question?.list === "function"
-    && typeof client.permission?.list === "function"
 }
 
 function sanitizeLoggedRequestHeadersRecord(headers: Record<string, string>) {
