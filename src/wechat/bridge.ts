@@ -34,8 +34,8 @@ type WechatBridgeClient = {
   session: {
     list: () => Promise<SdkReadResult<SessionLite[]>>
     status: () => Promise<SdkReadResult<Record<string, SessionStatus | undefined>>>
-    todo: (sessionID: string) => Promise<SdkReadResult<Todo[]>>
-    messages: (sessionID: string) => Promise<SdkReadResult<SessionMessages>>
+    todo: (parameters: { sessionID: string } | string) => Promise<SdkReadResult<Todo[]>>
+    messages: (parameters: { sessionID: string } | string) => Promise<SdkReadResult<SessionMessages>>
   }
   question: {
     list: () => Promise<SdkReadResult<QuestionRequest[]>>
@@ -230,12 +230,18 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
       recentSessions.map(async (session) => {
         const [todoResult, messagesResult] = await Promise.allSettled([
           withTimeout(
-            async () => unwrapSdkReadResult(await input.client.session.todo(session.id), `session.todo:${session.id}`),
+            async () => unwrapSdkReadResult(
+              await input.client.session.todo({ sessionID: session.id }),
+              `session.todo:${session.id}`,
+            ),
             liveReadTimeoutMs,
             `session.todo:${session.id}`,
           ),
           withTimeout(
-            async () => unwrapSdkReadResult(await input.client.session.messages(session.id), `session.messages:${session.id}`),
+            async () => unwrapSdkReadResult(
+              await input.client.session.messages({ sessionID: session.id }),
+              `session.messages:${session.id}`,
+            ),
             liveReadTimeoutMs,
             `session.messages:${session.id}`,
           ),

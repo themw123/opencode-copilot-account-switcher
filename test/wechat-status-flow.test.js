@@ -232,11 +232,13 @@ test("bridge live snapshot: 读取 session/status/question/permission/todo/messa
             "s-older": { type: "busy" },
           }
         },
-        todo: async (sessionID) => {
+        todo: async (input) => {
+          const sessionID = typeof input === "string" ? input : input.sessionID
           calls.push(`session.todo:${sessionID}`)
           return [{ id: `${sessionID}-todo-1`, status: "in_progress" }]
         },
-        messages: async (sessionID) => {
+        messages: async (input) => {
+          const sessionID = typeof input === "string" ? input : input.sessionID
           calls.push(`session.messages:${sessionID}`)
           return [{ info: { id: `${sessionID}-m1` }, parts: [] }]
         },
@@ -328,6 +330,8 @@ test("bridge live snapshot: messages() 失败仅 session 级降级，permission.
 
 test("bridge live snapshot: 兼容 SDK 默认的 fields-style 返回结构", async () => {
   const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const todoArgs = []
+  const messageArgs = []
   const wrap = (data) => ({
     data,
     error: null,
@@ -345,8 +349,14 @@ test("bridge live snapshot: 兼容 SDK 默认的 fields-style 返回结构", asy
       session: {
         list: async () => wrap([{ id: "s-1", title: "s1", directory: "/repo", time: { updated: 100 } }]),
         status: async () => wrap({ "s-1": { type: "busy" } }),
-        todo: async () => wrap([{ id: "todo-1", status: "in_progress" }]),
-        messages: async () => wrap([{ info: { id: "m-1" }, parts: [] }]),
+        todo: async (input) => {
+          todoArgs.push(input)
+          return wrap([{ id: "todo-1", status: "in_progress" }])
+        },
+        messages: async (input) => {
+          messageArgs.push(input)
+          return wrap([{ info: { id: "m-1" }, parts: [] }])
+        },
       },
       question: {
         list: async () => wrap([{ id: "q-1", sessionID: "s-1", text: "Q1" }]),
@@ -365,6 +375,8 @@ test("bridge live snapshot: 兼容 SDK 默认的 fields-style 返回结构", asy
   assert.equal(digest.status, "busy")
   assert.equal(digest.pendingQuestionCount, 1)
   assert.equal(digest.pendingPermissionCount, 1)
+  assert.deepEqual(todoArgs, [{ sessionID: "s-1" }])
+  assert.deepEqual(messageArgs, [{ sessionID: "s-1" }])
 })
 
 test("bridge live snapshot: permission.list() hang 触发实例级 timeout unavailable，不阻塞整体返回", async () => {
