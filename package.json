@@ -1,6 +1,6 @@
 {
   "name": "opencode-copilot-account-switcher",
-  "version": "0.14.22",
+  "version": "0.14.23",
   "description": "GitHub Copilot account switcher plugin for OpenCode",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
