@@ -26,7 +26,7 @@ const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
 
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30_000
 const DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS = 1_000
-export const DEFAULT_STATUS_COLLECT_WINDOW_MS = 1_500
+export const DEFAULT_STATUS_COLLECT_WINDOW_MS = 5_000
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
@@ -544,6 +544,10 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     process.env.WECHAT_BROKER_HEARTBEAT_SCAN_INTERVAL_MS,
     DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS,
   )
+  const statusCollectWindowMs = toPositiveNumber(
+    process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS,
+    DEFAULT_STATUS_COLLECT_WINDOW_MS,
+  )
 
   const server = net.createServer((socket) => {
     let buffer = ""
@@ -635,7 +639,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         finalizePendingCollectStatus(requestId)
-      }, DEFAULT_STATUS_COLLECT_WINDOW_MS)
+      }, statusCollectWindowMs)
 
       pendingCollectStatusByRequestId.set(requestId, {
         requestedInstanceIDs,

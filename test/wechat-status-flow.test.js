@@ -83,11 +83,14 @@ test("collectStatus/statusSnapshot 往返：broker 广播，bridge 回包，brok
   }
 })
 
-test("collectStatus 聚合窗口固定 1.5s，未回包实例标记 timeout/unreachable", async () => {
+test("collectStatus 可通过环境变量收紧聚合窗口，未回包实例标记 timeout/unreachable", async () => {
   const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
   const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-timeout-"))
   const endpoint = createBrokerEndpoint(tempDir)
+  const previousWindow = process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS
+
+  process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS = "1500"
 
   const server = await brokerServer.startBrokerServer(endpoint)
   let responsive = null
@@ -106,7 +109,7 @@ test("collectStatus 聚合窗口固定 1.5s，未回包实例标记 timeout/unre
     const result = await server.collectStatus()
     const elapsedMs = Date.now() - startedAt
 
-    assert.equal(brokerServer.DEFAULT_STATUS_COLLECT_WINDOW_MS, 1500)
+    assert.equal(brokerServer.DEFAULT_STATUS_COLLECT_WINDOW_MS, 5000)
     assert.equal(elapsedMs >= 1400, true)
 
     const responsiveItem = result.instances.find((item) => item.instanceID === "status-responsive")
@@ -118,11 +121,48 @@ test("collectStatus 聚合窗口固定 1.5s，未回包实例标记 timeout/unre
     assert.equal("snapshot" in unresponsiveItem, false)
 
   } finally {
+    if (previousWindow === undefined) {
+      delete process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS
+    } else {
+      process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS = previousWindow
+    }
     if (responsive) {
       await responsive.close().catch(() => {})
     }
     if (unresponsive) {
       await unresponsive.close().catch(() => {})
+    }
+    await server.close()
+  }
+})
+
+test("collectStatus 不应把 1.6s 内返回的 snapshot 误判为 timeout", async () => {
+  const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-slow-success-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+
+  const server = await brokerServer.startBrokerServer(endpoint)
+  let slow = null
+
+  try {
+    slow = await brokerClient.connect(endpoint, {
+      onCollectStatus: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1600))
+        return { healthy: true }
+      },
+    })
+    await slow.registerInstance({ instanceID: "status-slow-success", pid: process.pid })
+
+    const result = await server.collectStatus()
+    const item = result.instances.find((entry) => entry.instanceID === "status-slow-success")
+
+    assert.equal(item?.status, "ok")
+    assert.deepEqual(item?.snapshot, { healthy: true })
+
+  } finally {
+    if (slow) {
+      await slow.close().catch(() => {})
     }
     await server.close()
   }
@@ -640,6 +680,9 @@ test("broker slash handler: /status 走 collectStatus formatter，其它 slash �
   const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-slash-handler-"))
   const endpoint = createBrokerEndpoint(tempDir)
+  const previousWindow = process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS
+
+  process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS = "1500"
 
   const server = await brokerServer.startBrokerServer(endpoint)
   let responsive = null
@@ -690,6 +733,11 @@ test("broker slash handler: /status 走 collectStatus formatter，其它 slash �
       "命令暂未实现：/allow",
     )
   } finally {
+    if (previousWindow === undefined) {
+      delete process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS
+    } else {
+      process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS = previousWindow
+    }
     if (responsive) {
       await responsive.close().catch(() => {})
     }
@@ -705,6 +753,9 @@ test("broker 聚合输出：collectStatus 返回格式化 /status reply", async 
   const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-reply-"))
   const endpoint = createBrokerEndpoint(tempDir)
+  const previousWindow = process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS
+
+  process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS = "1500"
 
   const server = await brokerServer.startBrokerServer(endpoint)
   let responsive = null
@@ -749,6 +800,11 @@ test("broker 聚合输出：collectStatus 返回格式化 /status reply", async 
     assert.match(result.reply, /timeout\/unreachable/i)
     assert.doesNotMatch(result.reply, /\/status|slash command|recent command/i)
   } finally {
+    if (previousWindow === undefined) {
+      delete process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS
+    } else {
+      process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS = previousWindow
+    }
     if (responsive) {
       await responsive.close().catch(() => {})
     }
