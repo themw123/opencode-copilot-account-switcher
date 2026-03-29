@@ -1,6 +1,7 @@
 import { appendFileSync } from "node:fs"
 import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash } from "node:crypto"
+import { OpencodeClient as OpencodeV2Client } from "@opencode-ai/sdk/v2/client"
 import {
   createCompactionLoopSafetyBypass,
   createLoopSafetySystemTransform,
@@ -519,6 +520,51 @@ function hasWechatBridgeClientShape(value: unknown): value is WechatBridgeClient
     && typeof client.session?.status === "function"
     && typeof client.session?.todo === "function"
     && typeof client.session?.messages === "function"
+    && typeof client.question?.list === "function"
+    && typeof client.permission?.list === "function"
+}
+
+function hasWechatBridgeSessionShape(value: unknown): value is {
+  session: {
+    list: unknown
+    status: unknown
+    todo: unknown
+    messages: unknown
+  }
+  _client?: unknown
+} {
+  if (typeof value !== "object" || value === null) return false
+  const client = value as {
+    session?: {
+      list?: unknown
+      status?: unknown
+      todo?: unknown
+      messages?: unknown
+    }
+    _client?: unknown
+  }
+  return typeof client.session?.list === "function"
+    && typeof client.session?.status === "function"
+    && typeof client.session?.todo === "function"
+    && typeof client.session?.messages === "function"
+}
+
+function toWechatBridgeClient(value: unknown): WechatBridgeClientShape | undefined {
+  if (hasWechatBridgeClientShape(value)) {
+    return value
+  }
+
+  if (!hasWechatBridgeSessionShape(value)) {
+    return undefined
+  }
+
+  const transport = value._client
+  if (typeof transport !== "object" || transport === null) {
+    return undefined
+  }
+
+  const wrapped = new OpencodeV2Client({ client: transport as never })
+  return hasWechatBridgeClientShape(wrapped) ? wrapped : undefined
 }
 
 function sanitizeLoggedRequestHeadersRecord(headers: Record<string, string>) {
@@ -892,7 +938,7 @@ export function buildPluginHooks(input: {
   const ensureWechatBrokerStarted = input.ensureWechatBrokerStarted ?? (async () => connectOrSpawnBroker())
   const createWechatBridgeLifecycleImpl = input.createWechatBridgeLifecycleImpl ?? createWechatBridgeLifecycle
 
-  const wechatBridgeClient = hasWechatBridgeClientShape(input.client) ? input.client : undefined
+  const wechatBridgeClient = toWechatBridgeClient(input.client)
   if (wechatBridgeClient) {
     void showStatusToast({
       client: input.client,

@@ -63,17 +63,12 @@ test("plugin-hooks 仅接入 /status bridge 生命周期", async () => {
   assert.equal(Object.hasOwn(plugin, "wechat.permission.reply"), false)
 })
 
-test("plugin-hooks 对仅含 session 能力的 SDK client 也应接入 /status bridge 生命周期", async () => {
+test("plugin-hooks 对根 SDK client 应包装出带 question/permission 的 bridge client", async () => {
   const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+  const { createOpencodeClient } = await import("@opencode-ai/sdk/client")
   const calls = []
-  const client = {
-    session: {
-      list: async () => [],
-      status: async () => ({}),
-      todo: async () => [],
-      messages: async () => [],
-    },
-  }
+  const client = createOpencodeClient({ baseUrl: "http://127.0.0.1:4096" })
+  client.tui.showToast = async () => ({ data: undefined })
 
   buildPluginHooksRaw({
     auth: {
@@ -97,7 +92,11 @@ test("plugin-hooks 对仅含 session 能力的 SDK client 也应接入 /status b
   await Promise.resolve()
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0]?.client, client)
+  assert.notEqual(calls[0]?.client, client)
+  assert.equal(calls[0]?.client?.client, client._client)
+  assert.equal(typeof calls[0]?.client?.session?.list, "function")
+  assert.equal(typeof calls[0]?.client?.question?.list, "function")
+  assert.equal(typeof calls[0]?.client?.permission?.list, "function")
   assert.equal(calls[0]?.statusCollectionEnabled, true)
 })
 
