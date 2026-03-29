@@ -29,6 +29,7 @@ type LaunchOptions = {
   expectedVersion?: string
   endpointFactory?: () => string
   spawnImpl?: (endpoint: string, stateRoot: string) => { pid?: number | undefined; unref?: (() => void) | undefined }
+  retireBrokerImpl?: (metadata: BrokerMetadata) => Promise<void> | void
   pingImpl?: (endpoint: string) => Promise<boolean>
   onLockAcquired?: (lock: LaunchLockContent) => void
 }
@@ -208,6 +209,60 @@ async function isBrokerAlive(
   return metadata
 }
 
+async function readVersionMismatchedBroker(
+  brokerFilePath: string,
+  expectedVersion?: string,
+): Promise<BrokerMetadata | null> {
+  const metadata = await readBrokerMetadata(brokerFilePath)
+  if (!metadata) {
+    return null
+  }
+
+  if (!isNonEmptyString(expectedVersion) || metadata.version === expectedVersion) {
+    return null
+  }
+
+  return metadata
+}
+
+async function defaultRetireBrokerImpl(
+  metadata: BrokerMetadata,
+  pingImpl: (endpoint: string) => Promise<boolean>,
+): Promise<void> {
+  if (metadata.pid === process.pid) {
+    return
+  }
+
+  const reachable = await pingImpl(metadata.endpoint)
+  if (!reachable) {
+    return
+  }
+
+  if (!isProcessAlive(metadata.pid)) {
+    return
+  }
+
+  try {
+    process.kill(metadata.pid, "SIGTERM")
+  } catch {
+    return
+  }
+
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 5000) {
+    if (!isProcessAlive(metadata.pid)) {
+      return
+    }
+    await delay(50)
+  }
+
+  try {
+    process.kill(metadata.pid, "SIGKILL")
+  } catch {
+    // process already exited
+  }
+}
+
 function defaultSpawnImpl(endpoint: string, stateRoot: string) {
   const entry = fileURLToPath(new URL("./broker-entry.js", import.meta.url))
   const child = spawn(resolveBrokerSpawnCommand(), [entry, `--endpoint=${endpoint}`, `--state-root=${stateRoot}`], {
@@ -229,6 +284,7 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
   const expectedVersion = options.expectedVersion ?? await readCurrentPackageVersion()
   const pingImpl = options.pingImpl ?? defaultPingImpl
   const spawnImpl = options.spawnImpl ?? defaultSpawnImpl
+  const retireBrokerImpl = options.retireBrokerImpl ?? ((metadata: BrokerMetadata) => defaultRetireBrokerImpl(metadata, pingImpl))
   const endpointFactory = options.endpointFactory ?? (() => createDefaultBrokerEndpoint({ stateRoot }))
 
   await mkdir(stateRoot, { recursive: true, mode: 0o700 })
@@ -251,6 +307,11 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
       const secondCheck = await isBrokerAlive(brokerJsonFile, pingImpl, expectedVersion)
       if (secondCheck) {
         return secondCheck
+      }
+
+      const versionMismatchedBroker = await readVersionMismatchedBroker(brokerJsonFile, expectedVersion)
+      if (versionMismatchedBroker) {
+        await retireBrokerImpl(versionMismatchedBroker)
       }
 
       const endpoint = endpointFactory()
