@@ -23,6 +23,10 @@ export function brokerStartupDiagnosticsPath(stateRoot: string = wechatStateRoot
   return path.join(stateRoot, "broker-startup.diagnostics.log")
 }
 
+export function wechatBridgeDiagnosticsPath(stateRoot: string = wechatStateRoot()) {
+  return path.join(stateRoot, "wechat-bridge.diagnostics.jsonl")
+}
+
 export function launchLockPath() {
   return path.join(wechatStateRoot(), "launch.lock")
 }

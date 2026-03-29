@@ -492,6 +492,52 @@ test("bridge live snapshot: session.messages() hang 触发 session 级 timeout u
   assert.equal(digest.unavailable.includes("messages"), true)
 })
 
+test("bridge live snapshot diagnostics: 记录超时阶段与总耗时", async () => {
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const events = []
+
+  const bridge = bridgeModule.createWechatBridge({
+    instanceID: "bridge-instance-diagnostics",
+    instanceName: "Bridge Diagnostics",
+    projectName: "project-diagnostics",
+    directory: "/repo",
+    pid: 42347,
+    liveReadTimeoutMs: 20,
+    onDiagnosticEvent: async (event) => {
+      events.push(event)
+    },
+    client: {
+      session: {
+        list: async () => [{ id: "s-1", title: "s1", directory: "/repo", time: { updated: 100 } }],
+        status: async () => ({ "s-1": { type: "busy" } }),
+        todo: async () => [{ id: "todo-1", status: "in_progress" }],
+        messages: async () => new Promise(() => {}),
+      },
+      question: {
+        list: async () => [],
+      },
+      permission: {
+        list: async () => [],
+      },
+    },
+  })
+
+  const snapshot = await bridge.collectStatusSnapshot()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(snapshot.sessions.length, 1)
+
+  const stageEvent = events.find((event) => event.type === "collectStatusStage" && event.stage === "session.messages:s-1")
+  assert.equal(stageEvent?.status, "rejected")
+  assert.equal(stageEvent?.timeout, true)
+  assert.equal(typeof stageEvent?.durationMs, "number")
+
+  const completedEvent = events.find((event) => event.type === "collectStatusCompleted")
+  assert.equal(completedEvent?.instanceID, "bridge-instance-diagnostics")
+  assert.equal(completedEvent?.sessionCount, 1)
+  assert.equal(typeof completedEvent?.durationMs, "number")
+})
+
 test("broker-client collectStatus handler: 仅在请求时触发 bridge live 读取，且同一 bridge 可重复响应", async () => {
   const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
   const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)

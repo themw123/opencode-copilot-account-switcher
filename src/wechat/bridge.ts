@@ -7,8 +7,11 @@ import type {
   SessionStatus,
   Todo,
 } from "@opencode-ai/sdk/v2"
+import path from "node:path"
+import { appendFile, mkdir } from "node:fs/promises"
 import { connect } from "./broker-client.js"
 import { connectOrSpawnBroker } from "./broker-launcher.js"
+import { WECHAT_FILE_MODE, wechatBridgeDiagnosticsPath } from "./state-paths.js"
 import {
   buildSessionDigest,
   groupPermissionsBySession,
@@ -66,6 +69,7 @@ export type WechatBridgeInput = {
   directory: string
   client: WechatBridgeClient
   liveReadTimeoutMs?: number
+  onDiagnosticEvent?: (event: WechatBridgeDiagnosticEvent) => Promise<void> | void
 }
 
 export type WechatBridge = {
@@ -168,6 +172,91 @@ function withTimeout<T>(task: () => Promise<T>, timeoutMs: number, name: string)
   })
 }
 
+type WechatBridgeDiagnosticEvent =
+  | {
+      type: "collectStatusStage"
+      instanceID: string
+      stage: string
+      status: "fulfilled" | "rejected"
+      durationMs: number
+      timeout?: boolean
+      error?: string
+    }
+  | {
+      type: "collectStatusCompleted"
+      instanceID: string
+      durationMs: number
+      sessionCount: number
+      unavailable?: InstanceUnavailableKind[]
+    }
+
+function isErrorWithMessage(value: unknown): value is { message: string } {
+  return typeof value === "object" && value !== null && "message" in value && typeof (value as { message: unknown }).message === "string"
+}
+
+function createWechatBridgeDiagnosticsWriter(filePath: string = wechatBridgeDiagnosticsPath()) {
+  let warned = false
+
+  return async (event: WechatBridgeDiagnosticEvent) => {
+    try {
+      await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 })
+      const line = `${JSON.stringify({ timestamp: Date.now(), ...event })}\n`
+      await appendFile(filePath, line, { encoding: "utf8", mode: WECHAT_FILE_MODE })
+    } catch (error) {
+      if (!warned) {
+        warned = true
+        console.warn("[wechat-bridge] failed to write diagnostics", error)
+      }
+    }
+  }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return isErrorWithMessage(error) && /timed out/i.test(error.message)
+}
+
+function toDiagnosticErrorMessage(error: unknown): string {
+  if (isErrorWithMessage(error)) {
+    return error.message
+  }
+  return String(error)
+}
+
+function wrapDiagnosticStage<T>(
+  input: {
+    instanceID: string
+    stage: string
+    onDiagnosticEvent?: (event: WechatBridgeDiagnosticEvent) => Promise<void> | void
+  },
+  task: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now()
+  return Promise.resolve()
+    .then(task)
+    .then((value) => {
+      void Promise.resolve(input.onDiagnosticEvent?.({
+        type: "collectStatusStage",
+        instanceID: input.instanceID,
+        stage: input.stage,
+        status: "fulfilled",
+        durationMs: Date.now() - startedAt,
+      })).catch(() => {})
+      return value
+    })
+    .catch((error) => {
+      void Promise.resolve(input.onDiagnosticEvent?.({
+        type: "collectStatusStage",
+        instanceID: input.instanceID,
+        stage: input.stage,
+        status: "rejected",
+        durationMs: Date.now() - startedAt,
+        timeout: isTimeoutError(error),
+        error: toDiagnosticErrorMessage(error),
+      })).catch(() => {})
+      throw error
+    })
+}
+
 function isSdkFieldsResult<T>(value: SdkReadResult<T>): value is SdkFieldsResult<T> {
   return typeof value === "object"
     && value !== null
@@ -192,17 +281,27 @@ function unwrapSdkReadResult<T>(value: SdkReadResult<T>, name: string): T {
 
 export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
   const collectStatusSnapshot = async (): Promise<WechatInstanceStatusSnapshot> => {
+    const startedAt = Date.now()
     const liveReadTimeoutMs =
       typeof input.liveReadTimeoutMs === "number" && Number.isFinite(input.liveReadTimeoutMs)
       ? Math.max(1, Math.floor(input.liveReadTimeoutMs))
       : DEFAULT_LIVE_READ_TIMEOUT_MS
     const unavailable = new Set<InstanceUnavailableKind>()
+    const onDiagnosticEvent = input.onDiagnosticEvent
 
     const [sessionListResult, statusResult, questionResult, permissionResult] = await Promise.allSettled([
-      withTimeout(async () => unwrapSdkReadResult(await input.client.session.list(), "session.list"), liveReadTimeoutMs, "session.list"),
-      withTimeout(async () => unwrapSdkReadResult(await input.client.session.status(), "session.status"), liveReadTimeoutMs, "session.status"),
-      withTimeout(async () => unwrapSdkReadResult(await input.client.question.list(), "question.list"), liveReadTimeoutMs, "question.list"),
-      withTimeout(async () => unwrapSdkReadResult(await input.client.permission.list(), "permission.list"), liveReadTimeoutMs, "permission.list"),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.list", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.session.list(), "session.list"), liveReadTimeoutMs, "session.list"),
+      ),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.status", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.session.status(), "session.status"), liveReadTimeoutMs, "session.status"),
+      ),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "question.list", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.question.list(), "question.list"), liveReadTimeoutMs, "question.list"),
+      ),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "permission.list", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.permission.list(), "permission.list"), liveReadTimeoutMs, "permission.list"),
+      ),
     ])
 
     const sessions = sessionListResult.status === "fulfilled" ? sessionListResult.value : []
@@ -229,21 +328,25 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     const sessionDigests = await Promise.all(
       recentSessions.map(async (session) => {
         const [todoResult, messagesResult] = await Promise.allSettled([
-          withTimeout(
-            async () => unwrapSdkReadResult(
-              await input.client.session.todo({ sessionID: session.id }),
+          wrapDiagnosticStage({ instanceID: input.instanceID, stage: `session.todo:${session.id}`, onDiagnosticEvent }, () =>
+            withTimeout(
+              async () => unwrapSdkReadResult(
+                await input.client.session.todo({ sessionID: session.id }),
+                `session.todo:${session.id}`,
+              ),
+              liveReadTimeoutMs,
               `session.todo:${session.id}`,
             ),
-            liveReadTimeoutMs,
-            `session.todo:${session.id}`,
           ),
-          withTimeout(
-            async () => unwrapSdkReadResult(
-              await input.client.session.messages({ sessionID: session.id }),
+          wrapDiagnosticStage({ instanceID: input.instanceID, stage: `session.messages:${session.id}`, onDiagnosticEvent }, () =>
+            withTimeout(
+              async () => unwrapSdkReadResult(
+                await input.client.session.messages({ sessionID: session.id }),
+                `session.messages:${session.id}`,
+              ),
+              liveReadTimeoutMs,
               `session.messages:${session.id}`,
             ),
-            liveReadTimeoutMs,
-            `session.messages:${session.id}`,
           ),
         ])
 
@@ -266,7 +369,7 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
       }),
     )
 
-    return {
+    const snapshot = {
       instanceID: input.instanceID,
       instanceName: input.instanceName,
       pid: input.pid,
@@ -276,6 +379,16 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
       sessions: sessionDigests,
       unavailable: unavailable.size > 0 ? [...unavailable] : undefined,
     }
+
+    void Promise.resolve(onDiagnosticEvent?.({
+      type: "collectStatusCompleted",
+      instanceID: input.instanceID,
+      durationMs: Date.now() - startedAt,
+      sessionCount: snapshot.sessions.length,
+      unavailable: snapshot.unavailable,
+    })).catch(() => {})
+
+    return snapshot
   }
 
   return {
@@ -308,6 +421,7 @@ export async function createWechatBridgeLifecycle(
     projectName,
     directory,
     client: input.client,
+    onDiagnosticEvent: createWechatBridgeDiagnosticsWriter(),
   })
 
   const broker = await connectOrSpawnBrokerImpl()
