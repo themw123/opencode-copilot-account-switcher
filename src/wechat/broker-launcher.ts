@@ -1,6 +1,5 @@
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
 import { mkdir, open, readFile, rm } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
@@ -38,9 +37,16 @@ const DEFAULT_BACKOFF_MS = 250
 const DEFAULT_MAX_ATTEMPTS = 20
 
 type ResolveBrokerSpawnCommandOptions = {
-  platform?: NodeJS.Platform
   execPath?: string
-  bunPathExists?: (candidate: string) => boolean
+}
+
+type ResolveBrokerSpawnEnv = NodeJS.ProcessEnv
+
+export function resolveBrokerSpawnEnv(env: ResolveBrokerSpawnEnv = process.env): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    BUN_BE_BUN: "1",
+  }
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -58,20 +64,8 @@ function delay(ms: number) {
 export { createDefaultBrokerEndpoint }
 
 export function resolveBrokerSpawnCommand(options: ResolveBrokerSpawnCommandOptions = {}): string {
-  const platform = options.platform ?? process.platform
   const execPath = options.execPath ?? process.execPath
-  const bunPathExists = options.bunPathExists ?? existsSync
-
-  if (platform !== "win32") {
-    return execPath
-  }
-
-  if (path.win32.basename(execPath).toLowerCase() !== "opencode.exe") {
-    return execPath
-  }
-
-  const bunPath = path.win32.join(path.win32.dirname(execPath), "bun.exe")
-  return bunPathExists(bunPath) ? bunPath : execPath
+  return execPath
 }
 
 async function readCurrentPackageVersion(): Promise<string> {
@@ -219,6 +213,7 @@ function defaultSpawnImpl(endpoint: string, stateRoot: string) {
   const child = spawn(resolveBrokerSpawnCommand(), [entry, `--endpoint=${endpoint}`, `--state-root=${stateRoot}`], {
     cwd: path.resolve(fileURLToPath(new URL("../..", import.meta.url))),
     detached: true,
+    env: resolveBrokerSpawnEnv(process.env),
     stdio: "ignore",
   })
   child.unref()

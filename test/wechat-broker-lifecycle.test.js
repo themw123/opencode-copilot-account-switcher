@@ -865,17 +865,46 @@ test("Windows Bun runtime 下默认 broker endpoint 应切到 tcp 回环地址",
   )
 })
 
-test("Windows opencode.exe runtime 下 broker launcher 应改用同目录 bun.exe", async () => {
+test("Windows 打包 opencode.exe runtime 下 broker launcher 应继续复用当前 execPath", async () => {
   const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
 
   assert.equal(
     launcher.resolveBrokerSpawnCommand({
-      platform: "win32",
-      execPath: "C:\\Users\\34404\\.bun\\bin\\opencode.exe",
-      bunPathExists: (candidate) => candidate === "C:\\Users\\34404\\.bun\\bin\\bun.exe",
+      execPath: "C:\\Users\\34404\\.bun\\install\\global\\node_modules\\opencode-windows-x64\\bin\\opencode.exe",
     }),
-    "C:\\Users\\34404\\.bun\\bin\\bun.exe",
+    "C:\\Users\\34404\\.bun\\install\\global\\node_modules\\opencode-windows-x64\\bin\\opencode.exe",
   )
+})
+
+test("Windows opencode-cli.exe runtime 下 broker launcher 应继续复用当前 execPath", async () => {
+  const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
+
+  assert.equal(
+    launcher.resolveBrokerSpawnCommand({
+      execPath: "C:\\Users\\34404\\AppData\\Local\\OpenCode\\opencode-cli.exe",
+    }),
+    "C:\\Users\\34404\\AppData\\Local\\OpenCode\\opencode-cli.exe",
+  )
+})
+
+test("broker launcher 默认派生环境应附带 BUN_BE_BUN", async () => {
+  const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
+  const baseEnv = { HELLO: "world" }
+
+  const env = launcher.resolveBrokerSpawnEnv(baseEnv)
+
+  assert.equal(env.HELLO, "world")
+  assert.equal(env.BUN_BE_BUN, "1")
+  assert.deepEqual(baseEnv, { HELLO: "world" })
+})
+
+test("broker launcher 默认派生环境应覆盖已有的 BUN_BE_BUN", async () => {
+  const launcher = await import(`${DIST_BROKER_LAUNCHER_MODULE}?reload=${Date.now()}`)
+
+  const env = launcher.resolveBrokerSpawnEnv({ BUN_BE_BUN: "0", HELLO: "world" })
+
+  assert.equal(env.BUN_BE_BUN, "1")
+  assert.equal(env.HELLO, "world")
 })
 
 test("Windows Node runtime 下默认 broker endpoint 也使用 tcp 回环地址", async () => {
