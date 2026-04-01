@@ -22,6 +22,20 @@ function createClient(calls) {
   }
 }
 
+function captureConsoleLog() {
+  const lines = []
+  const original = console.log
+  console.log = (...args) => {
+    lines.push(args.map((value) => String(value)).join(" "))
+  }
+  return {
+    lines,
+    restore() {
+      console.log = original
+    },
+  }
+}
+
 test("codex adapter bootstraps openai auth from auth.json only once", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
   const authCalls = []
@@ -282,6 +296,15 @@ test("codex adapter authorizeNewAccount uses official browser oauth method", asy
   let loadMethodsCalls = 0
   let browserAuthorizeCalls = 0
   let browserCallbackCalls = 0
+  const consoleCapture = captureConsoleLog()
+  let releaseCallback = () => {}
+  let resolveCallbackStarted = () => {}
+  const callbackStarted = new Promise((resolve) => {
+    resolveCallbackStarted = resolve
+  })
+  const callbackGate = new Promise((resolve) => {
+    releaseCallback = resolve
+  })
   const store = {
     accounts: {},
     active: undefined,
@@ -289,55 +312,79 @@ test("codex adapter authorizeNewAccount uses official browser oauth method", asy
     refreshMinutes: 15,
   }
 
-  const adapter = createCodexMenuAdapter({
-    client: createClient(setCalls),
-    now: () => 1700000000666,
-    promptText: async () => "1",
-    loadOfficialCodexAuthMethods: async () => {
-      loadMethodsCalls += 1
-      return [{
-        label: "Browser OAuth",
-        type: "oauth",
-        authorize: async () => {
-          browserAuthorizeCalls += 1
-          return {
-            url: "https://example.com",
-            method: "auto",
-            callback: async () => {
-              browserCallbackCalls += 1
-              return {
-                type: "success",
-                refresh: "refresh_new",
-                access: "access_new",
-                expires: 1700003600000,
-                accountId: "acct_new",
-              }
-            },
-          }
-        },
-      }]
-    },
-  })
+  try {
+    const adapter = createCodexMenuAdapter({
+      client: createClient(setCalls),
+      now: () => 1700000000666,
+      promptText: async () => "1",
+      loadOfficialCodexAuthMethods: async () => {
+        loadMethodsCalls += 1
+        return [{
+          label: "Browser OAuth",
+          type: "oauth",
+          authorize: async () => {
+            browserAuthorizeCalls += 1
+            return {
+              url: "https://example.com/browser",
+              instructions: "Complete authorization in your browser.",
+              method: "auto",
+              callback: async () => {
+                browserCallbackCalls += 1
+                resolveCallbackStarted()
+                await callbackGate
+                return {
+                  type: "success",
+                  refresh: "refresh_new",
+                  access: "access_new",
+                  expires: 1700003600000,
+                  accountId: "acct_new",
+                }
+              },
+            }
+          },
+        }]
+      },
+    })
 
-  const entry = await adapter.authorizeNewAccount(store)
+    const entryPromise = adapter.authorizeNewAccount(store)
 
-  assert.equal(loadMethodsCalls, 1)
-  assert.equal(browserAuthorizeCalls, 1)
-  assert.equal(browserCallbackCalls, 1)
-  assert.equal(entry?.providerId, "openai")
-  assert.equal(entry?.refresh, "refresh_new")
-  assert.equal(entry?.access, "access_new")
-  assert.equal(entry?.accountId, "acct_new")
-  assert.equal(entry?.addedAt, 1700000000666)
-  assert.equal(entry?.workspaceName, undefined)
-  assert.equal(entry?.email, undefined)
-  assert.equal(setCalls.length, 1)
-  assert.equal(setCalls[0]?.path?.id, "openai")
+    await callbackStarted
+    assert.ok(consoleCapture.lines.includes("Go to: https://example.com/browser"))
+    assert.ok(consoleCapture.lines.includes("Complete authorization in your browser."))
+
+    releaseCallback()
+    const entry = await entryPromise
+
+    assert.equal(loadMethodsCalls, 1)
+    assert.equal(browserAuthorizeCalls, 1)
+    assert.equal(browserCallbackCalls, 1)
+    assert.equal(entry?.providerId, "openai")
+    assert.equal(entry?.refresh, "refresh_new")
+    assert.equal(entry?.access, "access_new")
+    assert.equal(entry?.accountId, "acct_new")
+    assert.equal(entry?.addedAt, 1700000000666)
+    assert.equal(entry?.workspaceName, undefined)
+    assert.equal(entry?.email, undefined)
+    assert.equal(setCalls.length, 1)
+    assert.equal(setCalls[0]?.path?.id, "openai")
+  } finally {
+    releaseCallback()
+    consoleCapture.restore()
+  }
 })
 
 test("codex adapter authorizeNewAccount supports official headless oauth method through same path", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
   const setCalls = []
+  const consoleCapture = captureConsoleLog()
+  let releaseCallback = () => {}
+  let resolveCallbackStarted = () => {}
+  const callbackStarted = new Promise((resolve) => {
+    resolveCallbackStarted = resolve
+  })
+  const callbackGate = new Promise((resolve) => {
+    releaseCallback = resolve
+  })
   const store = {
     accounts: {},
     active: undefined,
@@ -345,40 +392,58 @@ test("codex adapter authorizeNewAccount supports official headless oauth method 
     refreshMinutes: 15,
   }
 
-  const adapter = createCodexMenuAdapter({
-    client: createClient(setCalls),
-    now: () => 1700000000777,
-    promptText: async () => "h",
-    loadOfficialCodexAuthMethods: async () => [{
-      label: "Headless Device OAuth",
-      type: "oauth",
-      authorize: async () => ({
-        url: "https://example.com/device",
-        method: "auto",
-        callback: async () => ({
-          type: "success",
-          refresh: "refresh_device",
-          access: "access_device",
-          expires: 1700007200000,
-          accountId: "acct_device",
+  try {
+    const adapter = createCodexMenuAdapter({
+      client: createClient(setCalls),
+      now: () => 1700000000777,
+      promptText: async () => "h",
+      loadOfficialCodexAuthMethods: async () => [{
+        label: "Headless Device OAuth",
+        type: "oauth",
+        authorize: async () => ({
+          url: "https://example.com/device",
+          instructions: "Enter code: ABCD-EFGH",
+          method: "auto",
+          callback: async () => {
+            resolveCallbackStarted()
+            await callbackGate
+            return {
+              type: "success",
+              refresh: "refresh_device",
+              access: "access_device",
+              expires: 1700007200000,
+              accountId: "acct_device",
+            }
+          },
         }),
-      }),
-    }],
-  })
+      }],
+    })
 
-  const entry = await adapter.authorizeNewAccount(store)
+    const entryPromise = adapter.authorizeNewAccount(store)
 
-  assert.equal(entry?.providerId, "openai")
-  assert.equal(entry?.refresh, "refresh_device")
-  assert.equal(entry?.access, "access_device")
-  assert.equal(entry?.accountId, "acct_device")
-  assert.equal(entry?.addedAt, 1700000000777)
-  assert.equal(setCalls.length, 1)
-  assert.equal(setCalls[0]?.path?.id, "openai")
+    await callbackStarted
+    assert.ok(consoleCapture.lines.includes("Go to: https://example.com/device"))
+    assert.ok(consoleCapture.lines.includes("Enter code: ABCD-EFGH"))
+
+    releaseCallback()
+    const entry = await entryPromise
+
+    assert.equal(entry?.providerId, "openai")
+    assert.equal(entry?.refresh, "refresh_device")
+    assert.equal(entry?.access, "access_device")
+    assert.equal(entry?.accountId, "acct_device")
+    assert.equal(entry?.addedAt, 1700000000777)
+    assert.equal(setCalls.length, 1)
+    assert.equal(setCalls[0]?.path?.id, "openai")
+  } finally {
+    releaseCallback()
+    consoleCapture.restore()
+  }
 })
 
 test("codex adapter authorizeNewAccount keeps metadata fields undefined when official result omits them", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const consoleCapture = captureConsoleLog()
   const store = {
     accounts: {},
     active: undefined,
@@ -386,36 +451,41 @@ test("codex adapter authorizeNewAccount keeps metadata fields undefined when off
     refreshMinutes: 15,
   }
 
-  const adapter = createCodexMenuAdapter({
-    client: createClient([]),
-    now: () => 1700000000788,
-    promptText: async () => "1",
-    loadOfficialCodexAuthMethods: async () => [{
-      label: "Browser OAuth",
-      type: "oauth",
-      authorize: async () => ({
-        url: "https://example.com",
-        method: "auto",
-        callback: async () => ({
-          type: "success",
-          refresh: "refresh_no_metadata",
-          access: "access_no_metadata",
-          expires: 1700008200000,
-          accountId: "acct_no_metadata",
+  try {
+    const adapter = createCodexMenuAdapter({
+      client: createClient([]),
+      now: () => 1700000000788,
+      promptText: async () => "1",
+      loadOfficialCodexAuthMethods: async () => [{
+        label: "Browser OAuth",
+        type: "oauth",
+        authorize: async () => ({
+          url: "https://example.com",
+          method: "auto",
+          callback: async () => ({
+            type: "success",
+            refresh: "refresh_no_metadata",
+            access: "access_no_metadata",
+            expires: 1700008200000,
+            accountId: "acct_no_metadata",
+          }),
         }),
-      }),
-    }],
-  })
+      }],
+    })
 
-  const entry = await adapter.authorizeNewAccount(store)
+    const entry = await adapter.authorizeNewAccount(store)
 
-  assert.equal(entry?.accountId, "acct_no_metadata")
-  assert.equal(entry?.workspaceName, undefined)
-  assert.equal(entry?.email, undefined)
+    assert.equal(entry?.accountId, "acct_no_metadata")
+    assert.equal(entry?.workspaceName, undefined)
+    assert.equal(entry?.email, undefined)
+  } finally {
+    consoleCapture.restore()
+  }
 })
 
 test("codex adapter authorizeNewAccount throws when official authorization method is not auto", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const consoleCapture = captureConsoleLog()
   const store = {
     accounts: {},
     active: undefined,
@@ -423,30 +493,34 @@ test("codex adapter authorizeNewAccount throws when official authorization metho
     refreshMinutes: 15,
   }
 
-  const adapter = createCodexMenuAdapter({
-    client: createClient([]),
-    promptText: async () => "1",
-    loadOfficialCodexAuthMethods: async () => [{
-      label: "Browser OAuth",
-      type: "oauth",
-      authorize: async () => ({
-        url: "https://example.com",
-        method: "browser",
-        callback: async () => ({
-          type: "success",
-          refresh: "refresh_new",
-          access: "access_new",
-          expires: 1700003600000,
-          accountId: "acct_new",
+  try {
+    const adapter = createCodexMenuAdapter({
+      client: createClient([]),
+      promptText: async () => "1",
+      loadOfficialCodexAuthMethods: async () => [{
+        label: "Browser OAuth",
+        type: "oauth",
+        authorize: async () => ({
+          url: "https://example.com",
+          method: "browser",
+          callback: async () => ({
+            type: "success",
+            refresh: "refresh_new",
+            access: "access_new",
+            expires: 1700003600000,
+            accountId: "acct_new",
+          }),
         }),
-      }),
-    }],
-  })
+      }],
+    })
 
-  await assert.rejects(
-    () => adapter.authorizeNewAccount(store),
-    /Unsupported official Codex auth method: browser/,
-  )
+    await assert.rejects(
+      () => adapter.authorizeNewAccount(store),
+      /Unsupported official Codex auth method: browser/,
+    )
+  } finally {
+    consoleCapture.restore()
+  }
 })
 
 test("codex adapter refreshSnapshots keeps active account aligned after identity rename", async () => {
