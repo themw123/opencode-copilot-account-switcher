@@ -20,6 +20,7 @@ import { brokerStartupDiagnosticsPath, ensureWechatStateLayout } from "./wechat/
 import { createCodexMenuAdapter } from "./providers/codex-menu-adapter.js"
 import { createCopilotMenuAdapter } from "./providers/copilot-menu-adapter.js"
 import { createProviderRegistry } from "./providers/registry.js"
+import { loadOfficialCodexAuthMethods } from "./upstream/codex-loader-adapter.js"
 import { isTTY } from "./ui/ansi.js"
 import { showMenu, type AccountInfo, type MenuAction as UiMenuAction } from "./ui/menu.js"
 import { select, selectMany } from "./ui/select.js"
@@ -81,6 +82,10 @@ function toSharedRuntimeAction(action: UiMenuAction): RuntimeMenuAction | undefi
   if (action.type === "toggle-loop-safety-provider-scope") return { type: "provider", name: "toggle-loop-safety-provider-scope" }
   if (action.type === "toggle-experimental-slash-commands") return { type: "provider", name: "toggle-experimental-slash-commands" }
   if (action.type === "toggle-network-retry") return { type: "provider", name: "toggle-network-retry" }
+  if (action.type === "toggle-wechat-notifications") return { type: "provider", name: "toggle-wechat-notifications" }
+  if (action.type === "toggle-wechat-question-notify") return { type: "provider", name: "toggle-wechat-question-notify" }
+  if (action.type === "toggle-wechat-permission-notify") return { type: "provider", name: "toggle-wechat-permission-notify" }
+  if (action.type === "toggle-wechat-session-error-notify") return { type: "provider", name: "toggle-wechat-session-error-notify" }
   if (action.type === "wechat-bind") return { type: "provider", name: "wechat-bind" }
   if (action.type === "wechat-rebind") return { type: "provider", name: "wechat-rebind" }
   return undefined
@@ -454,6 +459,13 @@ async function createAccountSwitcherPlugin(
 
     const adapter = createCodexMenuAdapter({
       client: codexClient,
+      loadOfficialCodexAuthMethods: () => loadOfficialCodexAuthMethods({
+        client: {
+          auth: {
+            set: async (value) => client.auth.set(value as Parameters<typeof client.auth.set>[0]),
+          },
+        },
+      }),
       readCommonSettings: readCommonSettingsStore,
       writeCommonSettings: async (settings) => {
         await writeCommonSettingsStore(settings)

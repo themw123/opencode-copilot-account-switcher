@@ -1,7 +1,10 @@
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
 import { fetchCodexStatus, type CodexStatusFetcherResult } from "../codex-status-fetcher.js"
-import { runCodexOAuth, type CodexOAuthAccount } from "../codex-oauth.js"
+import {
+  loadOfficialCodexAuthMethods,
+  type OfficialCodexAuthMethod,
+} from "../upstream/codex-loader-adapter.js"
 import {
   getActiveCodexAccount,
   readCodexStore,
@@ -72,9 +75,27 @@ type AdapterDependencies = {
     }
     accountId?: string
   }) => Promise<CodexStatusFetcherResult>
-  runCodexOAuth?: () => Promise<CodexOAuthAccount | undefined>
+  loadOfficialCodexAuthMethods?: () => Promise<OfficialCodexAuthMethod[]>
   readCommonSettings?: () => Promise<CommonSettingsStore>
   writeCommonSettings?: (settings: CommonSettingsStore, meta?: WriteMeta) => Promise<void>
+}
+
+function pickOfficialOauthMethodByKind(methods: OfficialCodexAuthMethod[], kind: "browser" | "headless") {
+  return methods.find((method) => {
+    if (method.type !== "oauth") return false
+    if (typeof method.authorize !== "function") return false
+    const label = method.label.toLowerCase()
+    if (kind === "browser") return label.includes("browser")
+    return label.includes("headless") || label.includes("device")
+  })
+}
+
+function parseOfficialOauthSelection(raw: string) {
+  const value = raw.trim().toLowerCase()
+  if (!value) return "cancel" as const
+  if (value === "1" || value === "browser" || value === "b") return "browser" as const
+  if (value === "2" || value === "headless" || value === "h" || value === "device") return "headless" as const
+  return undefined
 }
 
 function pickName(input: {
@@ -148,7 +169,14 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
   })
   const loadAuth = inputDeps.readAuthEntries ?? readAuth
   const fetchStatus = inputDeps.fetchStatus ?? ((input) => fetchCodexStatus(input))
-  const authorizeOpenAIOAuth = inputDeps.runCodexOAuth ?? runCodexOAuth
+  const loadOfficialMethods = inputDeps.loadOfficialCodexAuthMethods
+    ?? (() => loadOfficialCodexAuthMethods({
+      client: {
+        auth: {
+          set: async (value) => inputDeps.client.auth.set(value as Parameters<AuthClient["auth"]["set"]>[0]),
+        },
+      },
+    }))
   const readCommonSettings = inputDeps.readCommonSettings ?? readCommonSettingsStore
   const writeCommonSettings = async (settings: CommonSettingsStore, meta?: WriteMeta) => {
     if (inputDeps.writeCommonSettings) {
@@ -323,35 +351,48 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
       return true
     },
     authorizeNewAccount: async () => {
-      const oauth = await authorizeOpenAIOAuth()
-      if (!oauth || (!oauth.refresh && !oauth.access)) return undefined
+      const methods = await loadOfficialMethods()
+      const browserMethod = pickOfficialOauthMethodByKind(methods, "browser")
+      const headlessMethod = pickOfficialOauthMethodByKind(methods, "headless")
 
-      const refresh = oauth.refresh ?? oauth.access
-      const access = oauth.access ?? oauth.refresh
+      const selectedKey = parseOfficialOauthSelection(await prompt("Choose Codex auth method (1/browser/b, 2/headless/h/device, Enter to cancel): "))
+      if (selectedKey === "cancel" || !selectedKey) return undefined
+
+      const selectedMethod = selectedKey === "browser" ? browserMethod : headlessMethod
+      if (!selectedMethod || typeof selectedMethod.authorize !== "function") return undefined
+
+      const pending = await selectedMethod.authorize()
+      if (pending.method && pending.method !== "auto") {
+        throw new Error(`Unsupported official Codex auth method: ${pending.method}`)
+      }
+      if (typeof pending.callback !== "function") return undefined
+
+      const result = await pending.callback()
+      if (result.type !== "success" || (!result.refresh && !result.access)) return undefined
+
+      const refresh = result.refresh ?? result.access
+      const access = result.access ?? result.refresh
       await inputDeps.client.auth.set({
         path: { id: "openai" },
         body: {
           type: "oauth",
           refresh,
           access,
-          expires: oauth.expires,
-          accountId: oauth.accountId,
+          expires: result.expires,
+          accountId: result.accountId,
         },
       })
 
       return {
         name: pickName({
-          accountId: oauth.accountId,
-          email: oauth.email,
+          accountId: result.accountId,
           fallback: `openai-${now()}`,
         }),
         providerId: "openai",
-        workspaceName: oauth.workspaceName,
         refresh,
         access,
-        expires: oauth.expires,
-        accountId: oauth.accountId,
-        email: oauth.email,
+        expires: result.expires,
+        accountId: result.accountId,
         source: "manual",
         addedAt: now(),
       }

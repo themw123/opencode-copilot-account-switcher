@@ -897,6 +897,18 @@ test("plugin source does not preload upstream hook bundle for untouched hooks", 
   assert.doesNotMatch(pluginSource, /loadOfficialCopilotHooks/)
 })
 
+test("plugin source does not reference legacy codex-oauth artifact", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.doesNotMatch(pluginSource, /codex-oauth/)
+})
+
+test("source tree no longer keeps local codex oauth implementation", () => {
+  const exists = existsSync(new URL("../src/codex-oauth.ts", import.meta.url))
+
+  assert.equal(exists, false)
+})
+
 test("plugin chat headers append internal session id for plugin-local routing", async () => {
   const plugin = buildPluginHooks({
     auth: {
@@ -7098,6 +7110,15 @@ test("plugin shared runtime action mapping includes wechat bind actions", async 
 
   assert.match(pluginSource, /if \(action\.type === "wechat-bind"\)\s*return \{ type: "provider", name: "wechat-bind" \}/)
   assert.match(pluginSource, /if \(action\.type === "wechat-rebind"\)\s*return \{ type: "provider", name: "wechat-rebind" \}/)
+})
+
+test("plugin shared runtime action mapping includes wechat notification toggles", async () => {
+  const pluginSource = await fs.readFile(new URL("../dist/plugin.js", import.meta.url), "utf8")
+
+  assert.match(pluginSource, /if \(action\.type === "toggle-wechat-notifications"\)\s*return \{ type: "provider", name: "toggle-wechat-notifications" \}/)
+  assert.match(pluginSource, /if \(action\.type === "toggle-wechat-question-notify"\)\s*return \{ type: "provider", name: "toggle-wechat-question-notify" \}/)
+  assert.match(pluginSource, /if \(action\.type === "toggle-wechat-permission-notify"\)\s*return \{ type: "provider", name: "toggle-wechat-permission-notify" \}/)
+  assert.match(pluginSource, /if \(action\.type === "toggle-wechat-session-error-notify"\)\s*return \{ type: "provider", name: "toggle-wechat-session-error-notify" \}/)
 })
 
 test("provider adapters lazy-load wechat bind flow", async () => {
