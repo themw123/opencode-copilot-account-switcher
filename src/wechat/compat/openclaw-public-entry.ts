@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
-import { createJiti } from "jiti"
+import { loadJiti, type JitiLoader } from "./jiti-loader.js"
 
 type CompatHostApi = {
   runtime?: {
@@ -27,7 +27,7 @@ export type OpenClawWeixinPublicEntry = {
   entryAbsolutePath: string
 }
 
-let publicJitiLoader: ReturnType<typeof createJiti> | null = null
+let publicJitiLoader: JitiLoader | null = null
 
 function requireField(condition: boolean, message: string): void {
   if (!condition) {
@@ -39,7 +39,7 @@ function getPublicJiti() {
   if (publicJitiLoader) {
     return publicJitiLoader
   }
-  publicJitiLoader = createJiti(import.meta.url, {
+  publicJitiLoader = loadJiti().createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })

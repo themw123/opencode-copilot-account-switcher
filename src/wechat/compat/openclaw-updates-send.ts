@@ -1,5 +1,5 @@
 import { createRequire } from "node:module"
-import { createJiti } from "jiti"
+import { loadJiti, type JitiLoader } from "./jiti-loader.js"
 
 type PublicWeixinMessageItem = {
   type?: number
@@ -35,13 +35,13 @@ type PublicGetUpdates = (params: {
 const OPENCLAW_UPDATES_MODULE = "@tencent-weixin/openclaw-weixin/src/api/api.ts"
 const OPENCLAW_SEND_MODULE = "@tencent-weixin/openclaw-weixin/src/messaging/send.ts"
 
-let updatesSendJitiLoader: ReturnType<typeof createJiti> | null = null
+let updatesSendJitiLoader: JitiLoader | null = null
 
 function getUpdatesSendJiti() {
   if (updatesSendJitiLoader) {
     return updatesSendJitiLoader
   }
-  updatesSendJitiLoader = createJiti(import.meta.url, {
+  updatesSendJitiLoader = loadJiti().createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })

@@ -7100,6 +7100,16 @@ test("plugin shared runtime action mapping includes wechat bind actions", async 
   assert.match(pluginSource, /if \(action\.type === "wechat-rebind"\)\s*return \{ type: "provider", name: "wechat-rebind" \}/)
 })
 
+test("provider adapters lazy-load wechat bind flow", async () => {
+  const copilotSource = await fs.readFile(new URL("../dist/providers/copilot-menu-adapter.js", import.meta.url), "utf8")
+  const codexSource = await fs.readFile(new URL("../dist/providers/codex-menu-adapter.js", import.meta.url), "utf8")
+
+  assert.doesNotMatch(copilotSource, /from "\.\.\/wechat\/bind-flow\.js"/)
+  assert.doesNotMatch(codexSource, /from "\.\.\/wechat\/bind-flow\.js"/)
+  assert.match(copilotSource, /await import\("\.\.\/wechat\/bind-flow\.js"\)/)
+  assert.match(codexSource, /await import\("\.\.\/wechat\/bind-flow\.js"\)/)
+})
+
 test("plugin auth loader default clearAccountSwitchContext reloads and persists matching switch timestamp", async () => {
   const officialFetch = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })
   const staleStore = {

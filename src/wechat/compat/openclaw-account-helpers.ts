@@ -1,5 +1,5 @@
 import { createRequire } from "node:module"
-import { createJiti } from "jiti"
+import { loadJiti, type JitiLoader } from "./jiti-loader.js"
 
 export type WeixinAccountHelpers = {
   listAccountIds: () => Promise<string[]>
@@ -32,13 +32,13 @@ type OpenClawWeixinAccountsModule = {
 
 const OPENCLAW_WEIXIN_ACCOUNTS_MODULE = "@tencent-weixin/openclaw-weixin/src/auth/accounts.ts"
 
-let accountJitiLoader: ReturnType<typeof createJiti> | null = null
+let accountJitiLoader: JitiLoader | null = null
 
 function getAccountJiti() {
   if (accountJitiLoader) {
     return accountJitiLoader
   }
-  accountJitiLoader = createJiti(import.meta.url, {
+  accountJitiLoader = loadJiti().createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })

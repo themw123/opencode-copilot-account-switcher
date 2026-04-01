@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
-import { createJiti } from "jiti"
+import { loadJiti, type JitiLoader } from "./jiti-loader.js"
 
 export type PublicWeixinPersistGetUpdatesBuf = (params: {
   accountId: string
@@ -11,13 +11,13 @@ export type PublicWeixinPersistGetUpdatesBuf = (params: {
 const OPENCLAW_SYNC_BUF_MODULE = "@tencent-weixin/openclaw-weixin/src/storage/sync-buf.ts"
 const OPENCLAW_STATE_DIR_MODULE = "@tencent-weixin/openclaw-weixin/src/storage/state-dir.ts"
 
-let syncBufJitiLoader: ReturnType<typeof createJiti> | null = null
+let syncBufJitiLoader: JitiLoader | null = null
 
 function getSyncBufJiti() {
   if (syncBufJitiLoader) {
     return syncBufJitiLoader
   }
-  syncBufJitiLoader = createJiti(import.meta.url, {
+  syncBufJitiLoader = loadJiti().createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })

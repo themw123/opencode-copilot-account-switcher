@@ -1,9 +1,9 @@
 import { bindOperator, readOperatorBinding, rebindOperator, resetOperatorBinding } from "./operator-store.js"
 import { loadOpenClawWeixinPublicHelpers } from "./compat/openclaw-public-helpers.js"
 import { buildOpenClawMenuAccount } from "./openclaw-account-adapter.js"
+import { loadQrCodeTerminal } from "./compat/qrcode-terminal-loader.js"
 import type { CommonSettingsStore } from "../common-settings-store.js"
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id"
-import qrcodeTerminal from "qrcode-terminal"
 
 type BindAction = "wechat-bind" | "wechat-rebind"
 const DEFAULT_QR_WAIT_TIMEOUT_MS = 480000
@@ -82,6 +82,7 @@ function isSameOperatorBinding(
 }
 
 async function renderQrTerminalDefault(input: { value: string }): Promise<string | undefined> {
+  const qrcodeTerminal = loadQrCodeTerminal()
   return await new Promise((resolve) => {
     qrcodeTerminal.generate(input.value, { small: true }, (output: string) => {
       resolve(typeof output === "string" && output.trim().length > 0 ? output : undefined)

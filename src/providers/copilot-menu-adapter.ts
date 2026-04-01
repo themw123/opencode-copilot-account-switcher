@@ -14,7 +14,6 @@ import {
   writeCommonSettingsStore,
   type CommonSettingsStore,
 } from "../common-settings-store.js"
-import { runWechatBindFlow } from "../wechat/bind-flow.js"
 import type { AccountInfo } from "../ui/menu.js"
 import { select, selectMany } from "../ui/select.js"
 import { authPath, readAuth, readStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "../store.js"
@@ -839,6 +838,7 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
       }
 
       if (action.name === "wechat-bind" || action.name === "wechat-rebind") {
+        const { runWechatBindFlow } = await import("../wechat/bind-flow.js")
         await runWechatBindFlow({
           action: action.name,
           readCommonSettings,

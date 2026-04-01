@@ -21,6 +21,15 @@ async function loadBindFlowOrFail() {
   }
 }
 
+test("wechat bind flow lazy-loads qrcode-terminal", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile(new URL("../dist/wechat/bind-flow.js", import.meta.url), "utf8"),
+  )
+
+  assert.doesNotMatch(source, /import qrcodeTerminal from "qrcode-terminal"/)
+  assert.match(source, /loadQrCodeTerminal\(\)/)
+})
+
 async function loadMenuRuntimeOrFail() {
   try {
     return await import("../dist/menu-runtime.js")
