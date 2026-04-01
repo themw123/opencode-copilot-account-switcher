@@ -366,6 +366,12 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
         throw new Error(`Unsupported official Codex auth method: ${pending.method}`)
       }
       if (typeof pending.callback !== "function") return undefined
+      if (pending.url) {
+        console.log(`Go to: ${pending.url}`)
+      }
+      if (pending.instructions) {
+        console.log(pending.instructions)
+      }
 
       const result = await pending.callback()
       if (result.type !== "success" || (!result.refresh && !result.access)) return undefined
