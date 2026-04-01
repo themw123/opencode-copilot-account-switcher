@@ -12,12 +12,18 @@ const fakeCommit = "89abcdef0123456789abcdef0123456789abcdef"
 const syncScriptPath = fileURLToPath(new URL("../scripts/sync-codex-upstream.mjs", import.meta.url))
 
 function createCodexFixtureSource() {
-  return `import type { Hooks, PluginInput } from "@opencode-ai/plugin"
+  return `import { Log } from "../util/log"
 import { Installation } from "../installation"
+import { OAUTH_DUMMY_KEY } from "../auth"
+import os from "os"
+import { setTimeout as sleep } from "node:timers/promises"
+
+const log = Log.create({ service: "plugin.codex" })
 
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+const CALLBACK_PORT = 15000
 
-export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
+export async function CodexAuthPlugin(input) {
   return {
     auth: {
       provider: "openai",
@@ -25,20 +31,20 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
 
+        for (const model of Object.values(provider.models ?? {})) {
+          model.cost = { input: 0, output: 0, cache: { read: 0, write: 0 } }
+        }
+
         return {
-          apiKey: "official-codex-oauth",
-          async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
+          apiKey: OAUTH_DUMMY_KEY,
+          async fetch(requestInput, init) {
             const currentAuth = await getAuth()
             if (currentAuth.type !== "oauth") return fetch(requestInput, init)
 
             const headers = new Headers(init?.headers)
             headers.set("authorization", \`Bearer \${currentAuth.access}\`)
-            if (currentAuth.accountId) headers.set("ChatGPT-Account-Id", currentAuth.accountId)
 
-            const parsed = requestInput instanceof URL ? requestInput : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
-            const url = parsed.pathname.includes("/v1/responses") ? new URL(CODEX_API_ENDPOINT) : parsed
-
-            return fetch(url, {
+            return fetch(CODEX_API_ENDPOINT, {
               ...init,
               headers,
             })
@@ -46,13 +52,53 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         }
       },
       methods: [
-        { label: "ChatGPT Pro/Plus (browser)", type: "oauth", authorize: async () => ({ url: "", instructions: "", method: "auto" as const, callback: async () => ({ type: "failed" as const }) }) },
+        {
+          label: "ChatGPT Pro/Plus (browser)",
+          type: "oauth",
+          authorize: async () => {
+            const server = Bun.serve({
+              port: CALLBACK_PORT,
+              fetch: async (request) => {
+                const body = await request.text()
+                return new Response(body || "ok")
+              },
+            })
+            await server.ready
+            log.info("browser authorize")
+            return {
+              url: "https://browser.example/" + Date.now(),
+              instructions: "Complete authorization in your browser.",
+              method: "auto",
+              callback: async () => {
+                const stopResult = server.stop()
+                if (!stopResult || typeof stopResult.then !== "function") {
+                  throw new Error("server.stop must return a promise")
+                }
+                await stopResult
+                return { type: "success", refresh: "r1", access: "a1", expires: 1 }
+              },
+            }
+          },
+        },
+        {
+          label: "ChatGPT Pro/Plus (headless)",
+          type: "oauth",
+          authorize: async () => ({
+            url: "https://headless.example",
+            instructions: "Enter code: ABCD-EFGH",
+            method: "auto",
+            callback: async () => {
+              await sleep(1)
+              return { type: "success", refresh: "r2", access: "a2", expires: 2 }
+            },
+          }),
+        },
+        { label: "Manually enter API Key", type: "api" },
       ],
     },
     "chat.headers": async (input, output) => {
-      if (input.model.providerID !== "openai") return
       output.headers.originator = "opencode"
-      output.headers["User-Agent"] = \`opencode/\${Installation.VERSION}\`
+      output.headers["User-Agent"] = \`opencode/\${Installation.VERSION} (\${os.platform()})\`
       output.headers.session_id = input.sessionID
     },
   }
@@ -92,9 +138,111 @@ test("codex sync script generates snapshot from fixture source", async () => {
     assert.match(snapshot, /Original path: packages\/opencode\/src\/plugin\/codex\.ts/)
     assert.match(snapshot, new RegExp(`Upstream commit: ${fakeCommit}`))
     assert.match(snapshot, /\/\* LOCAL_SHIMS_START \*\//)
-    assert.match(snapshot, /export async function CodexAuthPlugin\(input: PluginInput\): Promise<Hooks>/)
+    assert.match(snapshot, /export async function CodexAuthPlugin\(input\)/)
     assert.match(snapshot, /\/\* GENERATED_EXPORT_BRIDGE_START \*\//)
     assert.match(snapshot, /export \{ officialCodexExportBridge \}/)
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true })
+  }
+})
+
+test("generated snapshot executes browser and headless auth methods through runtime shims", async () => {
+  const fixture = await makeSyncFixture()
+  const runtimeOutput = join(fixture.dir, "codex-plugin.snapshot.ts")
+  const runtimeCheck = join(fixture.dir, "runtime-check.mjs")
+
+  try {
+    await runSyncScript([
+      "--source",
+      fixture.source,
+      "--output",
+      runtimeOutput,
+      "--upstream-commit",
+      fakeCommit,
+      "--sync-date",
+      "2026-04-01",
+    ])
+
+    await writeFile(
+      runtimeCheck,
+      `import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+
+const modulePath = process.argv[2]
+const snapshot = await import(pathToFileURL(modulePath).href + "?t=" + Date.now())
+const hooks = await snapshot.CodexAuthPlugin({})
+const browser = hooks.auth.methods.find((method) => method.label === "ChatGPT Pro/Plus (browser)")
+const headless = hooks.auth.methods.find((method) => method.label === "ChatGPT Pro/Plus (headless)")
+
+assert.ok(browser)
+assert.ok(headless)
+
+const browserAuth = await browser.authorize()
+const response = await fetch("http://127.0.0.1:15000/oauth/callback", {
+  method: "POST",
+  body: "probe-body",
+})
+assert.equal(await response.text(), "probe-body")
+const browserResult = await browserAuth.callback()
+assert.equal(browserResult.type, "success")
+
+const headlessAuth = await headless.authorize()
+const headlessResult = await headlessAuth.callback()
+assert.equal(headlessResult.type, "success")
+`,
+      "utf8",
+    )
+
+    await execFile(process.execPath, ["--experimental-strip-types", runtimeCheck, runtimeOutput])
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true })
+  }
+})
+
+test("codex sync script preserves oauth browser, oauth headless, and api auth methods", async () => {
+  const fixture = await makeSyncFixture()
+
+  try {
+    await runSyncScript([
+      "--source",
+      fixture.source,
+      "--output",
+      fixture.output,
+      "--upstream-commit",
+      fakeCommit,
+      "--sync-date",
+      "2026-04-01",
+    ])
+
+    const snapshot = await readFile(fixture.output, "utf8")
+    assert.match(snapshot, /label: "ChatGPT Pro\/Plus \(browser\)"/)
+    assert.match(snapshot, /label: "ChatGPT Pro\/Plus \(headless\)"/)
+    assert.match(snapshot, /label: "Manually enter API Key"/)
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true })
+  }
+})
+
+test("codex sync script injects runtime shims required by latest upstream codex auth", async () => {
+  const fixture = await makeSyncFixture()
+
+  try {
+    await runSyncScript([
+      "--source",
+      fixture.source,
+      "--output",
+      fixture.output,
+      "--upstream-commit",
+      fakeCommit,
+      "--sync-date",
+      "2026-04-01",
+    ])
+
+    const snapshot = await readFile(fixture.output, "utf8")
+    assert.match(snapshot, /const OAUTH_DUMMY_KEY = /)
+    assert.match(snapshot, /function sleep\(/)
+    assert.match(snapshot, /const Bun = /)
+    assert.match(snapshot, /const Log = /)
   } finally {
     await rm(fixture.dir, { recursive: true, force: true })
   }

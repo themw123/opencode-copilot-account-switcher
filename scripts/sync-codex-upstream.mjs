@@ -99,6 +99,7 @@ function stripImports(source) {
 function buildHeader(meta) {
   return `// @ts-nocheck
 import { AsyncLocalStorage } from "node:async_hooks"
+import { createServer } from "node:http"
 import os from "node:os"
 
 /*
@@ -154,6 +155,110 @@ const OAUTH_DUMMY_KEY = "official-codex-oauth"
 function fetch(request: RequestInfo | URL, init?: RequestInit) {
   return (officialCodexExportBridgeStorage.getStore()?.fetchImpl ?? officialCodexExportBridge.fetchImpl)(request, init)
 }
+
+function sleep(ms: number) {
+  return Bun.sleep(ms)
+}
+
+const Bun = {
+  serve(options: { port: number; fetch: (request: Request) => Response | Promise<Response> }) {
+    let closed = false
+    let listening = false
+    let closePromise: Promise<void> | undefined
+    let resolveReady: (() => void) | undefined
+    let rejectReady: ((error: Error) => void) | undefined
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve
+      rejectReady = reject
+    })
+
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+
+      req.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      })
+
+      req.on("error", (error) => {
+        res.statusCode = 500
+        res.end(String(error))
+      })
+
+      req.on("end", () => {
+        const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined
+        const request = new Request("http://127.0.0.1:" + options.port + (req.url ?? "/"), {
+          method: req.method,
+          headers: req.headers,
+          body,
+          duplex: "half",
+        })
+
+        Promise.resolve(options.fetch(request))
+          .then(async (response) => {
+            res.statusCode = response.status
+            response.headers.forEach((value, key) => res.setHeader(key, value))
+            const payload = Buffer.from(await response.arrayBuffer())
+            res.end(payload)
+          })
+          .catch((error) => {
+            res.statusCode = 500
+            res.end(String(error))
+          })
+      })
+    })
+
+    server.once("listening", () => {
+      listening = true
+      resolveReady?.()
+      resolveReady = undefined
+      rejectReady = undefined
+    })
+    server.once("error", (error: Error) => {
+      if (!listening) {
+        rejectReady?.(error)
+        resolveReady = undefined
+        rejectReady = undefined
+      }
+    })
+
+    server.listen(options.port)
+
+    return {
+      ready,
+      stop() {
+        if (closePromise) return closePromise
+        closePromise = new Promise((resolve, reject) => {
+          if (closed) {
+            resolve()
+            return
+          }
+          server.close((error) => {
+            if (error) {
+              reject(error)
+              return
+            }
+            closed = true
+            resolve()
+          })
+        })
+        return closePromise
+      },
+    }
+  },
+  sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  },
+}
+
+const Log = {
+  create() {
+    return {
+      info() {},
+      warn() {},
+      error() {},
+    }
+  },
+}
 /* LOCAL_SHIMS_END */`
 }
 
@@ -180,6 +285,7 @@ function buildSnapshot(source, meta) {
   const normalized = normalize(source).trim() + "\n"
   ensureSingleMatch(normalized, /export\s+async\s+function\s+CodexAuthPlugin\s*\(/gm, "CodexAuthPlugin")
   ensureSingleMatch(normalized, /async\s+loader\s*\(/g, "auth.loader")
+  ensureSingleMatch(normalized, /methods\s*:\s*\[/g, "auth.methods")
   ensureSingleMatch(normalized, /"chat\.headers"\s*:\s*async\s*\(/g, "chat.headers")
   const stripped = stripImports(normalized)
 

@@ -49,8 +49,32 @@ type OfficialHooks = {
       getAuth: () => Promise<CodexAuthState | undefined>,
       provider: CodexProviderConfig,
     ) => Promise<OfficialCodexConfig | Record<string, never>>
+    methods?: OfficialCodexAuthMethod[]
   }
   "chat.headers"?: OfficialCodexChatHeadersHook
+}
+
+type OfficialCodexAuthResult = {
+  type: "success"
+  refresh: string
+  access: string
+  expires: number
+  accountId?: string
+} | {
+  type: "failed"
+}
+
+type OfficialCodexAuthorizePending = {
+  url: string
+  instructions?: string
+  method?: string
+  callback?: () => Promise<OfficialCodexAuthResult>
+}
+
+export type OfficialCodexAuthMethod = {
+  label: string
+  type: string
+  authorize?: () => Promise<OfficialCodexAuthorizePending>
 }
 
 function runWithOfficialBridge<T>(input: {
@@ -77,6 +101,43 @@ async function loadOfficialHooks(input: {
       client: input.client,
     })
     return hooks as OfficialHooks
+  })
+}
+
+export async function loadOfficialCodexAuthMethods(input: {
+  client?: {
+    auth?: {
+      set?: (value: unknown) => Promise<unknown>
+    }
+  }
+  baseFetch?: typeof fetch
+  version?: string
+} = {}): Promise<OfficialCodexAuthMethod[]> {
+  const hooks = await loadOfficialHooks(input)
+  const methods = hooks.auth?.methods
+  if (!Array.isArray(methods)) {
+    return []
+  }
+
+  return methods.map((method) => {
+    if (typeof method.authorize !== "function") {
+      return method
+    }
+
+    return {
+      ...method,
+      authorize: async () => {
+        const pending = await runWithOfficialBridge(input, () => method.authorize!())
+        if (!pending || typeof pending.callback !== "function") {
+          return pending
+        }
+
+        return {
+          ...pending,
+          callback: () => runWithOfficialBridge(input, () => pending.callback!()),
+        }
+      },
+    }
   })
 }
 

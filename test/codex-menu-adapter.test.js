@@ -12,23 +12,6 @@ async function loadCodexMenuAdapterOrFail() {
   }
 }
 
-async function loadCodexOAuthOrFail() {
-  try {
-    return await import("../dist/codex-oauth.js")
-  } catch (error) {
-    if (error?.code === "ERR_MODULE_NOT_FOUND") {
-      assert.fail("codex oauth module is missing: ../dist/codex-oauth.js")
-    }
-    throw error
-  }
-}
-
-function createTestJwt(payload) {
-  const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url")
-  return `${header}.${body}.sig`
-}
-
 function createClient(calls) {
   return {
     auth: {
@@ -293,10 +276,12 @@ test("codex adapter toMenuInfo returns stable account ids for runtime actions", 
   assert.equal(resolvedById?.name, "acct_stable")
 })
 
-test("codex adapter authorizeNewAccount normalizes oauth result into openai entry", async () => {
+test("codex adapter authorizeNewAccount uses official browser oauth method", async () => {
   const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
   const setCalls = []
-  let oauthCalls = 0
+  let loadMethodsCalls = 0
+  let browserAuthorizeCalls = 0
+  let browserCallbackCalls = 0
   const store = {
     accounts: {},
     active: undefined,
@@ -307,181 +292,160 @@ test("codex adapter authorizeNewAccount normalizes oauth result into openai entr
   const adapter = createCodexMenuAdapter({
     client: createClient(setCalls),
     now: () => 1700000000666,
-    runCodexOAuth: async () => {
-      oauthCalls += 1
-      return {
-        refresh: "refresh_new",
-        access: "access_new",
-        expires: 1700003600000,
-        accountId: "acct_new",
-        email: "new@example.com",
-      }
+    promptText: async () => "1",
+    loadOfficialCodexAuthMethods: async () => {
+      loadMethodsCalls += 1
+      return [{
+        label: "Browser OAuth",
+        type: "oauth",
+        authorize: async () => {
+          browserAuthorizeCalls += 1
+          return {
+            url: "https://example.com",
+            method: "auto",
+            callback: async () => {
+              browserCallbackCalls += 1
+              return {
+                type: "success",
+                refresh: "refresh_new",
+                access: "access_new",
+                expires: 1700003600000,
+                accountId: "acct_new",
+              }
+            },
+          }
+        },
+      }]
     },
   })
 
   const entry = await adapter.authorizeNewAccount(store)
 
-  assert.equal(oauthCalls, 1)
+  assert.equal(loadMethodsCalls, 1)
+  assert.equal(browserAuthorizeCalls, 1)
+  assert.equal(browserCallbackCalls, 1)
   assert.equal(entry?.providerId, "openai")
   assert.equal(entry?.refresh, "refresh_new")
   assert.equal(entry?.access, "access_new")
   assert.equal(entry?.accountId, "acct_new")
-  assert.equal(entry?.email, "new@example.com")
   assert.equal(entry?.addedAt, 1700000000666)
+  assert.equal(entry?.workspaceName, undefined)
+  assert.equal(entry?.email, undefined)
   assert.equal(setCalls.length, 1)
   assert.equal(setCalls[0]?.path?.id, "openai")
 })
 
-test("runCodexOAuth normalizes browser tokens with upstream account-id claims", async () => {
-  const { runCodexOAuth } = await loadCodexOAuthOrFail()
+test("codex adapter authorizeNewAccount supports official headless oauth method through same path", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const setCalls = []
+  const store = {
+    accounts: {},
+    active: undefined,
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
 
-  const result = await runCodexOAuth({
-    now: () => 1700000001000,
-    selectMode: async () => "browser",
-    runBrowserAuth: async () => ({
-      id_token: createTestJwt({
-        email: "browser@example.com",
-        "https://api.openai.com/auth": { chatgpt_account_id: "acct_browser" },
+  const adapter = createCodexMenuAdapter({
+    client: createClient(setCalls),
+    now: () => 1700000000777,
+    promptText: async () => "h",
+    loadOfficialCodexAuthMethods: async () => [{
+      label: "Headless Device OAuth",
+      type: "oauth",
+      authorize: async () => ({
+        url: "https://example.com/device",
+        method: "auto",
+        callback: async () => ({
+          type: "success",
+          refresh: "refresh_device",
+          access: "access_device",
+          expires: 1700007200000,
+          accountId: "acct_device",
+        }),
       }),
-      access_token: "access_browser",
-      refresh_token: "refresh_browser",
-      expires_in: 3600,
-    }),
+    }],
   })
 
-  assert.deepEqual(result, {
-    refresh: "refresh_browser",
-    access: "access_browser",
-    expires: 1700003601000,
-    accountId: "acct_browser",
-    email: "browser@example.com",
-  })
+  const entry = await adapter.authorizeNewAccount(store)
+
+  assert.equal(entry?.providerId, "openai")
+  assert.equal(entry?.refresh, "refresh_device")
+  assert.equal(entry?.access, "access_device")
+  assert.equal(entry?.accountId, "acct_device")
+  assert.equal(entry?.addedAt, 1700000000777)
+  assert.equal(setCalls.length, 1)
+  assert.equal(setCalls[0]?.path?.id, "openai")
 })
 
-test("runCodexOAuth workspaceName prefers auth workspace fields over organizations fallback", async () => {
-  const { runCodexOAuth } = await loadCodexOAuthOrFail()
+test("codex adapter authorizeNewAccount keeps metadata fields undefined when official result omits them", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const store = {
+    accounts: {},
+    active: undefined,
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
 
-  const result = await runCodexOAuth({
-    now: () => 1700000001500,
-    selectMode: async () => "browser",
-    runBrowserAuth: async () => ({
-      id_token: createTestJwt({
-        email: "priority@example.com",
-        organizations: [{ id: "acct_org_fallback" }],
-        "https://api.openai.com/auth": {
-          workspace_name: "workspace_from_auth",
-        },
+  const adapter = createCodexMenuAdapter({
+    client: createClient([]),
+    now: () => 1700000000788,
+    promptText: async () => "1",
+    loadOfficialCodexAuthMethods: async () => [{
+      label: "Browser OAuth",
+      type: "oauth",
+      authorize: async () => ({
+        url: "https://example.com",
+        method: "auto",
+        callback: async () => ({
+          type: "success",
+          refresh: "refresh_no_metadata",
+          access: "access_no_metadata",
+          expires: 1700008200000,
+          accountId: "acct_no_metadata",
+        }),
       }),
-      access_token: "access_priority",
-      refresh_token: "refresh_priority",
-      expires_in: 3600,
-    }),
+    }],
   })
 
-  assert.equal(result?.workspaceName, "workspace_from_auth")
-  assert.equal(result?.accountId, "acct_org_fallback")
+  const entry = await adapter.authorizeNewAccount(store)
+
+  assert.equal(entry?.accountId, "acct_no_metadata")
+  assert.equal(entry?.workspaceName, undefined)
+  assert.equal(entry?.email, undefined)
 })
 
-test("runCodexOAuth workspaceName prefers visible display labels over ids in claims", async () => {
-  const { runCodexOAuth } = await loadCodexOAuthOrFail()
+test("codex adapter authorizeNewAccount throws when official authorization method is not auto", async () => {
+  const { createCodexMenuAdapter } = await loadCodexMenuAdapterOrFail()
+  const store = {
+    accounts: {},
+    active: undefined,
+    autoRefresh: false,
+    refreshMinutes: 15,
+  }
 
-  const result = await runCodexOAuth({
-    now: () => 1700000001550,
-    selectMode: async () => "browser",
-    runBrowserAuth: async () => ({
-      id_token: createTestJwt({
-        email: "label-priority@example.com",
-        organization: {
-          id: "org_id_should_not_win",
-          name: "org-name-raw",
-          display_name: "org-display-visible",
-        },
+  const adapter = createCodexMenuAdapter({
+    client: createClient([]),
+    promptText: async () => "1",
+    loadOfficialCodexAuthMethods: async () => [{
+      label: "Browser OAuth",
+      type: "oauth",
+      authorize: async () => ({
+        url: "https://example.com",
+        method: "browser",
+        callback: async () => ({
+          type: "success",
+          refresh: "refresh_new",
+          access: "access_new",
+          expires: 1700003600000,
+          accountId: "acct_new",
+        }),
       }),
-      access_token: "access_label_priority",
-      refresh_token: "refresh_label_priority",
-      expires_in: 3600,
-    }),
+    }],
   })
-
-  assert.equal(result?.workspaceName, "org-display-visible")
-})
-
-test("runCodexOAuth normalizes headless device tokens with organization fallback", async () => {
-  const { runCodexOAuth } = await loadCodexOAuthOrFail()
-
-  const result = await runCodexOAuth({
-    now: () => 1700000002000,
-    selectMode: async () => "headless",
-    runDeviceAuth: async () => ({
-      id_token: createTestJwt({
-        email: "device@example.com",
-        organizations: [{ id: "acct_device" }],
-      }),
-      access_token: "access_device",
-      refresh_token: "refresh_device",
-      expires_in: 7200,
-    }),
-  })
-
-  assert.deepEqual(result, {
-    refresh: "refresh_device",
-    access: "access_device",
-    expires: 1700007202000,
-    accountId: "acct_device",
-    email: "device@example.com",
-    workspaceName: "acct_device",
-  })
-})
-
-test("runCodexOAuth extracts workspaceName from access token when id token lacks it", async () => {
-  const { runCodexOAuth } = await loadCodexOAuthOrFail()
-
-  const result = await runCodexOAuth({
-    now: () => 1700000002100,
-    selectMode: async () => "headless",
-    runDeviceAuth: async () => ({
-      id_token: createTestJwt({
-        email: "access-fallback@example.com",
-      }),
-      access_token: createTestJwt({
-        workspace_name: "workspace_from_access",
-      }),
-      refresh_token: "refresh_access_fallback",
-      expires_in: 3600,
-    }),
-  })
-
-  assert.equal(result?.workspaceName, "workspace_from_access")
-})
-
-test("runCodexOAuth headless mode honors timeout instead of polling forever", async () => {
-  const { runCodexOAuth } = await loadCodexOAuthOrFail()
 
   await assert.rejects(
-    runCodexOAuth({
-      now: () => 1700000002500,
-      timeoutMs: 1,
-      selectMode: async () => "headless",
-      fetchImpl: async (url) => {
-        const target = String(url)
-        if (target.includes("/usercode")) {
-          return new Response(JSON.stringify({
-            device_auth_id: "device_1",
-            user_code: "ABCD-EFGH",
-            interval: "0",
-          }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          })
-        }
-        return new Response(JSON.stringify({ error: "authorization_pending" }), {
-          status: 403,
-          headers: { "content-type": "application/json" },
-        })
-      },
-      log: () => {},
-    }),
-    /timeout/i,
+    () => adapter.authorizeNewAccount(store),
+    /Unsupported official Codex auth method: browser/,
   )
 })
 
