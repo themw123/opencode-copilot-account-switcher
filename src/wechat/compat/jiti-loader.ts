@@ -1,8 +1,11 @@
 import { createRequire } from "node:module"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
 
 export type JitiLoader = (path: string) => unknown
 type CreateJiti = (id: string | URL, options?: Record<string, unknown>) => JitiLoader
 type JitiImport = (specifier: string) => Promise<unknown> | unknown
+type JitiResolve = (specifier: string) => string
 
 type JitiNamespace = {
   createJiti?: unknown
@@ -33,8 +36,16 @@ export function resolveCreateJiti(namespace: JitiNamespace): CreateJiti {
   throw new Error("[wechat-compat] createJiti export unavailable")
 }
 
-export async function loadJiti(importImpl: JitiImport = (specifier) => import(specifier)): Promise<{ createJiti: CreateJiti }> {
-  const namespace = await Promise.resolve(importImpl("jiti")) as JitiNamespace
+export function resolveJitiEsmEntry(resolveImpl: JitiResolve = createRequire(import.meta.url).resolve): string {
+  const packageJsonPath = resolveImpl("jiti/package.json")
+  return pathToFileURL(path.join(path.dirname(packageJsonPath), "lib", "jiti.mjs")).href
+}
+
+export async function loadJiti(
+  importImpl: JitiImport = (specifier) => import(specifier),
+  resolveImpl: JitiResolve = createRequire(import.meta.url).resolve,
+): Promise<{ createJiti: CreateJiti }> {
+  const namespace = await Promise.resolve(importImpl(resolveJitiEsmEntry(resolveImpl))) as JitiNamespace
   return {
     createJiti: resolveCreateJiti(namespace),
   }

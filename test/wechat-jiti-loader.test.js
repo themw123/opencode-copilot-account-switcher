@@ -63,22 +63,30 @@ test("resolveCreateJiti rejects unsupported export shape", async () => {
   )
 })
 
-test("loadJiti uses CommonJS require path", async () => {
+test("resolveJitiEsmEntry resolves package.json to lib/jiti.mjs file URL", async () => {
   const mod = await import(DIST_JITI_LOADER_MODULE)
-  let required = 0
 
-  const loaded = await mod.loadJiti(() => {
-    required += 1
+  const entry = mod.resolveJitiEsmEntry(() => "C:\\virtual\\node_modules\\jiti\\package.json")
+
+  assert.equal(entry, "file:///C:/virtual/node_modules/jiti/lib/jiti.mjs")
+})
+
+test("loadJiti resolves and imports jiti ESM entry path", async () => {
+  const mod = await import(DIST_JITI_LOADER_MODULE)
+  const imported = []
+
+  const loaded = await mod.loadJiti((specifier) => {
+    imported.push(specifier)
     return {
       createJiti() {
-        return "required"
+        return "esm-entry"
       },
     }
-  })
+  }, () => "C:\\virtual\\node_modules\\jiti\\package.json")
 
-  assert.equal(required, 1)
+  assert.deepEqual(imported, ["file:///C:/virtual/node_modules/jiti/lib/jiti.mjs"])
   assert.equal(typeof loaded.createJiti, "function")
-  assert.equal(loaded.createJiti(), "required")
+  assert.equal(loaded.createJiti(), "esm-entry")
 })
 
 test("loadJiti supports async import path", async () => {
