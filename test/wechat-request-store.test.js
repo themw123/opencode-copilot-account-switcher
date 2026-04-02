@@ -35,6 +35,164 @@ test("routeKey 与 handle 生成稳定，handle 大小写不敏感", () => {
   assert.equal(handle.normalizeHandle("q2"), "q2")
 })
 
+test("open request 可通过 handle 查询", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-open-lookup-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "q-open-lookup-1" }),
+    handle: "q1",
+    wechatAccountId: "wx-lookup",
+    userId: "u-lookup",
+    createdAt: 1_700_000_111_000,
+  })
+
+  const found = await requestStore.findOpenRequestByHandle({
+    kind: "question",
+    handle: "Q1",
+  })
+
+  assert.equal(found?.routeKey, created.routeKey)
+  assert.equal(found?.handle, "q1")
+})
+
+test("open request 可通过 request identity 查询且保持原 handle", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "identity-permission-1",
+    routeKey: handle.createRouteKey({ kind: "permission", requestID: "identity-permission-1" }),
+    handle: "p1",
+    wechatAccountId: "wx-identity",
+    userId: "u-identity",
+    createdAt: 1_700_000_222_000,
+  })
+
+  const found = await requestStore.findOpenRequestByIdentity({
+    kind: "permission",
+    requestID: "identity-permission-1",
+    wechatAccountId: "wx-identity",
+    userId: "u-identity",
+  })
+
+  assert.equal(found?.routeKey, created.routeKey)
+  assert.equal(found?.handle, "p1")
+})
+
+test("request identity 查询对大小写与首尾空白归一化后仍命中同一 open 记录", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "Req-Normalized-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "Req-Normalized-1" }),
+    handle: "q5",
+    wechatAccountId: "wx-normalized",
+    userId: "u-normalized",
+    createdAt: 1_700_000_223_000,
+  })
+
+  const found = await requestStore.findOpenRequestByIdentity({
+    kind: "question",
+    requestID: "  req-normalized-1  ",
+    wechatAccountId: "wx-normalized",
+    userId: "u-normalized",
+  })
+
+  assert.equal(found?.routeKey, created.routeKey)
+  assert.equal(found?.handle, "q5")
+})
+
+test("同一 routeKey 若 identity 不同，upsertRequest 必须拒绝覆盖", async () => {
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "req-collision-1" })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "req-collision-1",
+    routeKey,
+    handle: "q10",
+    wechatAccountId: "wx-collision",
+    userId: "u-collision",
+    createdAt: 1_700_000_224_000,
+  })
+
+  await assert.rejects(
+    () =>
+      requestStore.upsertRequest({
+        kind: "question",
+        requestID: "req-collision-2",
+        routeKey,
+        handle: "q11",
+        wechatAccountId: "wx-collision",
+        userId: "u-collision",
+        createdAt: 1_700_000_225_000,
+      }),
+    /identity|routekey|different/i,
+  )
+
+  const current = await requestStore.findOpenRequestByIdentity({
+    kind: "question",
+    requestID: "req-collision-1",
+    wechatAccountId: "wx-collision",
+    userId: "u-collision",
+  })
+  assert.equal(current?.requestID, "req-collision-1")
+  assert.equal(current?.handle, "q10")
+})
+
+test("terminal request 不会被 open lookup helper 返回", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-terminal-lookup-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "q-terminal-lookup-1" }),
+    handle: "q7",
+    wechatAccountId: "wx-terminal-lookup",
+    userId: "u-terminal-lookup",
+    createdAt: 1_700_000_333_000,
+  })
+
+  await requestStore.markRequestAnswered({
+    kind: "question",
+    routeKey: created.routeKey,
+    answeredAt: 1_700_000_334_000,
+  })
+
+  const byHandle = await requestStore.findOpenRequestByHandle({
+    kind: "question",
+    handle: "q7",
+  })
+  const byIdentity = await requestStore.findOpenRequestByIdentity({
+    kind: "question",
+    requestID: "q-terminal-lookup-1",
+    wechatAccountId: "wx-terminal-lookup",
+    userId: "u-terminal-lookup",
+  })
+
+  assert.equal(byHandle, undefined)
+  assert.equal(byIdentity, undefined)
+})
+
+test("permission 被 rejected 后不再可被 handle 命中", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "p-terminal-rejected-1",
+    routeKey: handle.createRouteKey({ kind: "permission", requestID: "p-terminal-rejected-1" }),
+    handle: "p7",
+    wechatAccountId: "wx-terminal-rejected",
+    userId: "u-terminal-rejected",
+    createdAt: 1_700_000_335_000,
+  })
+
+  await requestStore.markRequestRejected({
+    kind: "permission",
+    routeKey: created.routeKey,
+    rejectedAt: 1_700_000_336_000,
+  })
+
+  const byHandle = await requestStore.findOpenRequestByHandle({
+    kind: "permission",
+    handle: "p7",
+  })
+
+  assert.equal(byHandle, undefined)
+})
+
 test("原始 requestID 不能直接被接受为 handle", () => {
   assert.throws(() => handle.assertValidHandleInput("req-raw-001"), /requestid|raw/i)
 })

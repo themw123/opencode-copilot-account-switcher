@@ -10,11 +10,17 @@ import {
   type BrokerEnvelope,
   type BrokerMessageType,
   type CollectStatusPayload,
+  type SyncWechatNotificationsPayload,
   type StatusSnapshotPayload,
+  type WechatNotificationCandidate,
 } from "./protocol.js"
 import { WECHAT_DIR_MODE, WECHAT_FILE_MODE, instanceStatePath, instancesDir } from "./state-paths.js"
 import { formatAggregatedStatusReply } from "./status-format.js"
 import type { WechatSlashCommand } from "./command-parser.js"
+import { upsertNotification } from "./notification-store.js"
+import { readOperatorBinding } from "./operator-store.js"
+import { createHandle, createRouteKey } from "./handle.js"
+import { findOpenRequestByIdentity, listActiveRequests, upsertRequest } from "./request-store.js"
 
 const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
   "collectStatus",
@@ -107,6 +113,7 @@ const instanceIDsBySocket = new Map<net.Socket, Set<string>>()
 const snapshotByInstanceID = new Map<string, InstanceSnapshot>()
 const snapshotPersistQueueByInstanceID = new Map<string, Promise<void>>()
 const pendingCollectStatusByRequestId = new Map<string, PendingCollectStatus>()
+let syncWechatNotificationsChain: Promise<void> = Promise.resolve()
 
 function clearRuntimeState() {
   for (const instanceID of registrationByInstanceID.keys()) {
@@ -117,6 +124,7 @@ function clearRuntimeState() {
   snapshotByInstanceID.clear()
   snapshotPersistQueueByInstanceID.clear()
   pendingCollectStatusByRequestId.clear()
+  syncWechatNotificationsChain = Promise.resolve()
 }
 
 function toPositiveNumber(rawValue: string | undefined, fallback: number): number {
@@ -150,6 +158,28 @@ function hasCollectStatusPayload(payload: unknown): payload is CollectStatusPayl
 function hasStatusSnapshotPayload(payload: unknown): payload is StatusSnapshotPayload {
   const record = asObject(payload)
   return isNonEmptyString(record.requestId) && "snapshot" in record
+}
+
+function isWechatNotificationCandidate(value: unknown): value is WechatNotificationCandidate {
+  const record = asObject(value)
+  if (!isNonEmptyString(record.idempotencyKey) || !isFiniteNumber(record.createdAt)) {
+    return false
+  }
+  if (record.kind === "sessionError") {
+    return true
+  }
+  if (record.kind === "question" || record.kind === "permission") {
+    return isNonEmptyString(record.requestID) && isNonEmptyString(record.routeKey) && isNonEmptyString(record.handle)
+  }
+  return false
+}
+
+function hasSyncWechatNotificationsPayload(payload: unknown): payload is SyncWechatNotificationsPayload {
+  const record = asObject(payload)
+  if (!Array.isArray(record.candidates)) {
+    return false
+  }
+  return record.candidates.every((candidate) => isWechatNotificationCandidate(candidate))
 }
 
 function isSafeInstanceID(instanceID: string): boolean {
@@ -349,6 +379,12 @@ function finalizePendingCollectStatus(requestId: string) {
   })
 }
 
+function queueSyncWechatNotifications(task: () => Promise<void>): Promise<void> {
+  const next = syncWechatNotificationsChain.then(task)
+  syncWechatNotificationsChain = next.catch(() => {})
+  return next
+}
+
 async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Promise<void> {
   const requestId = getRequestId(envelope)
 
@@ -477,6 +513,91 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
     if (pending.snapshotsByInstanceID.size >= pending.requestedInstanceIDs.size) {
       finalizePendingCollectStatus(payload.requestId)
     }
+    return
+  }
+
+  if (envelope.type === "syncWechatNotifications") {
+    if (!requireAuthorized(envelope)) {
+      writeError(socket, "unauthorized", "session token is invalid", requestId)
+      return
+    }
+
+    const payload = envelope.payload
+    if (!hasSyncWechatNotificationsPayload(payload)) {
+      writeError(socket, "invalidMessage", "syncWechatNotifications payload is invalid", requestId)
+      return
+    }
+
+    const binding = await readOperatorBinding().catch(() => undefined)
+    if (!binding) {
+      return
+    }
+
+    await queueSyncWechatNotifications(async () => {
+      for (const candidate of payload.candidates) {
+        if (candidate.kind === "sessionError") {
+          await upsertNotification({
+            idempotencyKey: candidate.idempotencyKey,
+            kind: "sessionError",
+            wechatAccountId: binding.wechatAccountId,
+            userId: binding.userId,
+            createdAt: candidate.createdAt,
+          })
+          continue
+        }
+
+        const existingOpen = await findOpenRequestByIdentity({
+          kind: candidate.kind,
+          requestID: candidate.requestID,
+          wechatAccountId: binding.wechatAccountId,
+          userId: binding.userId,
+          scopeKey: envelope.instanceID,
+        })
+
+        let canonicalRouteKey: string
+        let canonicalHandle: string
+
+        if (existingOpen) {
+          canonicalRouteKey = existingOpen.routeKey
+          canonicalHandle = existingOpen.handle
+        } else {
+          const activeRequests = await listActiveRequests()
+          const existingHandles = activeRequests
+            .filter((item) => item.kind === candidate.kind && item.status === "open")
+            .map((item) => item.handle)
+
+          const nextRouteKey = createRouteKey({
+            kind: candidate.kind,
+            requestID: candidate.requestID,
+            scopeKey: envelope.instanceID,
+          })
+          const nextHandle = createHandle(candidate.kind, existingHandles)
+
+          const created = await upsertRequest({
+            kind: candidate.kind,
+            requestID: candidate.requestID,
+            routeKey: nextRouteKey,
+            handle: nextHandle,
+            wechatAccountId: binding.wechatAccountId,
+            userId: binding.userId,
+            createdAt: candidate.createdAt,
+          })
+
+          canonicalRouteKey = created.routeKey
+          canonicalHandle = created.handle
+        }
+
+        await upsertNotification({
+          idempotencyKey: candidate.idempotencyKey,
+          kind: candidate.kind,
+          wechatAccountId: binding.wechatAccountId,
+          userId: binding.userId,
+          routeKey: canonicalRouteKey,
+          handle: canonicalHandle,
+          createdAt: candidate.createdAt,
+        })
+      }
+    })
     return
   }
 

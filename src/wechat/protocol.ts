@@ -5,6 +5,7 @@ export type BrokerImplementedMessageType =
   | "ping"
   | "pong"
   | "statusSnapshot"
+  | "syncWechatNotifications"
   | "error"
 
 export type BrokerFutureMessageType =
@@ -23,6 +24,25 @@ export type CollectStatusPayload = {
 export type StatusSnapshotPayload = {
   requestId: string
   snapshot: unknown
+}
+
+export type WechatNotificationCandidate =
+  | {
+      idempotencyKey: string
+      kind: "question" | "permission"
+      requestID: string
+      createdAt: number
+      routeKey: string
+      handle: string
+    }
+  | {
+      idempotencyKey: string
+      kind: "sessionError"
+      createdAt: number
+    }
+
+export type SyncWechatNotificationsPayload = {
+  candidates: WechatNotificationCandidate[]
 }
 
 export type BrokerErrorCode = "unauthorized" | "invalidMessage" | "notImplemented" | "brokerUnavailable"
@@ -56,6 +76,7 @@ function isMessageType(value: unknown): value is BrokerMessageType {
     value === "ping" ||
     value === "pong" ||
     value === "statusSnapshot" ||
+    value === "syncWechatNotifications" ||
     value === "error" ||
     value === "collectStatus" ||
     value === "replyQuestion" ||

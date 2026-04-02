@@ -2,9 +2,11 @@ export type WechatSlashCommand = {
   type: "status"
 } | {
   type: "reply"
+  handle: string
   text: string
 } | {
   type: "allow"
+  handle: string
   reply: "once" | "always" | "reject"
   message?: string
 }
@@ -19,27 +21,39 @@ export function parseWechatSlashCommand(input: string): WechatSlashCommand | nul
     return { type: "status" }
   }
 
-  if (normalized.startsWith("/reply")) {
-    const text = normalized.slice("/reply".length).trim()
-    if (!text) {
+  const parts = normalized.split(/\s+/)
+  const command = parts[0]
+
+  if (command === "/reply") {
+    if (parts.length < 3) {
       return null
     }
-    return { type: "reply", text }
+    const handle = parts[1]
+    const textParts = parts.slice(2)
+    const text = textParts.join(" ").trim()
+    if (!handle || !text) {
+      return null
+    }
+    return { type: "reply", handle, text }
   }
 
-  if (normalized.startsWith("/allow")) {
-    const rest = normalized.slice("/allow".length).trim()
-    if (!rest) {
+  if (command === "/allow") {
+    if (parts.length < 3) {
       return null
     }
-    const [rawReply, ...messageParts] = rest.split(/\s+/)
+    const handle = parts[1]
+    const rawReply = parts[2]
+    const messageParts = parts.slice(3)
+    if (!handle || !rawReply) {
+      return null
+    }
     if (rawReply !== "once" && rawReply !== "always" && rawReply !== "reject") {
       return null
     }
     const message = messageParts.join(" ").trim()
     return message.length > 0
-      ? { type: "allow", reply: rawReply, message }
-      : { type: "allow", reply: rawReply }
+      ? { type: "allow", handle, reply: rawReply, message }
+      : { type: "allow", handle, reply: rawReply }
   }
 
   return null

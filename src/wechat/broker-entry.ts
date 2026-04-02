@@ -11,7 +11,20 @@ import {
   type WechatStatusRuntime,
   type WechatStatusRuntimeDiagnosticEvent,
 } from "./wechat-status-runtime.js"
+import {
+  createWechatNotificationDispatcher,
+  type WechatNotificationSendInput,
+} from "./notification-dispatcher.js"
 import type { WechatSlashCommand } from "./command-parser.js"
+import {
+  findOpenRequestByHandle,
+  markRequestAnswered,
+  markRequestRejected,
+} from "./request-store.js"
+import {
+  findSentNotificationByRequest,
+  markNotificationResolved,
+} from "./notification-store.js"
 
 type BrokerState = {
   pid: number
@@ -83,7 +96,15 @@ type BrokerWechatStatusRuntimeLifecycleDeps = {
   createStatusRuntime?: (deps: {
     onSlashCommand: (input: { command: import("./command-parser.js").WechatSlashCommand }) => Promise<string>
     onDiagnosticEvent: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
+    drainOutboundMessages: (input?: {
+      sendMessage: (input: WechatNotificationSendInput) => Promise<void>
+    }) => Promise<void>
   }) => WechatStatusRuntime
+  createNotificationDispatcher?: (input: {
+    sendMessage: (input: WechatNotificationSendInput) => Promise<void>
+  }) => {
+    drainOutboundMessages: () => Promise<void>
+  }
   handleWechatSlashCommand?: (command: import("./command-parser.js").WechatSlashCommand) => Promise<string>
   onRuntimeError?: (error: unknown) => void
   onDiagnosticEvent?: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
@@ -116,20 +137,11 @@ export function shouldEnableBrokerWechatStatusRuntime(env: NodeJS.ProcessEnv = p
 
 type BrokerWechatSlashHandlerClient = {
   question?: {
-    list?: (input?: { directory?: string }) => Promise<{ data?: Array<{ id?: string }> } | Array<{ id?: string }> | undefined>
     reply?: (input: { requestID: string; directory?: string; answers?: Array<QuestionAnswer> }) => Promise<unknown>
   }
   permission?: {
-    list?: (input?: { directory?: string }) => Promise<{ data?: Array<{ id?: string }> } | Array<{ id?: string }> | undefined>
     reply?: (input: { requestID: string; directory?: string; reply?: "once" | "always" | "reject"; message?: string }) => Promise<unknown>
   }
-}
-
-function unwrapDataArray<T>(value: { data?: T[] } | T[] | undefined): T[] {
-  if (Array.isArray(value)) {
-    return value
-  }
-  return Array.isArray(value?.data) ? value.data : []
 }
 
 function withOptionalDirectory<T extends object>(input: T, directory: string | undefined): T & { directory?: string } {
@@ -142,40 +154,108 @@ function withOptionalDirectory<T extends object>(input: T, directory: string | u
   return input
 }
 
+function isInvalidHandleError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  return /invalid handle format|raw requestID cannot be used as handle/i.test(error.message)
+}
+
 export function createBrokerWechatSlashCommandHandler(input: {
   handleStatusCommand: () => Promise<string>
   client?: BrokerWechatSlashHandlerClient
   directory?: string
 }): (command: WechatSlashCommand) => Promise<string> {
+  const findOpenRequestSafely = async (input: {
+    kind: "question" | "permission"
+    handle: string
+  }) => {
+    try {
+      return await findOpenRequestByHandle(input)
+    } catch (error) {
+      if (isInvalidHandleError(error)) {
+        return undefined
+      }
+      throw error
+    }
+  }
+
+  const resolveNotificationForOpenRequest = async (request: {
+    kind: "question" | "permission"
+    routeKey: string
+    handle: string
+  }) => {
+    try {
+      const sentNotification = await findSentNotificationByRequest({
+        kind: request.kind,
+        routeKey: request.routeKey,
+        handle: request.handle,
+      })
+      if (!sentNotification) {
+        return
+      }
+      await markNotificationResolved({
+        idempotencyKey: sentNotification.idempotencyKey,
+        resolvedAt: Date.now(),
+      })
+    } catch {
+      // best-effort only: notification resolve failure should not fail slash reply
+    }
+  }
+
   return async (command) => {
     if (command.type === "status") {
       return input.handleStatusCommand()
     }
 
     if (command.type === "reply") {
-      const questions = unwrapDataArray(await input.client?.question?.list?.(withOptionalDirectory({}, input.directory)))
-      const requestID = typeof questions[0]?.id === "string" ? questions[0].id : undefined
-      if (!requestID) {
-        return "当前没有待回复问题"
+      const openQuestion = await findOpenRequestSafely({
+        kind: "question",
+        handle: command.handle,
+      })
+      if (!openQuestion) {
+        return `未找到待回复问题：${command.handle}`
       }
       await input.client?.question?.reply?.(withOptionalDirectory({
-        requestID,
+        requestID: openQuestion.requestID,
         answers: [[command.text]],
       }, input.directory))
-      return `已回复问题：${requestID}`
+      await markRequestAnswered({
+        kind: "question",
+        routeKey: openQuestion.routeKey,
+        answeredAt: Date.now(),
+      })
+      await resolveNotificationForOpenRequest(openQuestion)
+      return `已回复问题：${openQuestion.handle}`
     }
 
-    const permissions = unwrapDataArray(await input.client?.permission?.list?.(withOptionalDirectory({}, input.directory)))
-    const requestID = typeof permissions[0]?.id === "string" ? permissions[0].id : undefined
-    if (!requestID) {
-      return "当前没有待处理权限请求"
+    const openPermission = await findOpenRequestSafely({
+      kind: "permission",
+      handle: command.handle,
+    })
+    if (!openPermission) {
+      return `未找到待处理权限请求：${command.handle}`
     }
     await input.client?.permission?.reply?.(withOptionalDirectory({
-      requestID,
+      requestID: openPermission.requestID,
       reply: command.reply,
       ...(command.message ? { message: command.message } : {}),
     }, input.directory))
-    return `已处理权限请求：${requestID} (${command.reply})`
+    if (command.reply === "reject") {
+      await markRequestRejected({
+        kind: "permission",
+        routeKey: openPermission.routeKey,
+        rejectedAt: Date.now(),
+      })
+    } else {
+      await markRequestAnswered({
+        kind: "permission",
+        routeKey: openPermission.routeKey,
+        answeredAt: Date.now(),
+      })
+    }
+    await resolveNotificationForOpenRequest(openPermission)
+    return `已处理权限请求：${openPermission.handle} (${command.reply})`
   }
 }
 
@@ -202,18 +282,51 @@ export function createBrokerWechatStatusRuntimeLifecycle(
         onSlashCommand: async ({ command }) => statusRuntimeDeps.onSlashCommand({ command }),
         onRuntimeError,
         onDiagnosticEvent: statusRuntimeDeps.onDiagnosticEvent,
+        drainOutboundMessages: async (drainInput) => {
+          await statusRuntimeDeps.drainOutboundMessages({
+            sendMessage: async (message) => {
+              await drainInput.sendMessage(message)
+            },
+          })
+        },
       }))
+  const createNotificationDispatcher = deps.createNotificationDispatcher ?? createWechatNotificationDispatcher
 
   let runtime: WechatStatusRuntime | null = null
+  let dispatcher:
+    | {
+        drainOutboundMessages: () => Promise<void>
+      }
+    | null = null
 
   return {
     start: async () => {
       if (runtime) {
         return
       }
+      let runtimeSendMessage:
+        | ((input: WechatNotificationSendInput) => Promise<void>)
+        | null = null
+      dispatcher = createNotificationDispatcher({
+        sendMessage: async (message) => {
+          if (!runtimeSendMessage) {
+            throw new Error("wechat runtime send helper unavailable")
+          }
+          await runtimeSendMessage(message)
+        },
+      })
       const created = createStatusRuntime({
         onSlashCommand: async ({ command }) => handleWechatSlashCommand(command),
         onDiagnosticEvent,
+        drainOutboundMessages: async (runtimeDrainInput) => {
+          if (runtimeDrainInput?.sendMessage) {
+            runtimeSendMessage = runtimeDrainInput.sendMessage
+          }
+          if (!dispatcher) {
+            return
+          }
+          await dispatcher.drainOutboundMessages()
+        },
       })
       runtime = created
       try {
@@ -228,6 +341,7 @@ export function createBrokerWechatStatusRuntimeLifecycle(
       }
       const active = runtime
       runtime = null
+      dispatcher = null
       await active.close().catch((error) => {
         onRuntimeError(error)
       })

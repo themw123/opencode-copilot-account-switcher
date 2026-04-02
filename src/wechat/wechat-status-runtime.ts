@@ -23,6 +23,16 @@ type SlashCommandHandlerInput = {
   message: PublicWeixinMessage
 }
 
+type RuntimeSendMessageInput = {
+  to: string
+  text: string
+  contextToken?: string
+}
+
+type RuntimeDrainOutboundMessagesInput = {
+  sendMessage: (input: RuntimeSendMessageInput) => Promise<void>
+}
+
 export type WechatStatusRuntimeDiagnosticEvent =
   | {
       type: "messageSkipped"
@@ -49,6 +59,7 @@ type CreateWechatStatusRuntimeInput = {
   onSlashCommand?: (input: SlashCommandHandlerInput) => Promise<string>
   onRuntimeError?: (error: unknown) => void
   onDiagnosticEvent?: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
+  drainOutboundMessages?: (input: RuntimeDrainOutboundMessagesInput) => Promise<void>
   retryDelayMs?: number
   longPollTimeoutMs?: number
   shouldReloadState?: (state: {
@@ -183,6 +194,7 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
   const retryDelayMs = normalizePositiveInteger(input.retryDelayMs, DEFAULT_RETRY_DELAY_MS)
   const longPollTimeoutMs = normalizePositiveInteger(input.longPollTimeoutMs, DEFAULT_LONG_POLL_TIMEOUT_MS)
   const shouldReloadState = input.shouldReloadState ?? (() => false)
+  const drainOutboundMessages = input.drainOutboundMessages
 
   let started = false
   let closed = false
@@ -268,6 +280,36 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
         }
 
         const messages = Array.isArray(response.msgs) ? response.msgs : []
+
+        if (drainOutboundMessages && initialized) {
+          const runtimeState = initialized
+          try {
+            await withAbort(
+              drainOutboundMessages({
+                sendMessage: async (message) => {
+                  await runtimeState.helpers.sendMessageWeixin({
+                    to: message.to,
+                    text: message.text,
+                    opts: {
+                      baseUrl: runtimeState.baseUrl,
+                      token: runtimeState.token,
+                      ...(typeof message.contextToken === "string" && message.contextToken.trim().length > 0
+                        ? { contextToken: message.contextToken }
+                        : {}),
+                    },
+                  })
+                },
+              }),
+              signal,
+            )
+          } catch (error) {
+            if (isAbortError(error)) {
+              return
+            }
+            onRuntimeError(error)
+          }
+        }
+
         for (const message of messages) {
           if (signal.aborted) {
             return

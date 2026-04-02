@@ -20,6 +20,9 @@ import {
   pickRecentSessions,
   type SessionDigest,
 } from "./session-digest.js"
+import { readOperatorBinding } from "./operator-store.js"
+import { createHandle, createRouteKey } from "./handle.js"
+import type { WechatNotificationCandidate } from "./protocol.js"
 
 type SessionMessages = Array<{ info: Message; parts: Part[] }>
 
@@ -76,6 +79,7 @@ export type WechatBridgeInput = {
 
 export type WechatBridge = {
   collectStatusSnapshot: () => Promise<WechatInstanceStatusSnapshot>
+  collectNotificationCandidates: () => Promise<WechatNotificationCandidate[]>
 }
 
 export type WechatBridgeLifecycleInput = {
@@ -288,12 +292,60 @@ function unwrapSdkReadResult<T>(value: SdkReadResult<T>, name: string): T {
 }
 
 export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
-  const collectStatusSnapshot = async (): Promise<WechatInstanceStatusSnapshot> => {
-    const startedAt = Date.now()
+  const retryEventSequenceBySessionID = new Map<string, number>()
+  const retrySignatureBySessionID = new Map<string, string>()
+  const isRetryBySessionID = new Map<string, boolean>()
+
+  function toIdempotencyPart(value: string): string {
+    const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    return normalized.length > 0 ? normalized : "na"
+  }
+
+  function stableStringify(value: unknown): string {
+    if (value === null || typeof value !== "object") {
+      return JSON.stringify(value)
+    }
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableStringify(item)).join(",")}]`
+    }
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record).sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`
+  }
+
+  const collectLiveRead = async () => {
     const liveReadTimeoutMs =
       typeof input.liveReadTimeoutMs === "number" && Number.isFinite(input.liveReadTimeoutMs)
       ? Math.max(1, Math.floor(input.liveReadTimeoutMs))
       : DEFAULT_LIVE_READ_TIMEOUT_MS
+    const onDiagnosticEvent = input.onDiagnosticEvent
+
+    const [sessionListResult, statusResult, questionResult, permissionResult] = await Promise.allSettled([
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.list", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.session.list(), "session.list"), liveReadTimeoutMs, "session.list"),
+      ),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.status", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.session.status(), "session.status"), liveReadTimeoutMs, "session.status"),
+      ),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "question.list", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.question.list(), "question.list"), liveReadTimeoutMs, "question.list"),
+      ),
+      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "permission.list", onDiagnosticEvent }, () =>
+        withTimeout(async () => unwrapSdkReadResult(await input.client.permission.list(), "permission.list"), liveReadTimeoutMs, "permission.list"),
+      ),
+    ])
+
+    return {
+      liveReadTimeoutMs,
+      sessionListResult,
+      statusResult,
+      questionResult,
+      permissionResult,
+    }
+  }
+
+  const collectStatusSnapshot = async (): Promise<WechatInstanceStatusSnapshot> => {
+    const startedAt = Date.now()
     const unavailable = new Set<InstanceUnavailableKind>()
     const onDiagnosticEvent = input.onDiagnosticEvent
     const activeSessionID = input.getActiveSessionID?.()
@@ -321,20 +373,13 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
       return snapshot
     }
 
-    const [sessionListResult, statusResult, questionResult, permissionResult] = await Promise.allSettled([
-      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.list", onDiagnosticEvent }, () =>
-        withTimeout(async () => unwrapSdkReadResult(await input.client.session.list(), "session.list"), liveReadTimeoutMs, "session.list"),
-      ),
-      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "session.status", onDiagnosticEvent }, () =>
-        withTimeout(async () => unwrapSdkReadResult(await input.client.session.status(), "session.status"), liveReadTimeoutMs, "session.status"),
-      ),
-      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "question.list", onDiagnosticEvent }, () =>
-        withTimeout(async () => unwrapSdkReadResult(await input.client.question.list(), "question.list"), liveReadTimeoutMs, "question.list"),
-      ),
-      wrapDiagnosticStage({ instanceID: input.instanceID, stage: "permission.list", onDiagnosticEvent }, () =>
-        withTimeout(async () => unwrapSdkReadResult(await input.client.permission.list(), "permission.list"), liveReadTimeoutMs, "permission.list"),
-      ),
-    ])
+    const {
+      liveReadTimeoutMs,
+      sessionListResult,
+      statusResult,
+      questionResult,
+      permissionResult,
+    } = await collectLiveRead()
 
     const sessions = sessionListResult.status === "fulfilled" ? sessionListResult.value : []
     const recentSessions = isNonEmptyString(activeSessionID)
@@ -425,8 +470,98 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     return snapshot
   }
 
+  const collectNotificationCandidates = async (): Promise<WechatNotificationCandidate[]> => {
+    const binding = await readOperatorBinding().catch(() => undefined)
+    if (!binding) {
+      return []
+    }
+
+    const { questionResult, permissionResult, statusResult } = await collectLiveRead()
+    const candidates: WechatNotificationCandidate[] = []
+    const existingHandles = new Set<string>()
+
+    if (questionResult.status === "fulfilled") {
+      for (const question of questionResult.value) {
+        const routeKey = createRouteKey({
+          kind: "question",
+          requestID: question.id,
+          scopeKey: input.instanceID,
+        })
+        const handle = createHandle("question", existingHandles)
+        existingHandles.add(handle)
+        candidates.push({
+          idempotencyKey: `question-${toIdempotencyPart(input.instanceID)}-${toIdempotencyPart(question.id)}`,
+          kind: "question",
+          requestID: question.id,
+          createdAt: Date.now(),
+          routeKey,
+          handle,
+        })
+      }
+    }
+
+    if (permissionResult.status === "fulfilled") {
+      for (const permission of permissionResult.value) {
+        const routeKey = createRouteKey({
+          kind: "permission",
+          requestID: permission.id,
+          scopeKey: input.instanceID,
+        })
+        const handle = createHandle("permission", existingHandles)
+        existingHandles.add(handle)
+        candidates.push({
+          idempotencyKey: `permission-${toIdempotencyPart(input.instanceID)}-${toIdempotencyPart(permission.id)}`,
+          kind: "permission",
+          requestID: permission.id,
+          createdAt: Date.now(),
+          routeKey,
+          handle,
+        })
+      }
+    }
+
+    if (statusResult.status === "fulfilled") {
+      const seenSessionIDs = new Set<string>()
+      for (const [sessionID, status] of Object.entries(statusResult.value)) {
+        seenSessionIDs.add(sessionID)
+        if (status?.type === "retry") {
+          const signature = stableStringify(status)
+          const previousWasRetry = isRetryBySessionID.get(sessionID) === true
+          const previousSignature = retrySignatureBySessionID.get(sessionID)
+          if (!previousWasRetry || previousSignature !== signature) {
+            const nextSequence = (retryEventSequenceBySessionID.get(sessionID) ?? 0) + 1
+            retryEventSequenceBySessionID.set(sessionID, nextSequence)
+          }
+
+          isRetryBySessionID.set(sessionID, true)
+          retrySignatureBySessionID.set(sessionID, signature)
+          const eventSequence = retryEventSequenceBySessionID.get(sessionID) ?? 1
+          candidates.push({
+            idempotencyKey: `session-error-${toIdempotencyPart(input.instanceID)}-${toIdempotencyPart(sessionID)}-${eventSequence}`,
+            kind: "sessionError",
+            createdAt: Date.now(),
+          })
+        } else {
+          isRetryBySessionID.set(sessionID, false)
+          retrySignatureBySessionID.delete(sessionID)
+        }
+      }
+
+      for (const knownSessionID of isRetryBySessionID.keys()) {
+        if (seenSessionIDs.has(knownSessionID)) {
+          continue
+        }
+        isRetryBySessionID.set(knownSessionID, false)
+        retrySignatureBySessionID.delete(knownSessionID)
+      }
+    }
+
+    return candidates
+  }
+
   return {
     collectStatusSnapshot,
+    collectNotificationCandidates,
   }
 }
 

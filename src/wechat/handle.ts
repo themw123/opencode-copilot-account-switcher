@@ -10,9 +10,14 @@ function normalizeRequestID(requestID: string) {
   return requestID.trim().toLowerCase()
 }
 
-export function createRouteKey(input: { kind: WechatRequestKind; requestID: string }) {
+export function createRouteKey(input: { kind: WechatRequestKind; requestID: string; scopeKey?: string }) {
   const normalized = normalizeRequestID(input.requestID)
-  const digest = crypto.createHash("sha1").update(`${input.kind}:${normalized}`).digest("hex").slice(0, 12)
+  const normalizedScope = typeof input.scopeKey === "string" ? input.scopeKey.trim().toLowerCase() : ""
+  const digest = crypto
+    .createHash("sha1")
+    .update(`${input.kind}:${normalized}:${normalizedScope}`)
+    .digest("hex")
+    .slice(0, 12)
   return `${input.kind}-${digest}`
 }
 

@@ -51,6 +51,14 @@ export function tokenStatePath(wechatAccountId: string, userId: string) {
   return path.join(tokensDir(), wechatAccountId, `${userId}.json`)
 }
 
+export function notificationsDir() {
+  return path.join(wechatStateRoot(), "notifications")
+}
+
+export function notificationStatePath(idempotencyKey: string) {
+  return path.join(notificationsDir(), `${idempotencyKey}.json`)
+}
+
 export function requestKindDir(kind: WechatRequestKind) {
   return path.join(wechatStateRoot(), "requests", kind)
 }
@@ -67,6 +75,7 @@ export async function ensureWechatStateLayout() {
   await ensureDir(wechatStateRoot())
   await ensureDir(instancesDir())
   await ensureDir(tokensDir())
+  await ensureDir(notificationsDir())
   await ensureDir(requestKindDir("question"))
   await ensureDir(requestKindDir("permission"))
 }

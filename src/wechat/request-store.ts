@@ -7,7 +7,7 @@ import {
   requestStatePath,
   type WechatRequestKind,
 } from "./state-paths.js"
-import { assertValidHandleInput, normalizeHandle } from "./handle.js"
+import { assertValidHandleInput, createRouteKey, normalizeHandle } from "./handle.js"
 
 export type RequestStatus = "open" | "answered" | "rejected" | "expired" | "cleaned"
 
@@ -59,6 +59,21 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
+function normalizeRequestIdentity(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function isSameOpenIdentity(
+  current: Pick<RequestRecord, "requestID" | "wechatAccountId" | "userId">,
+  input: Pick<RequestRecord, "requestID" | "wechatAccountId" | "userId">,
+): boolean {
+  return (
+    normalizeRequestIdentity(current.requestID) === normalizeRequestIdentity(input.requestID)
+    && current.wechatAccountId === input.wechatAccountId
+    && current.userId === input.userId
+  )
+}
+
 function assertValidRouteKey(routeKey: string) {
   if (!/^[a-z0-9-]+$/.test(routeKey) || routeKey.includes("..")) {
     throw new Error("invalid routeKey format")
@@ -106,6 +121,18 @@ async function readRequest(kind: WechatRequestKind, routeKey: string): Promise<R
     if (issue.code === "ENOENT") throw error
     if (error instanceof Error && error.message === "invalid request record format") throw error
     throw new Error("invalid request record format")
+  }
+}
+
+async function readRequestIfExists(kind: WechatRequestKind, routeKey: string): Promise<RequestRecord | undefined> {
+  try {
+    return await readRequest(kind, routeKey)
+  } catch (error) {
+    const issue = error as NodeJS.ErrnoException
+    if (issue.code === "ENOENT") {
+      return undefined
+    }
+    throw error
   }
 }
 
@@ -163,9 +190,20 @@ export async function upsertRequest(
     if (current.status !== "open") {
       throw new Error("cannot upsert terminal request")
     }
+
+    if (!isSameOpenIdentity(current, input)) {
+      throw new Error("cannot upsert open request with different identity")
+    }
+
+    return current
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code !== "ENOENT") throw error
+  }
+
+  const active = await listActiveRequests()
+  if (active.some((item) => item.kind === input.kind && item.status === "open" && item.handle === normalizedHandle)) {
+    throw new Error("open request handle already exists")
   }
 
   return writeRequest({
@@ -282,4 +320,66 @@ export async function listActiveRequests(): Promise<RequestRecord[]> {
 
   result.sort((a, b) => a.createdAt - b.createdAt)
   return result
+}
+
+export async function findOpenRequestByHandle(input: {
+  kind: WechatRequestKind
+  handle: string
+}): Promise<RequestRecord | undefined> {
+  if (!isRequestKind((input as { kind: unknown }).kind) || !isNonEmptyString((input as { handle: unknown }).handle)) {
+    throw new Error("invalid request record format")
+  }
+
+  const normalizedHandle = normalizeHandle(input.handle)
+  const all = await listActiveRequests()
+  return all.find((item) => item.kind === input.kind && item.status === "open" && item.handle === normalizedHandle)
+}
+
+export async function findOpenRequestByIdentity(input: {
+  kind: WechatRequestKind
+  requestID: string
+  wechatAccountId: string
+  userId: string
+  scopeKey?: string
+}): Promise<RequestRecord | undefined> {
+  if (
+    !isRequestKind((input as { kind: unknown }).kind) ||
+    !isNonEmptyString((input as { requestID: unknown }).requestID) ||
+    !isNonEmptyString((input as { wechatAccountId: unknown }).wechatAccountId) ||
+    !isNonEmptyString((input as { userId: unknown }).userId)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  const routeKey = createRouteKey({
+    kind: input.kind,
+    requestID: input.requestID,
+    scopeKey: input.scopeKey,
+  })
+  const current = await readRequestIfExists(input.kind, routeKey)
+  if (!current) {
+    return undefined
+  }
+  if (current.status !== "open") {
+    return undefined
+  }
+  if (normalizeRequestIdentity(current.requestID) !== normalizeRequestIdentity(input.requestID)) {
+    return undefined
+  }
+  if (current.wechatAccountId !== input.wechatAccountId || current.userId !== input.userId) {
+    return undefined
+  }
+  return current
+}
+
+export async function findRequestByRouteKey(input: {
+  kind: WechatRequestKind
+  routeKey: string
+}): Promise<RequestRecord | undefined> {
+  if (!isRequestKind((input as { kind: unknown }).kind) || !isNonEmptyString((input as { routeKey: unknown }).routeKey)) {
+    throw new Error("invalid request record format")
+  }
+
+  assertValidRouteKey(input.routeKey)
+  return readRequestIfExists(input.kind, input.routeKey)
 }

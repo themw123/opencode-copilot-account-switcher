@@ -40,6 +40,16 @@ export type WechatMenuSettings = {
   }
 }
 
+export type WechatNotificationDispatchSettings = {
+  targetUserId?: string
+  notifications: {
+    enabled: boolean
+    question: boolean
+    permission: boolean
+    sessionError: boolean
+  }
+}
+
 function normalizeWechatBinding(input: unknown): WechatBinding | undefined {
   if (!input || typeof input !== "object") return undefined
   const value = input as Record<string, unknown>
@@ -255,4 +265,22 @@ export async function writeCommonSettingsStore(
 
   await fs.mkdir(path.dirname(file), { recursive: true })
   await fs.writeFile(file, JSON.stringify(persisted, null, 2), { mode: 0o600 })
+}
+
+export async function readWechatNotificationDispatchSettings(options?: {
+  filePath?: string
+  legacyCopilotFilePath?: string
+}): Promise<WechatNotificationDispatchSettings> {
+  const settings = await readCommonSettingsStore(options)
+  return {
+    ...(typeof settings.wechat?.primaryBinding?.userId === "string"
+      ? { targetUserId: settings.wechat.primaryBinding.userId }
+      : {}),
+    notifications: settings.wechat?.notifications ?? {
+      enabled: true,
+      question: true,
+      permission: true,
+      sessionError: true,
+    },
+  }
 }

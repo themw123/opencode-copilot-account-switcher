@@ -1,13 +1,26 @@
-import test from "node:test"
+import test, { after } from "node:test"
 import assert from "node:assert/strict"
 import os from "node:os"
 import path from "node:path"
 import net from "node:net"
-import { mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 
 const DIST_BROKER_SERVER_MODULE = "../dist/wechat/broker-server.js"
 const DIST_BROKER_CLIENT_MODULE = "../dist/wechat/broker-client.js"
 const DIST_BRIDGE_MODULE = "../dist/wechat/bridge.js"
+
+const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-config-"))
+const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+process.env.XDG_CONFIG_HOME = sandboxConfigHome
+
+after(async () => {
+  if (previousXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+  }
+  await rm(sandboxConfigHome, { recursive: true, force: true })
+})
 
 function createBrokerEndpoint(tempDir) {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -768,10 +781,27 @@ test("command parser: 识别 /status /reply /allow", async () => {
   const parser = await import(`../dist/wechat/command-parser.js?reload=${Date.now()}`)
 
   assert.deepEqual(parser.parseWechatSlashCommand("/status"), { type: "status" })
-  assert.deepEqual(parser.parseWechatSlashCommand("/reply hi"), { type: "reply", text: "hi" })
-  assert.deepEqual(parser.parseWechatSlashCommand("/allow once"), { type: "allow", reply: "once" })
-  assert.deepEqual(parser.parseWechatSlashCommand("/allow always approved"), { type: "allow", reply: "always", message: "approved" })
-  assert.deepEqual(parser.parseWechatSlashCommand("/allow reject no"), { type: "allow", reply: "reject", message: "no" })
+  assert.deepEqual(parser.parseWechatSlashCommand("/reply q1 done"), { type: "reply", handle: "q1", text: "done" })
+  assert.deepEqual(parser.parseWechatSlashCommand("/allow p1 once approved"), {
+    type: "allow",
+    handle: "p1",
+    reply: "once",
+    message: "approved",
+  })
+  assert.deepEqual(parser.parseWechatSlashCommand("/allow p1 always approved"), {
+    type: "allow",
+    handle: "p1",
+    reply: "always",
+    message: "approved",
+  })
+  assert.deepEqual(parser.parseWechatSlashCommand("/allow p1 reject no"), {
+    type: "allow",
+    handle: "p1",
+    reply: "reject",
+    message: "no",
+  })
+  assert.equal(parser.parseWechatSlashCommand("/replyq1 done"), null)
+  assert.equal(parser.parseWechatSlashCommand("/allowp1 once ok"), null)
   assert.equal(parser.parseWechatSlashCommand("status"), null)
 })
 
@@ -825,11 +855,11 @@ test("broker slash handler: /status 走 collectStatus formatter，其它 slash �
     assert.match(statusReply, /timeout\/unreachable/i)
 
     assert.equal(
-      await server.handleWechatSlashCommand({ type: "reply", text: "hi" }),
+      await server.handleWechatSlashCommand({ type: "reply", handle: "q1", text: "hi" }),
       "命令暂未实现：/reply",
     )
     assert.equal(
-      await server.handleWechatSlashCommand({ type: "allow", reply: "once" }),
+      await server.handleWechatSlashCommand({ type: "allow", handle: "p1", reply: "once" }),
       "命令暂未实现：/allow",
     )
   } finally {
@@ -1244,12 +1274,12 @@ test("wechat status runtime: /status /reply /allow 走各自 slash handler，非
               {
                 from_user_id: "user-reply",
                 context_token: "ctx-reply",
-                item_list: [{ type: 1, text_item: { text: "/reply hi" } }],
+                item_list: [{ type: 1, text_item: { text: "/reply q1 hi" } }],
               },
               {
                 from_user_id: "user-allow",
                 context_token: "ctx-allow",
-                item_list: [{ type: 1, text_item: { text: "/allow once" } }],
+                item_list: [{ type: 1, text_item: { text: "/allow p1 once" } }],
               },
               {
                 from_user_id: "user-text",
@@ -1289,8 +1319,8 @@ test("wechat status runtime: /status /reply /allow 走各自 slash handler，非
   assert.equal(statusCollectCalls, 1)
   assert.deepEqual(slashCalls, [
     { type: "status" },
-    { type: "reply", text: "hi" },
-    { type: "allow", reply: "once" },
+    { type: "reply", handle: "q1", text: "hi" },
+    { type: "allow", handle: "p1", reply: "once" },
   ])
   assert.equal(sendCalls[0].text, "formatted status reply from collectStatus")
   assert.equal(sendCalls[1].text, "reply result")
@@ -1738,8 +1768,8 @@ test("broker-entry runtime lifecycle: 注入 broker slash handler，/status 复�
           )
           slashInputCalls.push(
             await onSlashCommand({
-              command: { type: "reply", text: "hi" },
-              text: "/reply hi",
+              command: { type: "reply", handle: "q1", text: "hi" },
+              text: "/reply q1 hi",
               message: { from_user_id: "u-2" },
             }),
           )
@@ -1764,7 +1794,7 @@ test("broker-entry runtime lifecycle: 注入 broker slash handler，/status 复�
 
   assert.deepEqual(brokerSlashCalls, [
     { type: "status" },
-    { type: "reply", text: "hi" },
+    { type: "reply", handle: "q1", text: "hi" },
   ])
   assert.deepEqual(slashInputCalls, ["from broker collectStatus", "from broker reply"])
 })
@@ -1796,63 +1826,105 @@ test("broker-entry runtime lifecycle: 默认 slash handler 不再返回 /status 
   assert.equal(slashReplies[0], "命令暂未实现：/status")
 })
 
-test("broker-entry slash handler: /reply 会回复单个待处理 question", async () => {
+test("broker-entry slash handler: /reply q1 done 命中 open question 并回写 request 与 notification", async () => {
   const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-reply-handler`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-reply-handler-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-reply-handler-request-store`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-reply-handler-notification-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-reply-handler-state-paths`)
 
   const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-reply-handle-1" })
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-reply-handle-1",
+    routeKey,
+    handle: "q1",
+    wechatAccountId: "wx-reply",
+    userId: "u-reply",
+    createdAt: 1_700_300_000_000,
+  })
+  const sent = await notificationStore.upsertNotification({
+    idempotencyKey: "notif-reply-q1",
+    kind: "question",
+    routeKey,
+    handle: "q1",
+    wechatAccountId: "wx-reply",
+    userId: "u-reply",
+    createdAt: 1_700_300_000_100,
+  })
+  await notificationStore.markNotificationSent({
+    idempotencyKey: sent.idempotencyKey,
+    sentAt: 1_700_300_000_200,
+  })
+
   const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
     handleStatusCommand: async () => "status reply",
     client: {
       question: {
-        list: async () => ({
-          data: [
-            {
-              id: "q-1",
-              sessionID: "s-1",
-              questions: [],
-            },
-          ],
-        }),
         reply: async (input) => {
           replyCalls.push(input)
           return { data: true }
         },
       },
-      permission: {
-        list: async () => ({ data: [] }),
-      },
+      permission: {},
     },
   })
 
-  const result = await handler({ type: "reply", text: "done" })
+  const result = await handler({ type: "reply", handle: "q1", text: "done" })
 
-  assert.equal(result, "已回复问题：q-1")
-  assert.deepEqual(replyCalls, [{ requestID: "q-1", answers: [["done"]] }])
+  assert.equal(result, "已回复问题：q1")
+  assert.deepEqual(replyCalls, [{ requestID: created.requestID, answers: [["done"]] }])
+
+  const openAfterReply = await requestStore.findOpenRequestByHandle({ kind: "question", handle: "q1" })
+  assert.equal(openAfterReply, undefined)
+
+  const replyAgain = await handler({ type: "reply", handle: "q1", text: "done again" })
+  assert.equal(replyAgain, "未找到待回复问题：q1")
+
+  const resolvedRaw = await readFile(statePaths.notificationStatePath(sent.idempotencyKey), "utf8")
+  const resolved = JSON.parse(resolvedRaw)
+  assert.equal(resolved.status, "resolved")
+  assert.equal(typeof resolved.resolvedAt, "number")
 })
 
-test("broker-entry slash handler: /allow 会处理单个待处理 permission", async () => {
+test("broker-entry slash handler: /allow p1 always safe 命中 open permission 并回写 answered + resolved", async () => {
   const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-allow-handler`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-allow-handler-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-allow-handler-request-store`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-allow-handler-notification-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-allow-handler-state-paths`)
 
   const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "permission", requestID: "p-allow-handle-1" })
+  const created = await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "p-allow-handle-1",
+    routeKey,
+    handle: "p1",
+    wechatAccountId: "wx-allow",
+    userId: "u-allow",
+    createdAt: 1_700_300_100_000,
+  })
+  const sent = await notificationStore.upsertNotification({
+    idempotencyKey: "notif-allow-p1",
+    kind: "permission",
+    routeKey,
+    handle: "p1",
+    wechatAccountId: "wx-allow",
+    userId: "u-allow",
+    createdAt: 1_700_300_100_100,
+  })
+  await notificationStore.markNotificationSent({
+    idempotencyKey: sent.idempotencyKey,
+    sentAt: 1_700_300_100_200,
+  })
+
   const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
     handleStatusCommand: async () => "status reply",
     client: {
-      question: {
-        list: async () => ({ data: [] }),
-      },
+      question: {},
       permission: {
-        list: async () => ({
-          data: [
-            {
-              id: "p-1",
-              sessionID: "s-2",
-              permission: "bash",
-              patterns: ["*"],
-              metadata: {},
-              always: [],
-            },
-          ],
-        }),
         reply: async (input) => {
           replyCalls.push(input)
           return { data: true }
@@ -1861,10 +1933,249 @@ test("broker-entry slash handler: /allow 会处理单个待处理 permission", a
     },
   })
 
-  const result = await handler({ type: "allow", reply: "always", message: "safe" })
+  const result = await handler({ type: "allow", handle: "p1", reply: "always", message: "safe" })
 
-  assert.equal(result, "已处理权限请求：p-1 (always)")
-  assert.deepEqual(replyCalls, [{ requestID: "p-1", reply: "always", message: "safe" }])
+  assert.equal(result, "已处理权限请求：p1 (always)")
+  assert.deepEqual(replyCalls, [{ requestID: created.requestID, reply: "always", message: "safe" }])
+
+  const openAfterReply = await requestStore.findOpenRequestByHandle({ kind: "permission", handle: "p1" })
+  assert.equal(openAfterReply, undefined)
+
+  const resolvedRaw = await readFile(statePaths.notificationStatePath(sent.idempotencyKey), "utf8")
+  const resolved = JSON.parse(resolvedRaw)
+  assert.equal(resolved.status, "resolved")
+  assert.equal(typeof resolved.resolvedAt, "number")
+})
+
+test("broker-entry slash handler: /allow p1 reject no 会回写 rejected + resolved", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-allow-reject-handler`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-allow-reject-handler-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-allow-reject-handler-request-store`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-allow-reject-handler-notification-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-allow-reject-handler-state-paths`)
+
+  const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "permission", requestID: "p-allow-reject-1" })
+  const created = await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "p-allow-reject-1",
+    routeKey,
+    handle: "p1",
+    wechatAccountId: "wx-allow-reject",
+    userId: "u-allow-reject",
+    createdAt: 1_700_300_200_000,
+  })
+  const sent = await notificationStore.upsertNotification({
+    idempotencyKey: "notif-allow-reject-p1",
+    kind: "permission",
+    routeKey,
+    handle: "p1",
+    wechatAccountId: "wx-allow-reject",
+    userId: "u-allow-reject",
+    createdAt: 1_700_300_200_100,
+  })
+  await notificationStore.markNotificationSent({
+    idempotencyKey: sent.idempotencyKey,
+    sentAt: 1_700_300_200_200,
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {},
+      permission: {
+        reply: async (input) => {
+          replyCalls.push(input)
+          return { data: true }
+        },
+      },
+    },
+  })
+
+  const result = await handler({ type: "allow", handle: "p1", reply: "reject", message: "no" })
+
+  assert.equal(result, "已处理权限请求：p1 (reject)")
+  assert.deepEqual(replyCalls, [{ requestID: created.requestID, reply: "reject", message: "no" }])
+
+  const openAfterReply = await requestStore.findOpenRequestByHandle({ kind: "permission", handle: "p1" })
+  assert.equal(openAfterReply, undefined)
+
+  const resolvedRaw = await readFile(statePaths.notificationStatePath(sent.idempotencyKey), "utf8")
+  const resolved = JSON.parse(resolvedRaw)
+  assert.equal(resolved.status, "resolved")
+  assert.equal(typeof resolved.resolvedAt, "number")
+})
+
+test("broker-entry slash handler: handle 不存在或非法时返回稳定中文提示", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-not-found-handler`)
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async () => ({ data: true }),
+      },
+      permission: {
+        reply: async () => ({ data: true }),
+      },
+    },
+  })
+
+  assert.equal(
+    await handler({ type: "reply", handle: "q404", text: "done" }),
+    "未找到待回复问题：q404",
+  )
+  assert.equal(
+    await handler({ type: "reply", handle: "req-raw-001", text: "done" }),
+    "未找到待回复问题：req-raw-001",
+  )
+  assert.equal(
+    await handler({ type: "allow", handle: "p404", reply: "once", message: "ok" }),
+    "未找到待处理权限请求：p404",
+  )
+  assert.equal(
+    await handler({ type: "allow", handle: "request-raw-001", reply: "always", message: "ok" }),
+    "未找到待处理权限请求：request-raw-001",
+  )
+})
+
+test("broker-entry slash handler: 仅有 pending notification 时 /allow 仍成功且静默跳过 resolve", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-allow-pending-notification`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-allow-pending-notification-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-allow-pending-notification-request-store`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-allow-pending-notification-notification-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-allow-pending-notification-state-paths`)
+
+  const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "permission", requestID: "p-no-sent-notification-1" })
+  const created = await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "p-no-sent-notification-1",
+    routeKey,
+    handle: "pnosent1",
+    wechatAccountId: "wx-no-sent",
+    userId: "u-no-sent",
+    createdAt: 1_700_300_300_000,
+  })
+  const pending = await notificationStore.upsertNotification({
+    idempotencyKey: "notif-allow-pending-only",
+    kind: "permission",
+    routeKey,
+    handle: "pnosent1",
+    wechatAccountId: "wx-no-sent",
+    userId: "u-no-sent",
+    createdAt: 1_700_300_300_100,
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {},
+      permission: {
+        reply: async (input) => {
+          replyCalls.push(input)
+          return { data: true }
+        },
+      },
+    },
+  })
+
+  const result = await handler({ type: "allow", handle: "pnosent1", reply: "always", message: "safe" })
+
+  assert.equal(result, "已处理权限请求：pnosent1 (always)")
+  assert.deepEqual(replyCalls, [{ requestID: created.requestID, reply: "always", message: "safe" }])
+
+  const openAfterReply = await requestStore.findOpenRequestByHandle({ kind: "permission", handle: "pnosent1" })
+  assert.equal(openAfterReply, undefined)
+
+  const pendingRaw = await readFile(statePaths.notificationStatePath(pending.idempotencyKey), "utf8")
+  const pendingRecord = JSON.parse(pendingRaw)
+  assert.equal(pendingRecord.status, "pending")
+  assert.equal(pendingRecord.resolvedAt, undefined)
+})
+
+test("broker-entry slash handler: notification resolve 竞态失败时 /reply 仍返回成功", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-reply-resolve-race`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-reply-resolve-race-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-reply-resolve-race-request-store`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-reply-resolve-race-notification-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-reply-resolve-race-state-paths`)
+
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-resolve-race-1" })
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-resolve-race-1",
+    routeKey,
+    handle: "qrace1",
+    wechatAccountId: "wx-race",
+    userId: "u-race",
+    createdAt: 1_700_300_400_000,
+  })
+  const sent = await notificationStore.upsertNotification({
+    idempotencyKey: "notif-reply-resolve-race",
+    kind: "question",
+    routeKey,
+    handle: "qrace1",
+    wechatAccountId: "wx-race",
+    userId: "u-race",
+    createdAt: 1_700_300_400_100,
+  })
+  await notificationStore.markNotificationSent({
+    idempotencyKey: sent.idempotencyKey,
+    sentAt: 1_700_300_400_200,
+  })
+
+  const replyCalls = []
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async (input) => {
+          replyCalls.push(input)
+          await notificationStore.markNotificationResolved({
+            idempotencyKey: sent.idempotencyKey,
+            resolvedAt: 1_700_300_400_300,
+          })
+          return { data: true }
+        },
+      },
+      permission: {},
+    },
+  })
+
+  const result = await handler({ type: "reply", handle: "qrace1", text: "done" })
+
+  assert.equal(result, "已回复问题：qrace1")
+  assert.deepEqual(replyCalls, [{ requestID: created.requestID, answers: [["done"]] }])
+  assert.equal(await requestStore.findOpenRequestByHandle({ kind: "question", handle: "qrace1" }), undefined)
+
+  const notificationRaw = await readFile(statePaths.notificationStatePath(sent.idempotencyKey), "utf8")
+  const notification = JSON.parse(notificationRaw)
+  assert.equal(notification.status, "resolved")
+})
+
+test("broker-entry slash handler: request 查询存储异常不应被误报为 not-found", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-lookup-storage-error`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-lookup-storage-error-state-paths`)
+
+  const brokenPath = statePaths.requestStatePath("question", "question-broken-json")
+  await mkdir(path.dirname(brokenPath), { recursive: true })
+  await writeFile(brokenPath, "{not-json")
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async () => ({ data: true }),
+      },
+      permission: {},
+    },
+  })
+
+  await assert.rejects(
+    () => handler({ type: "reply", handle: "q1", text: "done" }),
+    /invalid request record format/i,
+  )
 })
 
 test("broker-entry runtime autostart gate: 默认始终开启，不再依赖环境变量", async () => {

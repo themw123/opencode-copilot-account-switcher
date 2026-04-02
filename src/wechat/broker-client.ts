@@ -4,6 +4,7 @@ import {
   serializeEnvelope,
   type BrokerEnvelope,
   type CollectStatusPayload,
+  type SyncWechatNotificationsPayload,
 } from "./protocol.js"
 import type { WechatBridge } from "./bridge.js"
 
@@ -182,6 +183,23 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
     socket.write(serializeEnvelope(envelope))
   }
 
+  function sendSyncWechatNotifications(candidates: SyncWechatNotificationsPayload["candidates"]) {
+    if (!session || candidates.length === 0) {
+      return
+    }
+
+    const envelope: BrokerEnvelope<SyncWechatNotificationsPayload> = {
+      id: nextRequestId("syncWechatNotifications"),
+      type: "syncWechatNotifications",
+      instanceID: session.instanceID,
+      sessionToken: session.sessionToken,
+      payload: {
+        candidates,
+      },
+    }
+    socket.write(serializeEnvelope(envelope))
+  }
+
   function handleCollectStatus(envelope: BrokerEnvelope) {
     const payload = envelope.payload as Partial<CollectStatusPayload>
     if (!isNonEmptyString(payload.requestId)) {
@@ -268,6 +286,15 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
         brokerPid: payload.brokerPid,
       }
 
+      if (options.bridge?.collectNotificationCandidates) {
+        try {
+          const candidates = await options.bridge.collectNotificationCandidates()
+          sendSyncWechatNotifications(candidates)
+        } catch {
+          // swallow candidate collection errors to keep register path available
+        }
+      }
+
       return {
         sessionToken: session.sessionToken,
         registeredAt: session.registeredAt,
@@ -279,13 +306,23 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
         throw new Error("missing broker session")
       }
 
-      return send({
+      const response = await send({
         id: nextRequestId("heartbeat"),
         type: "heartbeat",
         instanceID: session.instanceID,
         sessionToken: session.sessionToken,
         payload: {},
       })
+
+      if (options.bridge?.collectNotificationCandidates) {
+        void Promise.resolve(options.bridge.collectNotificationCandidates())
+          .then((candidates) => {
+            sendSyncWechatNotifications(candidates)
+          })
+          .catch(() => {})
+      }
+
+      return response
     },
     getSessionSnapshot() {
       if (!session) {
