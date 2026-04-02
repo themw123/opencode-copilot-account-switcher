@@ -15,6 +15,7 @@ type InternalCreateJiti = (
 ) => JitiLoader
 type JitiImport = (specifier: string) => Promise<unknown> | unknown
 type JitiResolve = (specifier: string) => string
+type ModuleImport = (specifier: string) => Promise<unknown>
 
 type JitiNamespace = {
   createJiti?: unknown
@@ -60,6 +61,12 @@ function onJitiError(error: unknown): never {
 
 const nativeImport = (id: string) => import(id)
 
+const DEFAULT_JITI_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"]
+
+export function hasBunRuntime(bunVersion: string | undefined = process.versions?.bun): boolean {
+  return typeof bunVersion === "string" && bunVersion.length > 0
+}
+
 export function wrapCreateJiti(createJiti: CreateJiti): CreateJiti {
   const requireFromJiti = createRequire(resolveJitiEsmEntry())
   let transformImpl: ((...args: unknown[]) => unknown) | undefined
@@ -92,4 +99,30 @@ export async function loadJiti(
   return {
     createJiti: wrapCreateJiti(resolveCreateJiti(namespace)),
   }
+}
+
+export async function loadModuleWithTsFallback(
+  modulePath: string,
+  options: {
+    bunVersion?: string | undefined
+    importImpl?: ModuleImport
+    loadJitiImpl?: typeof loadJiti
+    parentURL?: string | URL
+    jitiOptions?: Record<string, unknown>
+  } = {},
+): Promise<unknown> {
+  const moduleUrl = pathToFileURL(modulePath).href
+  const importImpl = options.importImpl ?? nativeImport
+
+  if (hasBunRuntime(options.bunVersion)) {
+    return await importImpl(moduleUrl)
+  }
+
+  const { createJiti } = await (options.loadJitiImpl ?? loadJiti)()
+  const loader = createJiti(options.parentURL ?? import.meta.url, {
+    interopDefault: true,
+    extensions: DEFAULT_JITI_EXTENSIONS,
+    ...(options.jitiOptions ?? {}),
+  })
+  return loader(modulePath)
 }

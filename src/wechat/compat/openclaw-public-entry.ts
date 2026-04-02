@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
-import { loadJiti, type JitiLoader } from "./jiti-loader.js"
+import { loadModuleWithTsFallback } from "./jiti-loader.js"
 
 type CompatHostApi = {
   runtime?: {
@@ -27,23 +27,10 @@ export type OpenClawWeixinPublicEntry = {
   entryAbsolutePath: string
 }
 
-let publicJitiLoader: JitiLoader | null = null
-
 function requireField(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(`[wechat-compat] ${message}`)
   }
-}
-
-async function getPublicJiti() {
-  if (publicJitiLoader) {
-    return publicJitiLoader
-  }
-  publicJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
-    interopDefault: true,
-    extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
-  })
-  return publicJitiLoader
 }
 
 export async function resolveOpenClawWeixinPublicEntry(): Promise<OpenClawWeixinPublicEntry> {
@@ -77,7 +64,7 @@ export async function resolveOpenClawWeixinPublicEntry(): Promise<OpenClawWeixin
 
 export async function loadOpenClawWeixinDefaultExport(): Promise<OpenClawWeixinPlugin> {
   const entry = await resolveOpenClawWeixinPublicEntry()
-  const moduleNamespace = (await getPublicJiti())(entry.entryAbsolutePath) as {
+  const moduleNamespace = await loadModuleWithTsFallback(entry.entryAbsolutePath, { parentURL: import.meta.url }) as {
     default?: unknown
   }
   const plugin = moduleNamespace.default

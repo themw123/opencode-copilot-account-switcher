@@ -138,3 +138,22 @@ test("loadJiti supports async import path", async () => {
   assert.equal(typeof loaded.createJiti, "function")
   assert.equal(loaded.createJiti(), "async-import")
 })
+
+test("loadModuleWithTsFallback prefers native import when bun runtime is available", async () => {
+  const mod = await import(DIST_JITI_LOADER_MODULE)
+  const imported = []
+
+  const loaded = await mod.loadModuleWithTsFallback("C:\\virtual\\module.ts", {
+    bunVersion: "1.3.7",
+    importImpl: async (specifier) => {
+      imported.push(specifier)
+      return { default: "native" }
+    },
+    loadJitiImpl: async () => {
+      throw new Error("loadJiti should not be used")
+    },
+  })
+
+  assert.deepEqual(imported, ["file:///C:/virtual/module.ts"])
+  assert.deepEqual(loaded, { default: "native" })
+})

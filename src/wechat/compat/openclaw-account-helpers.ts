@@ -1,5 +1,5 @@
 import { createRequire } from "node:module"
-import { loadJiti, type JitiLoader } from "./jiti-loader.js"
+import { loadModuleWithTsFallback } from "./jiti-loader.js"
 
 export type WeixinAccountHelpers = {
   listAccountIds: () => Promise<string[]>
@@ -31,19 +31,6 @@ type OpenClawWeixinAccountsModule = {
 }
 
 const OPENCLAW_WEIXIN_ACCOUNTS_MODULE = "@tencent-weixin/openclaw-weixin/src/auth/accounts.ts"
-
-let accountJitiLoader: JitiLoader | null = null
-
-async function getAccountJiti() {
-  if (accountJitiLoader) {
-    return accountJitiLoader
-  }
-  accountJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
-    interopDefault: true,
-    extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
-  })
-  return accountJitiLoader
-}
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
@@ -93,7 +80,7 @@ export async function loadOpenClawAccountHelpers(options: {
 } = {}): Promise<WeixinAccountHelpers> {
   const require = createRequire(import.meta.url)
   const accountsModulePath = require.resolve(options.accountsModulePath ?? OPENCLAW_WEIXIN_ACCOUNTS_MODULE)
-  const accountsModule = (await getAccountJiti())(accountsModulePath) as OpenClawWeixinAccountsModule
+  const accountsModule = await loadModuleWithTsFallback(accountsModulePath, { parentURL: import.meta.url }) as OpenClawWeixinAccountsModule
 
   if (typeof accountsModule.listIndexedWeixinAccountIds !== "function" || typeof accountsModule.loadWeixinAccount !== "function") {
     throw new Error("[wechat-compat] account source helper unavailable")

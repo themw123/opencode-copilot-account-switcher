@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
-import { loadJiti, type JitiLoader } from "./jiti-loader.js"
+import { loadModuleWithTsFallback } from "./jiti-loader.js"
 
 export type PublicWeixinPersistGetUpdatesBuf = (params: {
   accountId: string
@@ -10,19 +10,6 @@ export type PublicWeixinPersistGetUpdatesBuf = (params: {
 
 const OPENCLAW_SYNC_BUF_MODULE = "@tencent-weixin/openclaw-weixin/src/storage/sync-buf.ts"
 const OPENCLAW_STATE_DIR_MODULE = "@tencent-weixin/openclaw-weixin/src/storage/state-dir.ts"
-
-let syncBufJitiLoader: JitiLoader | null = null
-
-async function getSyncBufJiti() {
-  if (syncBufJitiLoader) {
-    return syncBufJitiLoader
-  }
-  syncBufJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
-    interopDefault: true,
-    extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
-  })
-  return syncBufJitiLoader
-}
 
 export function createOpenClawSyncBufHelper(input: {
   getSyncBufFilePath: (accountId: string) => string
@@ -48,7 +35,7 @@ export async function loadOpenClawSyncBufHelper(options: {
 }> {
   const require = createRequire(import.meta.url)
   const syncBufModulePath = require.resolve(options.syncBufModulePath ?? OPENCLAW_SYNC_BUF_MODULE)
-  const syncBufModule = (await getSyncBufJiti())(syncBufModulePath) as {
+  const syncBufModule = await loadModuleWithTsFallback(syncBufModulePath, { parentURL: import.meta.url }) as {
     getSyncBufFilePath?: (accountId: string) => string
     saveGetUpdatesBuf?: (filePath: string, getUpdatesBuf: string) => void
   }
@@ -69,7 +56,7 @@ export async function loadLatestWeixinAccountState(options: {
 } = {}): Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null> {
   const require = createRequire(import.meta.url)
   const stateDirModulePath = require.resolve(options.stateDirModulePath ?? OPENCLAW_STATE_DIR_MODULE)
-  const stateDirModule = (await getSyncBufJiti())(stateDirModulePath) as { resolveStateDir?: () => string }
+  const stateDirModule = await loadModuleWithTsFallback(stateDirModulePath, { parentURL: import.meta.url }) as { resolveStateDir?: () => string }
   const stateDir = stateDirModule.resolveStateDir?.()
   if (!stateDir) {
     return null
@@ -97,7 +84,7 @@ export async function loadLatestWeixinAccountState(options: {
     const accountRaw = await readFile(accountFilePath, "utf8")
     const account = JSON.parse(accountRaw) as { token?: unknown; baseUrl?: unknown }
     const syncBufModulePath = require.resolve(options.syncBufModulePath ?? OPENCLAW_SYNC_BUF_MODULE)
-    const syncBufModule = (await getSyncBufJiti())(syncBufModulePath) as {
+    const syncBufModule = await loadModuleWithTsFallback(syncBufModulePath, { parentURL: import.meta.url }) as {
       getSyncBufFilePath?: (accountId: string) => string
       loadGetUpdatesBuf?: (filePath: string) => string | undefined
     }

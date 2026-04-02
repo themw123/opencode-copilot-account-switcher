@@ -1,5 +1,5 @@
 import { createRequire } from "node:module"
-import { loadJiti, type JitiLoader } from "./jiti-loader.js"
+import { loadModuleWithTsFallback } from "./jiti-loader.js"
 
 type PublicWeixinMessageItem = {
   type?: number
@@ -35,19 +35,6 @@ type PublicGetUpdates = (params: {
 const OPENCLAW_UPDATES_MODULE = "@tencent-weixin/openclaw-weixin/src/api/api.ts"
 const OPENCLAW_SEND_MODULE = "@tencent-weixin/openclaw-weixin/src/messaging/send.ts"
 
-let updatesSendJitiLoader: JitiLoader | null = null
-
-async function getUpdatesSendJiti() {
-  if (updatesSendJitiLoader) {
-    return updatesSendJitiLoader
-  }
-  updatesSendJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
-    interopDefault: true,
-    extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
-  })
-  return updatesSendJitiLoader
-}
-
 function toObjectInput(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" ? (input as Record<string, unknown>) : {}
 }
@@ -80,12 +67,11 @@ export async function loadOpenClawUpdatesAndSendHelpers(options: {
   const require = createRequire(import.meta.url)
   const getUpdatesModulePath = require.resolve(options.getUpdatesModulePath ?? OPENCLAW_UPDATES_MODULE)
   const sendModulePath = require.resolve(options.sendMessageWeixinModulePath ?? OPENCLAW_SEND_MODULE)
-  const jiti = await getUpdatesSendJiti()
 
-  const getUpdatesModule = jiti(getUpdatesModulePath) as {
+  const getUpdatesModule = await loadModuleWithTsFallback(getUpdatesModulePath, { parentURL: import.meta.url }) as {
     getUpdates?: PublicGetUpdates
   }
-  const sendModule = jiti(sendModulePath) as {
+  const sendModule = await loadModuleWithTsFallback(sendModulePath, { parentURL: import.meta.url }) as {
     sendMessageWeixin?: PublicWeixinSendMessage
   }
 
