@@ -19,6 +19,7 @@ type JitiResolve = (specifier: string) => string
 type JitiNamespace = {
   createJiti?: unknown
   default?: unknown
+  "module.exports"?: unknown
 }
 
 function isCreateJiti(value: unknown): value is CreateJiti {
@@ -34,6 +35,9 @@ export function resolveCreateJiti(namespace: JitiNamespace): CreateJiti {
   }
   if (isCreateJiti(namespace.default)) {
     return namespace.default
+  }
+  if (isCreateJiti(namespace["module.exports"])) {
+    return namespace["module.exports"] as CreateJiti
   }
   if (
     namespace.default &&

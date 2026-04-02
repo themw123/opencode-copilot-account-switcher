@@ -40,6 +40,18 @@ test("resolveCreateJiti supports direct CommonJS function export shape", async (
   assert.equal(createJiti(), "cjs-function")
 })
 
+test("resolveCreateJiti supports module.exports function shape", async () => {
+  const mod = await import(DIST_JITI_LOADER_MODULE)
+
+  const createJiti = mod.resolveCreateJiti({
+    "module.exports"() {
+      return "module-exports-function"
+    },
+  })
+
+  assert.equal(createJiti(), "module-exports-function")
+})
+
 test("resolveCreateJiti supports default object with createJiti", async () => {
   const mod = await import(DIST_JITI_LOADER_MODULE)
 
