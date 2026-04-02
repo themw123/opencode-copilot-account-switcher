@@ -63,12 +63,32 @@ test("resolveCreateJiti rejects unsupported export shape", async () => {
   )
 })
 
-test("resolveJitiEsmEntry resolves package.json to lib/jiti.mjs file URL", async () => {
+test("resolveJitiEsmEntry resolves package.json to dist/jiti.cjs file URL", async () => {
   const mod = await import(DIST_JITI_LOADER_MODULE)
 
   const entry = mod.resolveJitiEsmEntry(() => "C:\\virtual\\node_modules\\jiti\\package.json")
 
-  assert.equal(entry, "file:///C:/virtual/node_modules/jiti/lib/jiti.mjs")
+  assert.equal(entry, "file:///C:/virtual/node_modules/jiti/dist/jiti.cjs")
+})
+
+test("wrapCreateJiti supplies runtime helpers for low-level dist factory", async () => {
+  const mod = await import(DIST_JITI_LOADER_MODULE)
+  let runtime
+  let receivedOptions
+
+  const wrapped = mod.wrapCreateJiti((_id, options, receivedRuntime) => {
+    receivedOptions = options
+    runtime = receivedRuntime
+    return "wrapped-loader"
+  })
+
+  const result = wrapped(import.meta.url, { interopDefault: true })
+
+  assert.equal(result, "wrapped-loader")
+  assert.equal(typeof receivedOptions.transform, "function")
+  assert.equal(typeof runtime.onError, "function")
+  assert.equal(typeof runtime.nativeImport, "function")
+  assert.equal(typeof runtime.createRequire, "function")
 })
 
 test("loadJiti resolves and imports jiti ESM entry path", async () => {
@@ -84,7 +104,7 @@ test("loadJiti resolves and imports jiti ESM entry path", async () => {
     }
   }, () => "C:\\virtual\\node_modules\\jiti\\package.json")
 
-  assert.deepEqual(imported, ["file:///C:/virtual/node_modules/jiti/lib/jiti.mjs"])
+  assert.deepEqual(imported, ["file:///C:/virtual/node_modules/jiti/dist/jiti.cjs"])
   assert.equal(typeof loaded.createJiti, "function")
   assert.equal(loaded.createJiti(), "esm-entry")
 })
