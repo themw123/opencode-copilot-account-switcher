@@ -37,11 +37,11 @@ const OPENCLAW_SEND_MODULE = "@tencent-weixin/openclaw-weixin/src/messaging/send
 
 let updatesSendJitiLoader: JitiLoader | null = null
 
-function getUpdatesSendJiti() {
+async function getUpdatesSendJiti() {
   if (updatesSendJitiLoader) {
     return updatesSendJitiLoader
   }
-  updatesSendJitiLoader = loadJiti().createJiti(import.meta.url, {
+  updatesSendJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })
@@ -80,11 +80,12 @@ export async function loadOpenClawUpdatesAndSendHelpers(options: {
   const require = createRequire(import.meta.url)
   const getUpdatesModulePath = require.resolve(options.getUpdatesModulePath ?? OPENCLAW_UPDATES_MODULE)
   const sendModulePath = require.resolve(options.sendMessageWeixinModulePath ?? OPENCLAW_SEND_MODULE)
+  const jiti = await getUpdatesSendJiti()
 
-  const getUpdatesModule = getUpdatesSendJiti()(getUpdatesModulePath) as {
+  const getUpdatesModule = jiti(getUpdatesModulePath) as {
     getUpdates?: PublicGetUpdates
   }
-  const sendModule = getUpdatesSendJiti()(sendModulePath) as {
+  const sendModule = jiti(sendModulePath) as {
     sendMessageWeixin?: PublicWeixinSendMessage
   }
 

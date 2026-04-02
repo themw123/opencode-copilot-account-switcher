@@ -35,11 +35,11 @@ function requireField(condition: boolean, message: string): void {
   }
 }
 
-function getPublicJiti() {
+async function getPublicJiti() {
   if (publicJitiLoader) {
     return publicJitiLoader
   }
-  publicJitiLoader = loadJiti().createJiti(import.meta.url, {
+  publicJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })
@@ -77,7 +77,7 @@ export async function resolveOpenClawWeixinPublicEntry(): Promise<OpenClawWeixin
 
 export async function loadOpenClawWeixinDefaultExport(): Promise<OpenClawWeixinPlugin> {
   const entry = await resolveOpenClawWeixinPublicEntry()
-  const moduleNamespace = getPublicJiti()(entry.entryAbsolutePath) as {
+  const moduleNamespace = (await getPublicJiti())(entry.entryAbsolutePath) as {
     default?: unknown
   }
   const plugin = moduleNamespace.default

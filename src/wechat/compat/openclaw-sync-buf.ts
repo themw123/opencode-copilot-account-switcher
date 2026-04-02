@@ -13,11 +13,11 @@ const OPENCLAW_STATE_DIR_MODULE = "@tencent-weixin/openclaw-weixin/src/storage/s
 
 let syncBufJitiLoader: JitiLoader | null = null
 
-function getSyncBufJiti() {
+async function getSyncBufJiti() {
   if (syncBufJitiLoader) {
     return syncBufJitiLoader
   }
-  syncBufJitiLoader = loadJiti().createJiti(import.meta.url, {
+  syncBufJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })
@@ -48,7 +48,7 @@ export async function loadOpenClawSyncBufHelper(options: {
 }> {
   const require = createRequire(import.meta.url)
   const syncBufModulePath = require.resolve(options.syncBufModulePath ?? OPENCLAW_SYNC_BUF_MODULE)
-  const syncBufModule = getSyncBufJiti()(syncBufModulePath) as {
+  const syncBufModule = (await getSyncBufJiti())(syncBufModulePath) as {
     getSyncBufFilePath?: (accountId: string) => string
     saveGetUpdatesBuf?: (filePath: string, getUpdatesBuf: string) => void
   }
@@ -69,7 +69,7 @@ export async function loadLatestWeixinAccountState(options: {
 } = {}): Promise<{ accountId: string; token: string; baseUrl: string; getUpdatesBuf?: string } | null> {
   const require = createRequire(import.meta.url)
   const stateDirModulePath = require.resolve(options.stateDirModulePath ?? OPENCLAW_STATE_DIR_MODULE)
-  const stateDirModule = getSyncBufJiti()(stateDirModulePath) as { resolveStateDir?: () => string }
+  const stateDirModule = (await getSyncBufJiti())(stateDirModulePath) as { resolveStateDir?: () => string }
   const stateDir = stateDirModule.resolveStateDir?.()
   if (!stateDir) {
     return null
@@ -97,7 +97,7 @@ export async function loadLatestWeixinAccountState(options: {
     const accountRaw = await readFile(accountFilePath, "utf8")
     const account = JSON.parse(accountRaw) as { token?: unknown; baseUrl?: unknown }
     const syncBufModulePath = require.resolve(options.syncBufModulePath ?? OPENCLAW_SYNC_BUF_MODULE)
-    const syncBufModule = getSyncBufJiti()(syncBufModulePath) as {
+    const syncBufModule = (await getSyncBufJiti())(syncBufModulePath) as {
       getSyncBufFilePath?: (accountId: string) => string
       loadGetUpdatesBuf?: (filePath: string) => string | undefined
     }

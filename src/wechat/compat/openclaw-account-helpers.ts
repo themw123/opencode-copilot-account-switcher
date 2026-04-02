@@ -34,11 +34,11 @@ const OPENCLAW_WEIXIN_ACCOUNTS_MODULE = "@tencent-weixin/openclaw-weixin/src/aut
 
 let accountJitiLoader: JitiLoader | null = null
 
-function getAccountJiti() {
+async function getAccountJiti() {
   if (accountJitiLoader) {
     return accountJitiLoader
   }
-  accountJitiLoader = loadJiti().createJiti(import.meta.url, {
+  accountJitiLoader = (await loadJiti()).createJiti(import.meta.url, {
     interopDefault: true,
     extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"],
   })
@@ -93,7 +93,7 @@ export async function loadOpenClawAccountHelpers(options: {
 } = {}): Promise<WeixinAccountHelpers> {
   const require = createRequire(import.meta.url)
   const accountsModulePath = require.resolve(options.accountsModulePath ?? OPENCLAW_WEIXIN_ACCOUNTS_MODULE)
-  const accountsModule = getAccountJiti()(accountsModulePath) as OpenClawWeixinAccountsModule
+  const accountsModule = (await getAccountJiti())(accountsModulePath) as OpenClawWeixinAccountsModule
 
   if (typeof accountsModule.listIndexedWeixinAccountIds !== "function" || typeof accountsModule.loadWeixinAccount !== "function") {
     throw new Error("[wechat-compat] account source helper unavailable")

@@ -67,7 +67,7 @@ test("loadJiti uses CommonJS require path", async () => {
   const mod = await import(DIST_JITI_LOADER_MODULE)
   let required = 0
 
-  const loaded = mod.loadJiti(() => {
+  const loaded = await mod.loadJiti(() => {
     required += 1
     return {
       createJiti() {
@@ -79,4 +79,22 @@ test("loadJiti uses CommonJS require path", async () => {
   assert.equal(required, 1)
   assert.equal(typeof loaded.createJiti, "function")
   assert.equal(loaded.createJiti(), "required")
+})
+
+test("loadJiti supports async import path", async () => {
+  const mod = await import(DIST_JITI_LOADER_MODULE)
+  let imported = 0
+
+  const loaded = await mod.loadJiti(async () => {
+    imported += 1
+    return {
+      createJiti() {
+        return "async-import"
+      },
+    }
+  })
+
+  assert.equal(imported, 1)
+  assert.equal(typeof loaded.createJiti, "function")
+  assert.equal(loaded.createJiti(), "async-import")
 })

@@ -2,6 +2,7 @@ import { createRequire } from "node:module"
 
 export type JitiLoader = (path: string) => unknown
 type CreateJiti = (id: string | URL, options?: Record<string, unknown>) => JitiLoader
+type JitiImport = (specifier: string) => Promise<unknown> | unknown
 
 type JitiNamespace = {
   createJiti?: unknown
@@ -32,8 +33,8 @@ export function resolveCreateJiti(namespace: JitiNamespace): CreateJiti {
   throw new Error("[wechat-compat] createJiti export unavailable")
 }
 
-export function loadJiti(requireImpl: NodeRequire = createRequire(import.meta.url)): { createJiti: CreateJiti } {
-  const namespace = requireImpl("jiti") as JitiNamespace
+export async function loadJiti(importImpl: JitiImport = (specifier) => import(specifier)): Promise<{ createJiti: CreateJiti }> {
+  const namespace = await Promise.resolve(importImpl("jiti")) as JitiNamespace
   return {
     createJiti: resolveCreateJiti(namespace),
   }
