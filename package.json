@@ -49,6 +49,7 @@
     "wechat:smoke:self-test": "npm run build && node --input-type=module -e \"import('./dist/wechat/compat/openclaw-smoke.js').then(async (m) => { const results = await m.runOpenClawSmoke('self-test'); console.log(JSON.stringify(results, null, 2)); })\"",
     "wechat:smoke:real-account": "npm run build && node --input-type=module -e \"import('./dist/wechat/compat/openclaw-smoke.js').then(async (m) => { const dryRun = process.argv.includes('--dry-run'); const results = await m.runOpenClawSmoke('real-account', { dryRun }); console.log(JSON.stringify(results, null, 2)); })\" --",
     "wechat:smoke:guided": "npm run build && node dist/wechat/compat/openclaw-guided-smoke.js",
+    "test:wechat-host-gate": "npm run build && node --test test/wechat-opencode-host-gate.test.js",
     "test": "npm run build && node --test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
