@@ -172,8 +172,6 @@ export async function createRealOpencodeHostRoot({
   opencodePathResolver,
   whichOpencodeImpl,
 } = {}) {
-  void repoRoot
-
   const hostRoot = await mkdtempImpl(path.join(os.tmpdir(), "opencode-real-host-"))
   const resolveRuntime = opencodePathResolver ?? whichOpencodeImpl ?? resolveOpencodeBinary
 
@@ -212,6 +210,7 @@ export async function createRealOpencodeHostRoot({
       ok: true,
       stage: "host-bootstrap-ready",
       hostRoot,
+      projectRoot: repoRoot ?? process.cwd(),
       cacheRoot,
       configRoot,
       dataRoot,
@@ -339,7 +338,14 @@ function extractCurrentScreenBuffer(rawBuffer) {
 
 function appendToPtyBuffer(session, chunk) {
   session.rawBuffer += String(chunk)
-  session.screenText = toScreenText(extractCurrentScreenBuffer(session.rawBuffer))
+  const nextScreenText = toScreenText(extractCurrentScreenBuffer(session.rawBuffer))
+
+  // Some redraw cycles briefly emit only clear-screen / clear-line frames before
+  // the next visible content arrives. Keep the last non-empty screen snapshot so
+  // waiters do not lose the currently visible menu to an all-whitespace frame.
+  if (nextScreenText.trim().length > 0 || session.screenText.trim().length === 0) {
+    session.screenText = nextScreenText
+  }
 }
 
 function createPtyExitPromise(pty, session) {
@@ -373,28 +379,6 @@ function quoteWindowsCmdArgument(argument) {
   return `"${value.replace(/"/g, '""')}"`
 }
 
-async function buildWindowsBinaryPtyLaunchSpec(host, runtimeCommand, runtimeArgs) {
-  const wrapperRoot = host.tmpRoot ?? path.join(host.hostRoot, "tmp")
-  const wrapperScriptPath = path.join(
-    wrapperRoot,
-    `opencode-pty-launch-${process.pid}-${Date.now()}.cmd`,
-  )
-  const commandLine = [quoteWindowsCmdArgument(runtimeCommand), ...runtimeArgs.map(quoteWindowsCmdArgument)]
-    .join(" ")
-
-  await mkdir(wrapperRoot, { recursive: true })
-  await writeFile(
-    wrapperScriptPath,
-    `@echo off\r\n${commandLine}\r\n`,
-    "utf8",
-  )
-
-  return {
-    command: "cmd.exe",
-    args: ["/d", "/s", "/c", "call", wrapperScriptPath],
-  }
-}
-
 async function buildPtyLaunchSpec({ host, commandArgsOverride, platform = process.platform }) {
   const runtimeCommand = host.runtimeCommand ?? host.runtimePath
   const runtimeArgs = commandArgsOverride
@@ -402,7 +386,10 @@ async function buildPtyLaunchSpec({ host, commandArgsOverride, platform = proces
     : [...(host.runtimeArgs ?? [])]
 
   if (platform === "win32" && host.runtimeKind === "binary") {
-    return buildWindowsBinaryPtyLaunchSpec(host, runtimeCommand, runtimeArgs)
+    return {
+      command: runtimeCommand,
+      args: runtimeArgs,
+    }
   }
 
   return {
@@ -434,7 +421,7 @@ export async function spawnRealOpencodePty({
     name,
     cols,
     rows,
-    cwd: host.hostRoot,
+    cwd: host.projectRoot ?? host.hostRoot,
     env: buildRealHostEnv(host, process.env, {
       inlineConfigContent: resolvedInlineConfigContent,
     }),
@@ -714,23 +701,14 @@ export async function openWechatNotificationsSubmenuThroughRealOpencode({
       })
       await delay(menuNavigationDelayMs)
     }
-    await sendKeyWithScreenChangeRetry(pluginMenuResult.session, "ENTER", {
+    const wechatSubmenuScreen = await advanceFromPluginMenuToWechatSubmenu(pluginMenuResult.session, {
       sendInputImpl,
       readScreenImpl,
-      baselineScreenText: pluginMenuResult.session.screenText,
+      screenWaitTimeoutMs,
       inputChangeTimeoutMs,
       inputRetryAttempts,
       inputPollIntervalMs,
     })
-
-    const wechatSubmenuScreen = await waitForScreenText(
-      pluginMenuResult.session,
-      /Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i,
-      {
-        timeoutMs: screenWaitTimeoutMs,
-        readScreenImpl,
-      },
-    )
 
     succeeded = true
 
@@ -749,6 +727,51 @@ export async function openWechatNotificationsSubmenuThroughRealOpencode({
       }
     }
   }
+}
+
+async function advanceFromPluginMenuToWechatSubmenu(session, {
+  sendInputImpl,
+  readScreenImpl,
+  screenWaitTimeoutMs = 60_000,
+  inputChangeTimeoutMs = 750,
+  inputRetryAttempts = 1,
+  inputPollIntervalMs = 25,
+} = {}) {
+  const startedAt = Date.now()
+  const maxEnterAttempts = inputRetryAttempts + 1
+  let enterAttempts = 0
+  let currentScreen = await readSessionScreen(session, readScreenImpl)
+
+  while (Date.now() - startedAt <= screenWaitTimeoutMs) {
+    if (/Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i.test(currentScreen)) {
+      return currentScreen
+    }
+
+    if (/WeChat notifications|微信通知/.test(currentScreen) && enterAttempts < maxEnterAttempts) {
+      await sendKeys(session, ["ENTER"], { sendInputImpl })
+      enterAttempts += 1
+
+      const submitStartedAt = Date.now()
+      while (Date.now() - submitStartedAt <= inputChangeTimeoutMs) {
+        currentScreen = await readSessionScreen(session, readScreenImpl)
+
+        if (/Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i.test(currentScreen)) {
+          return currentScreen
+        }
+
+        if (!/WeChat notifications|微信通知/.test(currentScreen)) {
+          break
+        }
+
+        await delay(inputPollIntervalMs)
+      }
+    } else {
+      currentScreen = await readSessionScreen(session, readScreenImpl)
+      await delay(inputPollIntervalMs)
+    }
+  }
+
+  throw new Error(`menu buffer did not match /Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i within ${screenWaitTimeoutMs}ms`)
 }
 
 function buildRealWechatBindTranscript(session) {
@@ -948,6 +971,7 @@ export async function runRealWechatBindAndClassify({
   menuNavigationDelayMs = 50,
   bindOutcomeTimeoutMs = 60_000,
   bindOutcomePollIntervalMs = 250,
+  menuOpenAttempts = 2,
   inputChangeTimeoutMs = 750,
   inputRetryAttempts = 1,
   inputPollIntervalMs = 25,
@@ -958,20 +982,39 @@ export async function runRealWechatBindAndClassify({
   let succeeded = false
 
   try {
-    submenuResult = await openWechatNotificationsSubmenuThroughRealOpencode({
-      host,
-      artifact,
-      inlineConfigContent,
-      spawnPtyImpl,
-      readScreenImpl,
-      sendInputImpl,
-      screenWaitTimeoutMs,
-      menuNavigationDelayMs,
-      inputChangeTimeoutMs,
-      inputRetryAttempts,
-      inputPollIntervalMs,
-      resolvePluginInlineConfigContentImpl,
-    })
+    let openAttempt = 0
+    let lastOpenError
+
+    while (openAttempt < menuOpenAttempts) {
+      try {
+        submenuResult = await openWechatNotificationsSubmenuThroughRealOpencode({
+          host,
+          artifact,
+          inlineConfigContent,
+          spawnPtyImpl,
+          readScreenImpl,
+          sendInputImpl,
+          screenWaitTimeoutMs,
+          menuNavigationDelayMs,
+          inputChangeTimeoutMs,
+          inputRetryAttempts,
+          inputPollIntervalMs,
+          resolvePluginInlineConfigContentImpl,
+        })
+        break
+      } catch (error) {
+        lastOpenError = error
+        openAttempt += 1
+
+        if (openAttempt >= menuOpenAttempts) {
+          throw error
+        }
+      }
+    }
+
+    if (!submenuResult) {
+      throw lastOpenError
+    }
 
     const classificationBaseline = await createRealWechatBindClassificationBaseline({
       session: submenuResult.session,

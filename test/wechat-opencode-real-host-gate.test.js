@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -506,7 +506,7 @@ test("real host PTY helper: spawnRealOpencodePty appends commandArgsOverride aft
   }
 })
 
-test("real host PTY helper: spawnRealOpencodePty wraps windows binary runtime through cmd shell", async () => {
+test("real host PTY helper: spawnRealOpencodePty uses windows binary runtime directly", async () => {
   const hostRoot = await mkdtemp(path.join(os.tmpdir(), "opencode-real-host-pty-wrapper-"))
   const dataEmitter = new EventEmitter()
   const exitEmitter = new EventEmitter()
@@ -515,7 +515,7 @@ test("real host PTY helper: spawnRealOpencodePty wraps windows binary runtime th
     pid: 1234,
     cols: 120,
     rows: 30,
-    process: "cmd.exe",
+    process: "opencode.exe",
     handleFlowControl: false,
     onData(listener) {
       dataEmitter.on("data", listener)
@@ -534,6 +534,7 @@ test("real host PTY helper: spawnRealOpencodePty wraps windows binary runtime th
   const session = await spawnRealOpencodePty({
     host: {
       hostRoot,
+      projectRoot: REPO_ROOT,
       cacheRoot: path.join(hostRoot, "cache"),
       configRoot: path.join(hostRoot, "config"),
       dataRoot: path.join(hostRoot, "data"),
@@ -553,14 +554,10 @@ test("real host PTY helper: spawnRealOpencodePty wraps windows binary runtime th
   })
 
   try {
-    assert.equal(session.command, "cmd.exe")
-    assert.deepEqual(session.args.slice(0, 4), ["/d", "/s", "/c", "call"])
-    assert.match(session.args[4], /opencode-pty-launch-.*\.cmd$/i)
-    const wrapperContent = await readFile(session.args[4], "utf8")
-    assert.match(wrapperContent, /opencode\.exe/)
-    assert.match(wrapperContent, /providers login --provider github-copilot/)
-    assert.match(wrapperContent, /Manage GitHub Copilot accounts/)
-    assert.equal(calls[0].command, "cmd.exe")
+    assert.equal(session.command, "C:/Program Files/OpenCode/opencode.exe")
+    assert.deepEqual(session.args, PROVIDERS_LOGIN_GITHUB_COPILOT_ARGS)
+    assert.equal(calls[0].command, "C:/Program Files/OpenCode/opencode.exe")
+    assert.equal(calls[0].options.cwd, REPO_ROOT)
   } finally {
     await stopRealOpencodePty(session)
     await rm(hostRoot, { recursive: true, force: true })
@@ -672,6 +669,55 @@ test("real host PTY helper: waitForScreenText ignores stale matches after cursor
       }),
       /menu buffer did not match/,
     )
+  } finally {
+    await stopRealOpencodePty(session)
+  }
+})
+
+test("real host PTY helper: blank redraw frame does not erase last visible menu snapshot", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write() {},
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+
+  const session = await spawnRealOpencodePty({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "cmd.exe",
+      runtimeArgs: ["/d", "/s", "/c", "call", "C:/Tools/opencode.cmd"],
+      runtimeKind: "cmd-shim",
+    },
+    spawnPtyImpl: () => fakePty,
+  })
+
+  try {
+    dataEmitter.emit("data", "\u001b[2JAsk anything...\nctrl+p commands")
+    assert.match(session.screenText, /Ask anything\.\.\./)
+
+    dataEmitter.emit("data", "\u001b[H\u001b[K\r\n\u001b[K\r\n\u001b[K")
+    assert.match(session.screenText, /Ask anything\.\.\./)
   } finally {
     await stopRealOpencodePty(session)
   }
@@ -1685,10 +1731,8 @@ test("real host PTY supplemental plugin menu: providers login waits for Add cred
     assert.equal(result.reachedPluginMenu, true)
 
     if (process.platform === "win32") {
-      assert.equal(result.session.command, "cmd.exe")
-      assert.deepEqual(result.session.args.slice(0, 4), ["/d", "/s", "/c", "call"])
-      const wrapperContent = await readFile(result.session.args[4], "utf8")
-      assert.match(wrapperContent, /providers login --provider github-copilot/)
+      assert.match(result.session.command, /opencode\.exe$/i)
+      assert.deepEqual(result.session.args, PROVIDERS_LOGIN_GITHUB_COPILOT_ARGS)
     }
 
     assert.match(result.addCredentialScreen, /Add credential/i)
