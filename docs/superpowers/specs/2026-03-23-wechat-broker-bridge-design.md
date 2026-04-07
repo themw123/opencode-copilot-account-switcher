@@ -1,353 +1,625 @@
-# WeChat Broker / Bridge 总体设计（基于当前实现重建）
+# 基于单例 Broker 的 OpenCode-WeChat Bridge PoC 设计
 
 ## 背景
 
-原始的 `2026-03-23-wechat-broker-bridge-design.md` 已无法在当前仓库、git 历史和本机 OpenCode / DCP 持久化中恢复。本文件不是对缺失原文的逐字复刻，而是基于当前代码、现存阶段 spec 和已经完成的阶段实现，反推收束出的总体设计。
+当前需求不是单纯把 OpenCode 事件转发到一个通知渠道，而是希望同时满足三件事：
 
-这份文档的职责，不是重复阶段 A/B/C、JITI 入口、菜单 follow-up、compat 2.0.1 迁移的逐项验收细节，而是把这些工作统一解释成一条完整主线，并明确当前仍未闭环的下一阶段工作面。
+1. OpenCode 发生关键事件时，把通知发送到微信；
+2. 微信可以主动触发状态报告；
+3. 微信可以回复 OpenCode 里的 `question` / permission 等等待态交互。
+
+用户已经明确给出一个重要约束：
+
+- 不希望在本项目中自己实现微信私有或不稳定的通信接口；
+- 优先复用 `@tencent-weixin/openclaw-weixin`，通过它暴露出的插件接入形态完成集成；
+- 不走“逆向内部协议再自己重写微信 transport”的路线。
+
+前期调研确认了两个关键事实：
+
+- `opencode-notifier` 很适合帮助我们识别 OpenCode 侧真正要桥接的事件面，但它本身是单向本地通知插件，不适合直接承担双向微信桥；
+- `@tencent-weixin/openclaw-weixin` 不是通用 SDK，而是 OpenClaw channel plugin。它天生假定由单一宿主管理账号级 `get_updates_buf` 游标和长轮询生命周期。
+
+因此，如果每个 OpenCode 实例都各自启动一个微信 sidecar，会天然遇到同一微信账号被多个轮询器争抢 `get_updates_buf` 的问题，导致重复、漏消息或游标覆盖。PoC 必须先解决这个宿主与生命周期问题。
 
 ## 目标
 
-这份总体设计只回答四个问题：
-
-1. 当前 WeChat 集成的整体架构是什么。
-2. 已实现能力与预留能力分别落在哪些层。
-3. 哪些边界应被视为长期稳定约束。
-4. 尚未完成的微信通知业务，应沿哪条主线继续实现。
+1. 在不自研微信私有协议的前提下，复用 `@tencent-weixin/openclaw-weixin` 完成微信收发。
+2. 支持 OpenCode 到微信的事件通知，至少覆盖：
+   - `question.asked`
+   - `permission.asked`
+   - `session.status`
+   - `session.idle`
+   - `session.error`
+   - 由 `message.part.updated` / `todo.updated` / `command.executed` 归纳出的最新动作摘要
+3. 支持微信主动发送 `/status`，聚合同机多个 OpenCode 实例的状态。
+4. 支持微信回复 `question` 与 permission，且真正执行仍走 OpenCode 官方 API。
+5. 支持同一台机器上多个 OpenCode 实例同时运行，但微信 transport 始终只有一个真实轮询宿主。
+6. 当 `context_token` 失效时，提供本地 fallback 提示，引导用户在微信发送 `/status` 重新激活。
 
 ## 非目标
 
-这份总体设计不做这些事情：
+1. PoC 不支持“在微信里自由聊天驱动 OpenCode AI”。
+2. PoC 不支持多操作者、多订阅人、多微信用户广播。
+3. PoC 不解决“从未给 bot 发过消息的冷启动主动推送”。
+4. PoC 不实现完整 OpenClaw 宿主，也不承诺兼容 OpenClaw 全部 runtime 能力。
+5. PoC 不改变本项目现有 Copilot/Codex 账号切换主线功能。
 
-1. 不重写阶段 A/B/C 各自已经定稿的详细验收口径。
-2. 不把当前代码包装成“原计划已全部完成”。
-3. 不直接展开为实现步骤级别的操作清单；步骤拆解放到 phased implementation plan。
-4. 不把 transport、polling、sync-buf 之类内部细节直接抬升成用户能力设计。
+## 方案选择
 
-## 总体结论
+本次在生命周期层面比较了三条路线：
 
-当前系统应被定义为：
+### 方案 A：用户级单例 Broker
 
-> WeChat 状态查看链路已经成立，`question` / `permission` / `sessionError` 通知发送链路已经接通，`/reply` / `/allow` 已升级为 handle 驱动闭环；当前主线缺口主要收敛在 Stage G 级别的恢复、死信、人工恢复与观测增强。
+做法：
 
-这意味着仓库已经具备：
+- 第一个 OpenCode 实例负责按需拉起一个用户级单例 broker；
+- broker 独占微信轮询；
+- 所有 OpenCode 实例通过本地 IPC 接入 broker。
 
-- 真实微信入口。
-- broker 单例基座。
-- 基于 OpenCode live read 的 `/status` 聚合链路。
-- 微信菜单、绑定流程和通知配置结构。
-- 与 `@tencent-weixin/openclaw-weixin@2.0.1` 对齐的 compat 适配层。
+优点：
 
-当前仓库已经具备：
+- 真正解决多实例共享同一微信账号的问题；
+- 仍然符合“插件随 OpenCode 起”的使用体验；
+- 可以把微信协议面与 OpenCode API 面彻底解耦。
 
-- `question` / `permission` / `sessionError` 的真实微信通知发送链路。
-- 与 request / handle / 通知链路对齐的 `/reply` / `/allow` 稳定闭环。
-- 最小可靠性语义：终态保留与清理、`sessionError` 未恢复前抑制重复发送、broker 重启后同一 open request 不重发。
+缺点：
 
-当前仍未完整具备：
+- 需要多一个本地进程；
+- 需要定义本地 IPC、锁和 crash recovery。
 
-- 更复杂的重放与死信编排（超出最小保留/抑制语义）。
-- 人工恢复操作面与可审计的恢复轨迹。
-- 跨进程锁/竞争场景下更结构化的错误码与恢复策略。
-- 更明确的旧 binding pending 迁移策略与批量修复能力。
+### 方案 B：实例内 leader 竞选
 
-## 架构主线
+做法：
 
-整体主线固定为：
+- 没有独立 broker；
+- 多个插件实例中只有抢到锁的那个负责微信轮询，其余实例作为 follower。
 
-`真实微信入口 -> broker 单例基座 -> bridge live snapshot -> /status 聚合 -> 菜单/绑定/配置面 -> 通知业务与回复闭环`
+优点：
 
-其中 upstream 依赖通过 compat 层被隔离，不直接泄漏到 UI 或业务层。
+- 进程更少；
+- 理论上更贴近“没有额外常驻服务”。
 
-## 分层设计
+缺点：
 
-### 1. Compat / Upstream Adapter 层
+- leader 崩溃、锁续租、消息路由、重选时序都明显更复杂；
+- 实现复杂度高于用户级单例 broker。
 
-职责：
+### 方案 C：外部独立服务
 
-- 适配 `@tencent-weixin/openclaw-weixin@2.0.1` 的公开 helper、账号源、QR gateway、`getUpdates()`、`sendMessageWeixin()`、sync-buf 能力。
-- 向仓库业务层暴露稳定的内部接口。
+做法：
 
-边界：
+- 微信 broker 独立安装、独立启动；
+- OpenCode 插件只做客户端。
 
-- 业务层不能猜测上游 helper 签名。
-- UI 层不能直接感知上游对象 shape。
-- 版本差异必须在 compat 层吸收，而不是分散到菜单、绑定、broker 或 bridge 层。
+优点：
 
-### 2. WeChat Ingress Runtime 层
+- 架构最干净；
+- 生命周期和多实例问题最简单。
 
-职责：
+缺点：
 
-- 在 broker 进程侧维护真实微信账号状态。
-- 周期性轮询 `getUpdates()`。
-- 识别入站 slash 文本。
-- 把 `/status` 等命令交给 broker 处理。
-- 通过 `sendMessageWeixin()` 把回复发回同一微信会话。
+- 用户体验最差；
+- 不符合“尽量随 OpenCode 自动工作”的预期。
 
-边界：
+### 选定方案：用户级单例 Broker
 
-- 这里只负责 transport、polling 和 slash 入口。
-- 非 slash 输入继续固定提示，不进入 AI reply。
-- 该层不维护业务摘要中心，不直接决定通知业务策略。
+原因：
 
-### 3. Broker Foundation 层
+- 能在不牺牲多实例能力的前提下，保持较好的自动化体验；
+- 可以把 `openclaw-weixin` 的宿主压力集中在一个地方；
+- 可以把 OpenCode 侧状态、问答和 permission 映射成清晰的本地 bridge 协议。
 
-职责：
+## 设计细节
 
-- 维持单例 detached broker。
-- 负责 launcher / client / server 生命周期。
-- 处理实例注册、`sessionToken` 鉴权、`ping` / `heartbeat`。
-- 维护共享状态目录与最小恢复语义。
-- 负责对实例 fan-out / fan-in。
+### 1. 总体组件边界
 
-边界：
+PoC 固定为四个组件：
 
-- broker 是运行时协调中心，不是长期业务 digest 中心。
-- broker 负责聚合与路由，不负责把 session 状态做成长期缓存真相源。
+1. `broker launcher`
+   - 存在于每个 OpenCode 插件实例中；
+   - 负责“尝试连接 broker -> 如不存在则竞争拉起 -> 成功后注册本实例”。
+2. `singleton broker`
+   - 用户级单例本地进程；
+   - 独占微信轮询、共享 token 缓存、实例注册表、待处理请求映射。
+3. `instance bridge`
+   - 运行在每个 OpenCode 实例内；
+   - 订阅本实例 OpenCode 官方事件，维护本地摘要，并响应 broker 的控制请求。
+4. `shared local state`
+   - 放在 `~/.config/opencode/account-switcher/wechat/`；
+   - 存放 broker 元数据、锁、实例状态、token 缓存、待处理请求映射。
 
-### 4. Bridge Live Snapshot 层
+边界约束：
 
-职责：
+- 微信协议面只允许出现在 broker 中；
+- OpenCode 官方 API 只允许由各实例 bridge 调用；
+- broker 不直接执行任何 OpenCode 会话逻辑；
+- bridge 不直接持有微信长轮询游标。
 
-- 在每个 OpenCode 实例内通过 `input.client` 实时读取 session、question、permission、todo、message / part。
-- 生成实例级 snapshot 与 `/status` 需要的展示摘要。
+### 2. 本地状态目录与文件布局
 
-边界：
+PoC 统一使用：
 
-- 状态计算应优先依赖 live read，而不是事件缓存。
-- bridge 是状态观察者和摘要构造者，不承担微信 transport。
+```text
+~/.config/opencode/account-switcher/wechat/
+```
+
+文件布局建议：
+
+```text
+broker.json
+launch.lock
+operator.json
+instances/
+  <instanceID>.json
+tokens/
+  <wechatAccountId>/
+    <userId>.json
+requests/
+  question/
+    <instanceID>__<requestID>.json
+  permission/
+    <instanceID>__<requestID>.json
+```
+
+各文件职责：
+
+- `broker.json`
+  - `pid`
+  - `socketPath`
+  - `startedAt`
+  - `version`
+- `launch.lock`
+  - 防止多个实例并发拉起 broker
+- `operator.json`
+  - PoC 只支持单操作者，记录当前绑定的 `wechatAccountId` 与 `userId`
+- `instances/<instanceID>.json`
+  - 实例元信息与最近心跳
+- `tokens/<wechatAccountId>/<userId>.json`
+  - `contextToken`
+  - `updatedAt`
+  - `source`
+  - `sourceRef?`
+  - `staleReason?`
+- `requests/question/<instanceID>__<requestID>.json`
+  - question 到目标实例、目标 session 的映射
+- `requests/permission/<instanceID>__<requestID>.json`
+  - permission 到目标实例、目标 session 的映射
+
+### 3. Broker 启动、连接与退出语义
+
+默认语义：
+
+- broker idle timeout：`5 分钟`
+- 只有“无 bridge 在线”且“无未完成 question/permission”同时成立，才开始 idle 计时
+- 请求状态机：`open -> answered|rejected|expired -> cleaned`
+- 默认请求 TTL：`24 小时` 软上限；超过后不再阻止 broker idle 退出，只保留 dead-letter 记录用于排障
+
+启动流程：
+
+1. 插件实例启动时先尝试连接 `broker.json` 指向的 socket/pipe；
+2. 如果连接失败，则竞争 `launch.lock`；
+3. 抢到锁的实例负责拉起 detached broker；
+4. 其余实例持续重试连接，不再重复拉起；
+5. 连接成功后，bridge 调 `registerInstance(meta)` 完成注册。
+
+退出流程：
+
+1. broker 发现所有实例都失联或主动注销；
+2. 若仍有待处理 question/permission，则继续存活；
+3. 否则开始 5 分钟 idle 计时；
+4. 期间若有实例重新注册，取消退出；
+5. 真正退出前写回 `broker.json` 的清理状态。
+
+请求清理语义：
+
+- `open`：实例在线且请求仍待处理；
+- `answered` / `rejected`：收到 bridge 成功回执后进入终态，等待清理；
+- `expired`：实例离线过久、请求超过 TTL，或 bridge 在 full sync 中确认该请求已不存在；
+- `cleaned`：从活动索引移除，仅保留短期 dead-letter 日志。
+
+这样可以避免“僵尸请求永远阻止 broker 退出”。
+
+dead-letter 保留策略：
+
+- 默认保留 `7 天`；
+- 启动时与周期清理任务都会删除超过保留期的 dead-letter 文件；
+- dead-letter 只用于排障，不参与任何活跃路由。
+
+### 4. Bridge 维护的本地摘要模型
+
+每个 bridge 维护轻量 `session digest`：
+
+```ts
+type SessionDigest = {
+  sessionID: string
+  title: string
+  status: "busy" | "idle" | "retry"
+  latestAction: string
+  pendingQuestionCount: number
+  pendingPermissionCount: number
+  updatedAt: number
+}
+```
+
+事件来源：
+
+- `session.status`
+- `session.idle`
+- `session.error`
+- `message.part.updated`
+- `todo.updated`
+- `command.executed`
+- `question.asked`
+- `permission.asked`
+
+“最新动作摘要”优先级：
+
+1. 等待 `question`
+2. 等待 permission
+3. 运行中的 `tool.title`
+4. 最近完成的 `tool.title`
+5. 最近 `command.executed`
+6. `todo.in_progress`
+7. `idle`
+
+这样 `/status` 汇总不需要每次完整回扫历史消息，只需桥接层持续更新摘要即可。
+
+### 5. 事件通知推送流
+
+流程：
+
+1. bridge 收到关键事件；
+2. bridge 更新本地 `session digest`；
+3. 若事件属于可推送事件，则发送结构化通知给 broker；
+4. broker 根据 `operator.json` 确定目标 `(wechatAccountId, userId)`；
+5. broker 读取该目标的最新 `context_token`；
+6. 通过微信 transport 发送通知；
+7. 若发送失败，则：
+   - 将 token 标记为 `stale`；
+   - 调 `showFallbackToast()` 要求本地 bridge 提示用户；
+   - fallback 文案固定为“微信会话可能已失效，请在微信发送 `/status` 重新激活”。
+
+默认推送策略：
+
+- `session.status: busy` 只更新状态，不立即推送；
+- `question.asked` / `permission.asked` / `session.error` 立即推送；
+- `session.idle` 根据最近状态变化做完成通知；
+- 短时间重复事件由 broker 做去抖与合并。
+
+### 6. 微信 `/status` 聚合流
+
+流程：
+
+1. broker 从微信侧收到 `/status`；
+2. broker 刷新该操作者的最新 `context_token`；
+3. broker 向所有在线 bridge 广播 `collectStatus(requestID)`；
+4. 每个 bridge 返回：
+   - `instanceName`
+   - `pid`
+   - `project`
+   - `directory`
+   - 最多 `N=3` 个最近活跃 session 的摘要
+5. broker 等待 `1.5s` 聚合窗口；
+6. broker 合并结果，形成一条或多条微信消息返回；
+7. 未及时响应的实例记为 `timeout/unreachable`。
+
+返回内容示例：
+
+```text
+[实例 A] repo-a
+- Fix auth bug | s_123 | busy | 正在执行 Bash: npm test
+- Release notes | s_456 | idle | 最近完成 tool: question
+
+[实例 B] repo-b
+- Codex sync | s_789 | retry | 等待 permission
+```
+
+### 7. `question` / permission 回复闭环
+
+#### question
+
+注册时：
+
+```ts
+type QuestionRoute = {
+  requestID: string
+  routeKey: string
+  handle: string
+  instanceID: string
+  sessionID: string
+  questions: Array<...>
+  userId: string
+  wechatAccountId: string
+  createdAt: number
+}
+```
+
+处理流：
+
+1. bridge 看到 `question.asked`，写入 broker；
+2. broker 为该请求生成一个全局唯一短码 `handle`，例如 `q-17`，并向微信发结构化提示，要求使用：
+
+```text
+/reply <qid> <answer...>
+```
+
+3. 这里的 `<qid>` 明确就是 `handle`，不是原始 `requestID`；broker 通过 `handle -> routeKey -> requestID` 反查唯一目标与答案；
+4. broker 路由到目标 bridge；
+5. 目标 bridge 调 OpenCode 官方 `question.reply()` 或 `question.reject()`；
+6. 成功后 broker 关闭该请求映射；
+7. 若实例离线、请求已失效或映射不存在，则回微信提示先发 `/status`。
+
+`handle` 规则：
+
+- 由 broker 生成；
+- 推荐格式：前缀 `q-` 或 `p-` 加 4-6 位小写字母数字短码；
+- 默认不区分大小写；
+- 仅在对应请求存活期间有效，不复用到其他活跃请求；
+- 若发生冲突，broker 必须重新生成，直到在当前活动请求集中唯一。
+
+#### permission
+
+注册时：
+
+```ts
+type PermissionRoute = {
+  requestID: string
+  routeKey: string
+  handle: string
+  instanceID: string
+  sessionID: string
+  title: string
+  type: string
+  metadata: Record<string, unknown>
+  userId: string
+  wechatAccountId: string
+  createdAt: number
+}
+```
+
+处理流：
+
+1. bridge 看到 `permission.asked`，写入 broker；
+2. broker 为该请求生成一个全局唯一短码 `handle`，例如 `p-08`，并向微信发结构化提示，要求使用：
+
+```text
+/allow <pid> once|always|reject
+```
+
+3. 这里的 `<pid>` 明确就是 `handle`，不是原始 `requestID`；broker 通过 `handle -> routeKey -> requestID` 反查唯一目标；
+4. broker 路由到目标 bridge；
+5. 目标 bridge 调 OpenCode 官方 `permission.reply()`；
+6. 成功后 broker 关闭该映射。
+
+PoC 约束：
+
+- 不做自然语言理解；
+- 只接受 slash 命令；
+- 微信侧永远使用 broker 生成的全局唯一 `handle`，不直接暴露原始 `requestID`；
+- 这样能把交互歧义降到最低。
+
+### 8. 操作者与 `context_token` 模型
+
+PoC 只支持单操作者语义：
+
+- 当前用户首次用微信向 broker 发送 `/status` 或其他受支持指令时，broker 记录该 `wechatAccountId + userId` 到 `operator.json`；
+- 后续所有通知默认都发给这个操作者。
+
+绑定与切换规则：
+
+- 初次绑定后，broker 会回微信确认“当前机器已绑定到该操作者”；
+- 若后续有其他用户尝试操作，默认拒绝并提示“当前机器已绑定其他操作者”；
+- 本地可以通过显式重置命令或删除 `operator.json` 解除绑定；
+- PoC 不做自动抢占与多人切换，避免状态歧义。
+
+`context_token` 策略：
+
+- 键：`(wechatAccountId, userId)`
+- 只信最近一次成功入站消息带来的 token
+- 不预设固定 TTL
+- 发送失败后标记 `stale`，但不立即删除历史记录
+- 直到下一次微信入站消息刷新为止
+
+token 元数据：
+
+- `source` 固定记录来源类型，PoC 默认只允许 `wechat_inbound`
+- `sourceRef` 可记录原始消息 ID 或调试线索
+- 不再把 `sourceInstanceId` 作为必填字段，避免把“微信入站刷新 token”误写成某个 OpenCode 实例产生的状态
+
+这样可以避免把“24 小时”之类未经证实的假设写死进系统语义。
+
+### 9. `openclaw-weixin` 在 broker 内的承载方式
+
+这里是 PoC 成败的关键收缩点。
+
+PoC 明确只支持微信 slash 命令，不支持自由聊天。因此：
+
+- broker 侧必须锁定 `@tencent-weixin/openclaw-weixin` 的精确版本或极窄 semver 范围，避免 compat host 随上游内部变动而静默失效；
+- `openclaw-weixin` 仍然通过它公开的插件入口被加载；
+- broker 提供一个最小 compat host 来调用其默认导出的 `register(api)`；
+- compat host 只需要让插件能跑起微信轮询和 slash 命令路径；
+- 不需要完整实现 OpenClaw 的 AI routing/session/reply 体系。
+
+为什么这样有机会成立：
+
+- 在 `process-message.ts` 中，slash 命令会先尝试处理；
+- 只有未命中 slash 时，才继续进入 OpenClaw 的路由、session、reply 流；
+- 这使得 PoC 可以把微信入口严格限制在 `/status`、`/reply`、`/allow` 等命令型交互上。
+
+但仍需注意一点：
+
+- 代码在 slash 处理前要求 `channelRuntime` 非空；
+- 因此 compat host 不是“零宿主”，而是“最小宿主”；
+- 需要提供最小 `runtime`、`registerChannel()` 和 `startAccount` 上下文，以及足以让 slash-only 流早返回的 no-op / stub `channelRuntime`。
+
+PoC 对 compat host 的强约束：
+
+1. 必须实现的宿主面
+   - `register(api)` 调用入口
+   - `runtime` 对象本身
+   - `registerChannel()`
+   - gateway `startAccount` 所需上下文
+   - 非空 `channelRuntime`
+2. 可用 no-op / stub 的宿主面
+   - OpenClaw AI routing/session/reply 的大部分能力，但前提是 slash-only 路径没有越界调用
+3. 禁止出现的行为
+   - 任意自由聊天消息继续进入 OpenClaw AI reply 流
+   - broker 在没有 bridge 参与的情况下自行生成 AI 回复
+4. 保护措施
+   - 只要检测到未命中 slash 且代码即将进入非 slash 路径，就立即拒绝消息并告警
+   - 该拒绝必须回微信提示“PoC 当前仅支持命令型交互”
+
+兼容性冒烟测试必须覆盖：
+
+- 登录
+- 长轮询重连
+- `/status`
+- `/reply`
+- `/allow`
+- token stale 后再次 `/status` 激活
+
+这条路线满足用户原始约束：
+
+- 我们没有自己实现微信私有协议；
+- 我们是在包公开暴露的插件接入形态上承载它；
+- 代价只是 broker 里要有一个最小 OpenClaw 兼容层。
+
+### 10. 崩溃恢复与竞态控制
+
+#### broker 崩溃
+
+- bridge 检测到 IPC 断开后，按指数退避重连；
+- 重连成功后执行全量 resync：
+  - `session.status()`
+  - `question.list()`
+  - `permission.list()`
+- 因此 question/permission 的真实状态不依赖 broker 内存。
+
+#### bridge 崩溃
+
+- broker 通过心跳超时把该实例标记为离线；
+- `/status` 汇总中标记为 `timeout/unreachable`；
+- 若该实例持有未完成 question/permission，则对应请求进入 `expired` 倒计时；
+- 倒计时内返回给微信“该请求所在实例离线，请先恢复实例后再试”；
+- 超过 TTL 后转为 dead-letter，不再阻止 broker idle 退出。
+
+#### broker 重启接管
+
+- 读取 `broker.json`，若旧 pid 已死则覆盖接管；
+- 若旧 pid 仍活着，则不再拉起第二个 broker；
+- 对 `instances/` 和 `requests/` 做启动时清理：
+  - 过期心跳实例标记 stale
+  - 已关闭请求在 resync 后删除
+  - 已超时请求转为 dead-letter
 
-### 5. WeChat Feature Surface 层
+#### token 竞争
 
-职责：
+- 每次入站微信消息刷新 token 时，都写入 `updatedAt` 与 `source/sourceRef`；
+- broker 总是取最近的、未标记 stale 的 token；
+- 因为 PoC 是单操作者模型，所以不存在多用户 token 冲突。
 
-- 向用户暴露已实现的微信能力。
-- 当前至少包括：`/status`、微信菜单、绑定 / 重绑、绑定信息展示、通知配置结构。
+### 11. IPC 协议
 
-边界：
+本地 IPC 仅保留两组方向：
 
-- 这一层只负责用户入口、配置面和业务动作编排。
-- 这一层不直接调用 upstream helper，不直接处理 IPC 协议。
+#### bridge -> broker
 
-### 6. Notification Business 层
+- `registerInstance(meta)`
+- `heartbeat(stats)`
+- `upsertSessionDigest(digest)`
+- `removeSessionDigest(sessionID)`
+- `upsertQuestion(request)`
+- `closeQuestion(requestID)`
+- `upsertPermission(request)`
+- `closePermission(requestID)`
+- `reportSendFallback(event)`
 
-职责：
+#### broker -> bridge
 
-- 将 `question`、`permission`、`session error` 等 OpenCode 事件路由为真实微信通知。
-- 后续承接 `/reply` / `/allow` 的回复闭环。
+- `collectStatus(requestID)`
+- `showFallbackToast(message, variant)`
+- `replyQuestion(requestID, answers)`
+- `rejectQuestion(requestID)`
+- `replyPermission(requestID, reply, message?)`
+- `ping()`
 
-边界：
+约束：
 
-- 当前主链已落地通知采集、发送与 handle 回复闭环。
-- 该层必须建立在既有 broker、bridge、config 和 request / handle 基座之上，而不是旁路新增第二套架构。
-- 仍需在 Stage G 持续补齐恢复、死信、人工恢复与观测能力。
+- broker 不主动修改 session 内容；
+- 所有涉及 OpenCode 会话状态改变的动作都必须由 bridge 执行；
+- 这样 broker 与 OpenCode 会话解耦最彻底。
 
-## 核心依赖方向
+### 12. IPC 安全与访问控制
 
-依赖方向固定为：
+PoC 不追求跨用户或跨机器安全模型，但必须明确“同机、同 OS 用户”是唯一信任边界。
 
-`feature surface / notification business -> broker API -> bridge live snapshot or event ingress -> compat adapters -> upstream openclaw-weixin`
+最小安全要求：
 
-反向约束必须长期成立：
+1. IPC 端点只允许当前 OS 用户访问
+   - Unix 使用 `600/700` 等价权限
+   - Windows 使用当前用户 ACL
+2. 状态目录同样只允许当前用户读写
+3. `registerInstance()` 成功后，broker 下发短期会话凭证
+4. 后续所有 broker/bridge 消息都必须携带该会话凭证
+5. `replyQuestion` / `replyPermission` 等关键指令必须做来源校验与幂等检查
 
-- UI 不直接碰 compat helper。
-- broker 不直接接管长期 session digest。
-- transport 层不直接决定通知业务策略。
-- upstream 版本差异不外溢到用户界面。
+这样可以避免同机其他进程伪造 IPC 消息，越权批准 permission 或注入回复。
 
-## 已实现基线
+### 13. 验证策略
 
-### 阶段 A 基线
+#### 单元测试
 
-已经成立：
+- `session digest` reducer
+- token 状态机
+- request 映射持久化
+- IPC 编解码
 
-- 最小 compat host 已验证真实插件可启动。
-- slash-only guard 已成立。
-- 非 slash 输入会 fail-fast 并回固定中文提示。
-- guided smoke 已覆盖真实账号手测、证据写盘和 go/no-go 结论。
+#### 集成测试
 
-### Broker / Bridge 基线
+- 两个 OpenCode 实例 + 一个 broker
+- 验证 `/status` 聚合
+- 验证 `question.reply`
+- 验证 `permission.reply`
+- 验证 broker 崩溃后 bridge 重连与 resync
+- 验证微信误传原始 `requestID` 时被明确拒绝，并提示使用 `qid/pid handle`
 
-已经成立：
+#### 手动验证
 
-- detached broker、launcher / client / server、实例注册、`sessionToken`、`ping` / `heartbeat`、共享状态目录。
-- bridge 生命周期接线与 `/status` 的 live snapshot 收集。
+- 故意让 token 失效，确认本地 toast 正确触发
+- 在微信发送 `/status`，确认 token 被刷新
+- 在不同实例中同时制造 question/permission，确认路由不会串台
 
-### 微信真实入口基线
+## 风险与后续
 
-已经成立：
+### 1. `openclaw-weixin` 的最小宿主面仍可能比预期大
 
-- 真实微信 `/status` 已通过 JITI + public helper 路线接入。
-- broker 能轮询微信入站并将 `/status` 回复发回当前会话。
-- 非 slash 仍然不会进入 AI reply。
+虽然 slash-only PoC 显著缩小了宿主范围，但仍需实际验证最小 compat host 是否足够让插件稳定运行。
 
-### 菜单 / 绑定 / 配置基线
+### 2. `context_token` 的真实失效语义未知
 
-已经成立：
+目前只能以“发送失败后视为 stale”的方式建模，不能把未证实的 24 小时窗口写成强语义。
 
-- 微信菜单入口与子菜单结构。
-- `wechat-bind` / `wechat-rebind` 的真实绑定流程。
-- `primaryBinding` 与 `wechat.notifications` 配置结构。
-- 已绑定信息展示与通知开关持久化。
+### 3. PoC 不支持微信自由聊天
 
-### Compat 2.0.1 基线
+这是主动收缩。如果未来要在微信里直接驱动 OpenCode 任务，则必须扩展 compat host 的 OpenClaw runtime 面。
 
-已经成立：
+### 4. Windows 命名管道 / 跨平台 IPC 细节仍需落到实现阶段确认
 
-- `@tencent-weixin/openclaw-weixin` 已迁移到 `2.0.1`。
-- compat 适配层已按 wrapper / adapter 方式收口，并吸收上游 shape 差异。
+PoC 当前只定义语义，不提前锁死具体 IPC 传输实现。
 
-## 未完成主线
+## 结论
 
-### Stage G：可靠性、恢复与观测增强
+在“不要自研微信私有协议、优先复用 `openclaw-weixin`”的约束下，最现实的 PoC 路线是：
 
-当前缺口：
+- 用用户级单例 broker 独占微信 transport；
+- 用每个 OpenCode 实例内的 bridge 负责 OpenCode 官方 API 调用；
+- 用本地 IPC 连接两者；
+- 用 slash-only 交互把 `openclaw-weixin` 的宿主范围收缩到最小可行集。
 
-- 在最小可靠性之上补齐更复杂的重放、死信与人工恢复流程。
-- 为跨进程并发/竞争补齐更结构化的错误码与恢复分支。
-- 增强观测面（诊断、统计、恢复轨迹）并定义可操作的排障入口。
-- 明确旧 binding 下 pending 记录的迁移/清理策略，避免历史数据长期漂移。
+这条路线能够同时满足：
 
-## 已实现关键数据流
-
-### `/status` 链路
-
-当前已经成立的数据流：
-
-1. 微信运行时轮询真实入站消息。
-2. 识别 `/status`。
-3. broker 向实例广播状态收集请求。
-4. 每个 bridge 通过 `input.client` 做 live snapshot。
-5. bridge 生成实例级摘要返回 broker。
-6. broker 聚合并格式化多实例状态文本。
-7. 微信运行时把回复通过 `sendMessageWeixin()` 发回原会话。
-
-这条链路的关键原则是：
-
-- snapshot 以 live read 为准。
-- broker 负责聚合，不负责长期缓存状态真相。
-- 非 slash 不进入 AI reply。
-
-### 菜单 / 绑定链路
-
-当前已经成立的数据流：
-
-1. 用户进入菜单中的微信子菜单。
-2. 绑定或重绑动作进入真实绑定流程。
-3. 绑定结果写入本地绑定状态。
-4. 菜单展示当前主绑定账号信息与通知配置。
-
-这条链路的关键原则是：
-
-- 菜单展示用户可理解的绑定信息。
-- transport 内部字段不进入主展示面。
-- 设置结构优先为未来多账号扩展保留形态。
-
-## 后续主线设计
-
-后续实现必须沿同一架构继续，而不是另起一套旁路逻辑。
-
-### 恢复与死信
-
-在现有最小语义上补齐：
-
-- 可重放与不可重放事件的分流。
-- 死信记录、保留窗口与回放入口。
-- 人工恢复时的状态机约束与审计字段。
-
-### 观测与错误码
-
-在现有诊断基础上补齐：
-
-- 面向恢复路径的结构化错误码。
-- 关键链路统计（发送、失败、抑制、恢复）。
-- broker/bridge/runtime 跨层关联的排障上下文。
-
-### 迁移与清理策略
-
-需要明确：
-
-- rebind 或历史 binding 变更后的 pending/终态记录处理策略。
-- 旧记录与新 key 规则并存时的兼容与清理节奏。
-
-## 分阶段路线
-
-在新的 phased plan 中，既有阶段 A/B/C、JITI 入口、菜单 follow-up、compat 2.0.1 迁移，以及后续 Stage D/E/F 都已落地并视为 baseline，不再重复拆解实现任务。
-
-当前后续阶段收敛为：
-
-1. `Stage G`
-   - 可靠性、恢复与观测增强。
-
-验收顺序固定为：
-
-1. 先补齐恢复与死信策略。
-2. 再补人工恢复与结构化错误码。
-3. 最后补观测与迁移清理策略闭环。
-
-## 风险与约束
-
-### 风险 1：把通知业务偷渡进 broker 状态中心
-
-控制：
-
-- 仍以 bridge live read 和事件标准化为边界。
-- broker 只做协调、转发、聚合和最小恢复，不做长期业务真相源。
-
-### 风险 2：UI 直接感知 upstream 变化
-
-控制：
-
-- 所有 upstream 版本差异继续由 compat 层吸收。
-- 菜单、绑定和通知层只消费仓库内部稳定接口。
-
-### 风险 3：恢复逻辑侵入已稳定主链，导致既有能力回归
-
-控制：
-
-- 保持 D/E/F 既有行为不回退。
-- Stage G 改动优先通过新增恢复分支落地，避免改写稳定路径。
-
-### 风险 4：恢复逻辑提前侵入业务实现
-
-控制：
-
-- 当前只要求最小恢复语义。
-- 复杂重放、死信和观测在 Stage G 统一处理。
-
-## 测试与验证原则
-
-总体设计要求后续每一阶段都同时提供：
-
-- adapter / wrapper 契约测试。
-- broker / bridge 协作测试。
-- 用户入口回归测试。
-
-至少需要长期保持的验证面：
-
-1. 真实 `/status` 入口与非 slash 固定提示回归。
-2. broker 单例、注册、鉴权、活性与共享状态文件回归。
-3. 微信绑定、重绑、菜单展示与配置持久化回归。
-4. compat 2.0.1 helper 适配契约回归。
-5. 后续新增的通知发送、回复闭环和恢复语义回归。
-
-## 成功判定
-
-当这份总体设计被满足时，系统应呈现为：
-
-1. 微信入口、broker 基座、bridge live snapshot、菜单绑定面、compat 适配层职责清晰且边界稳定。
-2. `/status` 继续依赖 live snapshot，而不是回退到中心化摘要缓存。
-3. `question` / `permission` / `sessionError` 通知与 handle 驱动 `/reply` / `/allow` 闭环稳定可用。
-4. 后续 phased plan 主要围绕 Stage G 的恢复、死信、人工恢复与观测增强推进，而无需重议总体架构。
-
-## 关联文档
-
-这份总体设计由以下现存文档共同支撑：
-
-- `docs/superpowers/specs/2026-03-23-wechat-stage-a-compat-host-design.md`
-- `docs/superpowers/specs/2026-03-23-wechat-stage-a-guided-smoke-design.md`
-- `docs/superpowers/specs/2026-03-24-wechat-stage-b-broker-foundation-design.md`
-- `docs/superpowers/specs/2026-03-25-wechat-stage-c-status-slice-design.md`
-- `docs/superpowers/specs/2026-03-25-wechat-jiti-status-ingress-design.md`
-- `docs/superpowers/specs/2026-03-25-wechat-menu-binding-followup-design.md`
-- `docs/superpowers/specs/2026-03-26-wechat-compat-2x-migration-design.md`
+- 事件通知到微信；
+- 微信 `/status` 聚合同机多实例状态；
+- 微信回复 `question` / permission；
+- token 失效后的本地回退提示；
+- 不自己实现微信私有通信接口。
