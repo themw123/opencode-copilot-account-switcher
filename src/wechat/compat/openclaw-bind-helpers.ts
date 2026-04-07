@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { loadQrCodeTerminal } from "./qrcode-terminal-loader.js"
 
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 const DEFAULT_ILINK_BOT_TYPE = "3"
@@ -74,6 +75,19 @@ async function fetchQrCode(apiBaseUrl: string, botType: string): Promise<{ qrcod
     throw new Error(`Failed to fetch QR code: ${response.status} ${response.statusText}`)
   }
   return await response.json() as { qrcode: string; qrcode_img_content: string }
+}
+
+async function renderQrTerminal(value: string): Promise<string | undefined> {
+  const qrcodeTerminal = loadQrCodeTerminal()
+  return await new Promise((resolve, reject) => {
+    try {
+      qrcodeTerminal.generate(value, { small: true }, (output: string) => {
+        resolve(typeof output === "string" && output.trim().length > 0 ? output : undefined)
+      })
+    } catch (error) {
+      reject(error)
+    }
+  })
 }
 
 async function pollQrStatus(apiBaseUrl: string, qrcode: string): Promise<Record<string, unknown>> {
@@ -152,6 +166,7 @@ export async function loadOpenClawWeixinBindHelpers(): Promise<OpenClawWeixinBin
         })
 
         return {
+          qrTerminal: await renderQrTerminal(qrResponse.qrcode_img_content).catch(() => undefined),
           qrDataUrl: qrResponse.qrcode_img_content,
           qrcodeUrl: qrResponse.qrcode_img_content,
           message: "使用微信扫描以下二维码，以完成连接。",
