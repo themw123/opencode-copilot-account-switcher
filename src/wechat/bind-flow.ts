@@ -1,5 +1,5 @@
 import { bindOperator, readOperatorBinding, rebindOperator, resetOperatorBinding } from "./operator-store.js"
-import { loadOpenClawWeixinPublicHelpers } from "./compat/openclaw-public-helpers.js"
+import { loadOpenClawWeixinBindHelpers } from "./compat/openclaw-bind-helpers.js"
 import { buildOpenClawMenuAccount } from "./openclaw-account-adapter.js"
 import { loadQrCodeTerminal } from "./compat/qrcode-terminal-loader.js"
 import type { CommonSettingsStore } from "../common-settings-store.js"
@@ -19,7 +19,7 @@ type WechatBindFlowResult = {
 
 type WechatBindFlowInput = {
   action: BindAction
-  loadPublicHelpers?: typeof loadOpenClawWeixinPublicHelpers
+  loadPublicHelpers?: typeof loadOpenClawWeixinBindHelpers
   bindOperator?: typeof bindOperator
   rebindOperator?: typeof rebindOperator
   readOperatorBinding?: typeof readOperatorBinding
@@ -92,7 +92,7 @@ async function renderQrTerminalDefault(input: { value: string }): Promise<string
 
 export async function runWechatBindFlow(input: WechatBindFlowInput): Promise<WechatBindFlowResult> {
   const now = input.now ?? Date.now
-  const loadPublicHelpers = input.loadPublicHelpers ?? loadOpenClawWeixinPublicHelpers
+  const loadPublicHelpers = input.loadPublicHelpers ?? loadOpenClawWeixinBindHelpers
   const persistOperatorBinding = input.bindOperator ?? bindOperator
   const persistOperatorRebinding = input.rebindOperator ?? rebindOperator
   const loadOperatorBinding = input.readOperatorBinding ?? readOperatorBinding

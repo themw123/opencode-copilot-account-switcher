@@ -15,6 +15,7 @@ type InternalCreateJiti = (
 ) => JitiLoader
 type JitiImport = (specifier: string) => Promise<unknown> | unknown
 type JitiResolve = (specifier: string) => string
+type JitiRequire = (specifier: string) => unknown
 type ModuleImport = (specifier: string) => Promise<unknown>
 
 type JitiNamespace = {
@@ -47,12 +48,34 @@ export function resolveCreateJiti(namespace: JitiNamespace): CreateJiti {
   ) {
     return (namespace.default as JitiNamespace).createJiti as CreateJiti
   }
-  throw new Error("[wechat-compat] createJiti export unavailable")
+  if (
+    namespace.default &&
+    typeof namespace.default === "object" &&
+    isCreateJiti((namespace.default as JitiNamespace).default)
+  ) {
+    return (namespace.default as JitiNamespace).default as CreateJiti
+  }
+  if (
+    namespace.default &&
+    typeof namespace.default === "object" &&
+    isCreateJiti((namespace.default as JitiNamespace)["module.exports"])
+  ) {
+    return (namespace.default as JitiNamespace)["module.exports"] as CreateJiti
+  }
+  const topLevelKeys = namespace && typeof namespace === "object" ? Object.keys(namespace).join(",") : typeof namespace
+  const defaultValue = namespace?.default
+  const defaultKeys = defaultValue && typeof defaultValue === "object" ? Object.keys(defaultValue).join(",") : typeof defaultValue
+  throw new Error(`[wechat-compat] createJiti export unavailable (keys=${topLevelKeys}; default=${defaultKeys})`)
 }
 
 export function resolveJitiEsmEntry(resolveImpl: JitiResolve = createRequire(import.meta.url).resolve): string {
   const packageJsonPath = resolveImpl("jiti/package.json")
-  return pathToFileURL(path.join(path.dirname(packageJsonPath), "dist", "jiti.cjs")).href
+  return pathToFileURL(path.join(path.dirname(packageJsonPath), "lib", "jiti.cjs")).href
+}
+
+export function resolveJitiCjsEntry(resolveImpl: JitiResolve = createRequire(import.meta.url).resolve): string {
+  const packageJsonPath = resolveImpl("jiti/package.json")
+  return path.join(path.dirname(packageJsonPath), "lib", "jiti.cjs")
 }
 
 function onJitiError(error: unknown): never {
@@ -62,6 +85,10 @@ function onJitiError(error: unknown): never {
 const nativeImport = (id: string) => import(id)
 
 const DEFAULT_JITI_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".json"]
+
+function isTypeScriptModulePath(modulePath: string): boolean {
+  return /\.(ts|tsx|mts|cts)$/i.test(modulePath)
+}
 
 export function hasBunRuntime(bunVersion: string | undefined = process.versions?.bun): boolean {
   return typeof bunVersion === "string" && bunVersion.length > 0
@@ -94,10 +121,27 @@ export function wrapCreateJiti(createJiti: CreateJiti): CreateJiti {
 export async function loadJiti(
   importImpl: JitiImport = (specifier) => import(specifier),
   resolveImpl: JitiResolve = createRequire(import.meta.url).resolve,
+  requireImpl: JitiRequire = createRequire(import.meta.url),
 ): Promise<{ createJiti: CreateJiti }> {
-  const namespace = await Promise.resolve(importImpl(resolveJitiEsmEntry(resolveImpl))) as JitiNamespace
-  return {
-    createJiti: wrapCreateJiti(resolveCreateJiti(namespace)),
+  try {
+    const required = requireImpl("jiti") as JitiNamespace
+    return {
+      createJiti: wrapCreateJiti(resolveCreateJiti(required)),
+    }
+  } catch {
+    // Fall back to import() when require-based loading is unavailable.
+  }
+
+  try {
+    const namespace = await Promise.resolve(importImpl("jiti")) as JitiNamespace
+    return {
+      createJiti: wrapCreateJiti(resolveCreateJiti(namespace)),
+    }
+  } catch {
+    const namespace = await Promise.resolve(importImpl(resolveJitiEsmEntry(resolveImpl))) as JitiNamespace
+    return {
+      createJiti: wrapCreateJiti(resolveCreateJiti(namespace)),
+    }
   }
 }
 
@@ -114,7 +158,10 @@ export async function loadModuleWithTsFallback(
   const moduleUrl = pathToFileURL(modulePath).href
   const importImpl = options.importImpl ?? nativeImport
 
-  if (hasBunRuntime(options.bunVersion)) {
+  // Even under Bun, TS entrypoints inside node_modules can transitively hit ESM/CJS
+  // interop edges (for example openclaw -> json5 default import). Jiti keeps that
+  // path stable for the WeChat compat loader.
+  if (hasBunRuntime(options.bunVersion) && !isTypeScriptModulePath(modulePath)) {
     return await importImpl(moduleUrl)
   }
 
