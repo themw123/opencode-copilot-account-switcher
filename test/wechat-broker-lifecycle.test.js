@@ -841,6 +841,102 @@ test("broker-entry 启动时会立刻 purge 过期 cleaned request", async () =>
   }
 })
 
+test("broker 启动时会立刻 purge 超期 dead-letter", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-dead-letter-startup-purge-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const deadLetterDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "dead-letter", "question")
+  const deadLetterPath = path.join(deadLetterDir, "question-dead-letter-old.json")
+  const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
+
+  await mkdirSync(deadLetterDir, { recursive: true })
+  await writeFile(
+    deadLetterPath,
+    JSON.stringify({
+      kind: "question",
+      routeKey: "question-dead-letter-old",
+      requestID: "q-dead-letter-old",
+      handle: "qdeadold",
+      finalStatus: "expired",
+      reason: "startupCleanup",
+      createdAt: Date.now() - 10_000,
+      finalizedAt: Date.now() - 10_000,
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_DEAD_LETTER_RETENTION_MS: "100",
+      WECHAT_BROKER_DEAD_LETTER_SCAN_INTERVAL_MS: "5000",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    await waitForFileRemoved(deadLetterPath, 1_500)
+
+    const diagnosticsRaw = await waitForFileText(
+      diagnosticsPath,
+      (text) => text.includes('"type":"deadLetterPurged"'),
+      1_500,
+    )
+    assert.match(diagnosticsRaw, /"code":"deadLetterPurged"/)
+    assert.match(diagnosticsRaw, /"routeKey":"question-dead-letter-old"/)
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("dead-letter 不参与 idle 判定", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-dead-letter-idle-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const deadLetterDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "dead-letter", "question")
+
+  await mkdirSync(deadLetterDir, { recursive: true })
+  await writeFile(
+    path.join(deadLetterDir, "question-dead-letter-idle.json"),
+    JSON.stringify({
+      kind: "question",
+      routeKey: "question-dead-letter-idle",
+      requestID: "q-dead-letter-idle",
+      handle: "qdeadidle",
+      finalStatus: "expired",
+      reason: "runtimeCleanup",
+      createdAt: Date.now() - 5_000,
+      finalizedAt: Date.now() - 4_000,
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_IDLE_TIMEOUT_MS: "120",
+      WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS: "20",
+      WECHAT_BROKER_DEAD_LETTER_RETENTION_MS: "999999",
+      WECHAT_BROKER_DEAD_LETTER_SCAN_INTERVAL_MS: "5000",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    const exited = await waitForExit(child, 2_000)
+    assert.equal(exited.code, 0)
+    await waitForFileRemoved(brokerJsonPath, 2_000)
+  } finally {
+    if (child.exitCode === null) {
+      await terminateChild(child)
+    }
+    childProcesses.delete(child)
+  }
+})
+
 test("broker future message 错误优先级: invalidMessage -> unauthorized -> notImplemented，heartbeat 校验 token", async () => {
   const protocol = await import(DIST_PROTOCOL_MODULE)
   const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-priority-"))
@@ -1525,6 +1621,7 @@ test("stale instance 会把同 scopeKey 的 open request 标记为 expired", asy
   const endpoint = createBrokerEndpoint(sandboxConfigHome)
   const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
   const requestDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "requests", "question")
+  const deadLetterDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "dead-letter", "question")
   const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
   const child = spawnBrokerEntry({
     endpoint,
@@ -1576,13 +1673,23 @@ test("stale instance 会把同 scopeKey 的 open request 标记为 expired", asy
     assert.equal(expired.status, "expired")
     assert.equal(typeof expired.expiredAt, "number")
 
+    const deadLetter = await waitForJsonFile(
+      path.join(deadLetterDir, `${routeKey}.json`),
+      (record) => record?.reason === "instanceStale",
+      5_000,
+    )
+    assert.equal(deadLetter.routeKey, routeKey)
+    assert.equal(deadLetter.finalStatus, "expired")
+    assert.equal(deadLetter.reason, "instanceStale")
+
   const diagnosticsRaw = await waitForFileText(
     diagnosticsPath,
-    (text) => text.includes('"type":"instanceStale"') && text.includes('"type":"requestExpired"'),
+    (text) => text.includes('"type":"instanceStale"') && text.includes('"type":"requestExpired"') && text.includes('"type":"deadLetterWritten"'),
     5_000,
   )
     assert.match(diagnosticsRaw, /"code":"instanceStale"/)
     assert.match(diagnosticsRaw, /"code":"requestExpired"/)
+    assert.match(diagnosticsRaw, /"code":"deadLetterWritten"/)
   assert.match(diagnosticsRaw, /"type":"instanceStale"/)
     assert.match(diagnosticsRaw, /"instanceID":"instance-stale-expire"/)
     assert.match(diagnosticsRaw, /"routeKey":"question-/)
@@ -1599,6 +1706,7 @@ test("terminal request 会被自动 cleaned，并在保留期后 purge", async (
   const endpoint = createBrokerEndpoint(sandboxConfigHome)
   const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
   const requestDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "requests", "question")
+  const deadLetterDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "dead-letter", "question")
   const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
   const child = spawnBrokerEntry({
     endpoint,
@@ -1674,6 +1782,8 @@ test("terminal request 会被自动 cleaned，并在保留期后 purge", async (
     assert.match(diagnosticsRaw, /"routeKey":"question-clean-target"/)
     assert.match(diagnosticsRaw, /"type":"requestPurged"/)
     assert.match(diagnosticsRaw, /"routeKey":"question-cleaned-old"/)
+    await assert.rejects(() => readFile(path.join(deadLetterDir, `${answeredRouteKey}.json`), "utf8"), /ENOENT|no such file/i)
+    await assert.rejects(() => readFile(path.join(deadLetterDir, `${oldCleanedRouteKey}.json`), "utf8"), /ENOENT|no such file/i)
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)

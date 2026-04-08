@@ -75,6 +75,18 @@ export function requestStatePath(kind: WechatRequestKind, routeKey: string) {
   return path.join(requestKindDir(kind), `${routeKey}.json`)
 }
 
+export function wechatDeadLetterRoot(stateRoot: string = wechatStateRoot()) {
+  return path.join(stateRoot, "dead-letter")
+}
+
+export function wechatDeadLetterKindDir(kind: WechatRequestKind, stateRoot: string = wechatStateRoot()) {
+  return path.join(wechatDeadLetterRoot(stateRoot), kind)
+}
+
+export function wechatDeadLetterPath(kind: WechatRequestKind, routeKey: string, stateRoot: string = wechatStateRoot()) {
+  return path.join(wechatDeadLetterKindDir(kind, stateRoot), `${routeKey}.json`)
+}
+
 async function ensureDir(dirPath: string) {
   await mkdir(dirPath, { recursive: true, mode: WECHAT_DIR_MODE })
 }
@@ -84,6 +96,8 @@ export async function ensureWechatStateLayout() {
   await ensureDir(instancesDir())
   await ensureDir(tokensDir())
   await ensureDir(notificationsDir())
+  await ensureDir(wechatDeadLetterKindDir("question"))
+  await ensureDir(wechatDeadLetterKindDir("permission"))
   await ensureDir(requestKindDir("question"))
   await ensureDir(requestKindDir("permission"))
 }

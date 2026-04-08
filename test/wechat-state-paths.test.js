@@ -30,6 +30,7 @@ test("wechat 状态 helper 路径布局稳定", () => {
   assert.equal(statePaths.brokerStatePath(), path.join(root, "broker.json"))
   assert.equal(statePaths.brokerStartupDiagnosticsPath(), path.join(root, "broker-startup.diagnostics.log"))
   assert.equal(statePaths.wechatBrokerDiagnosticsPath(), path.join(root, "wechat-broker.diagnostics.jsonl"))
+  assert.equal(statePaths.wechatDeadLetterRoot(), path.join(root, "dead-letter"))
   assert.equal(statePaths.launchLockPath(), path.join(root, "launch.lock"))
   assert.equal(statePaths.operatorStatePath(), path.join(root, "operator.json"))
   assert.equal(statePaths.instancesDir(), path.join(root, "instances"))
@@ -42,6 +43,14 @@ test("wechat 派生状态路径稳定", () => {
   const root = statePaths.wechatStateRoot()
 
   assert.equal(statePaths.instanceStatePath("inst-1"), path.join(root, "instances", "inst-1.json"))
+  assert.equal(
+    statePaths.wechatDeadLetterKindDir("question"),
+    path.join(root, "dead-letter", "question"),
+  )
+  assert.equal(
+    statePaths.wechatDeadLetterPath("permission", "route-dead-1"),
+    path.join(root, "dead-letter", "permission", "route-dead-1.json"),
+  )
   assert.equal(
     statePaths.tokenStatePath("wx-account", "user-42"),
     path.join(root, "tokens", "wx-account", "user-42.json"),
@@ -63,6 +72,8 @@ test("ensureWechatStateLayout 会创建完整目录树", async () => {
     statePaths.wechatStateRoot(),
     statePaths.instancesDir(),
     statePaths.tokensDir(),
+    statePaths.wechatDeadLetterKindDir("question"),
+    statePaths.wechatDeadLetterKindDir("permission"),
     statePaths.requestKindDir("question"),
     statePaths.requestKindDir("permission"),
   ]
@@ -89,6 +100,8 @@ test("权限边界策略在 POSIX/Windows 下可识别", async () => {
     statePaths.wechatStateRoot(),
     statePaths.instancesDir(),
     statePaths.tokensDir(),
+    statePaths.wechatDeadLetterKindDir("question"),
+    statePaths.wechatDeadLetterKindDir("permission"),
     statePaths.requestKindDir("question"),
     statePaths.requestKindDir("permission"),
   ]
