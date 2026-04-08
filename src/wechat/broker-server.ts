@@ -26,7 +26,15 @@ import type { WechatSlashCommand } from "./command-parser.js"
 import { upsertNotification } from "./notification-store.js"
 import { readOperatorBinding } from "./operator-store.js"
 import { createHandle, createRouteKey } from "./handle.js"
-import { expireOpenRequestsForScope, findOpenRequestByIdentity, listActiveRequests, upsertRequest } from "./request-store.js"
+import {
+  expireOpenRequestsForScope,
+  findOpenRequestByIdentity,
+  listActiveRequests,
+  markCleaned,
+  purgeCleanedRequestsBefore,
+  upsertRequest,
+  type RequestRecord,
+} from "./request-store.js"
 
 const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
   "collectStatus",
@@ -39,6 +47,9 @@ const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
 export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30_000
 const DEFAULT_HEARTBEAT_SCAN_INTERVAL_MS = 1_000
 export const DEFAULT_STATUS_COLLECT_WINDOW_MS = 5_000
+const DEFAULT_REQUEST_CLEAN_AFTER_MS = 5 * 60 * 1000
+const DEFAULT_REQUEST_PURGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const DEFAULT_REQUEST_CLEANUP_SCAN_INTERVAL_MS = 60_000
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
@@ -122,10 +133,11 @@ const pendingCollectStatusByRequestId = new Map<string, PendingCollectStatus>()
 let syncWechatNotificationsChain: Promise<void> = Promise.resolve()
 
 type WechatBrokerDiagnosticEvent = {
-  type: "requestExpired"
+  type: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged"
+  code: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged"
   instanceID: string
-  kind: "question" | "permission"
-  routeKey: string
+  kind?: "question" | "permission"
+  routeKey?: string
 }
 
 async function appendBrokerDiagnostic(event: WechatBrokerDiagnosticEvent) {
@@ -308,6 +320,13 @@ async function recoverSnapshotFromHeartbeat(instanceID: string, now: number): Pr
   }
   snapshotByInstanceID.set(instanceID, next)
   await queuePersistSnapshot(next)
+  if (current.status === "stale") {
+    await appendBrokerDiagnostic({
+      type: "instanceRecovered",
+      code: "instanceRecovered",
+      instanceID,
+    })
+  }
 }
 
 async function markStaleSnapshots(now: number, heartbeatTimeoutMs: number): Promise<void> {
@@ -332,6 +351,11 @@ async function markStaleSnapshots(now: number, heartbeatTimeoutMs: number): Prom
     }
     snapshotByInstanceID.set(instanceID, staleSnapshot)
     await queuePersistSnapshot(staleSnapshot)
+    await appendBrokerDiagnostic({
+      type: "instanceStale",
+      code: "instanceStale",
+      instanceID,
+    })
     const expiredRequests = await expireOpenRequestsForScope({
       scopeKey: instanceID,
       expiredAt: now,
@@ -339,11 +363,69 @@ async function markStaleSnapshots(now: number, heartbeatTimeoutMs: number): Prom
     for (const request of expiredRequests) {
       await appendBrokerDiagnostic({
         type: "requestExpired",
+        code: "requestExpired",
         instanceID,
         kind: request.kind,
         routeKey: request.routeKey,
       })
     }
+  }
+}
+
+function getTerminalTimestamp(record: RequestRecord): number | undefined {
+  if (record.status === "answered") {
+    return record.answeredAt
+  }
+  if (record.status === "rejected") {
+    return record.rejectedAt
+  }
+  if (record.status === "expired") {
+    return record.expiredAt
+  }
+  return undefined
+}
+
+async function cleanupTerminalRequests(now: number, cleanAfterMs: number, purgeRetentionMs: number): Promise<void> {
+  const activeRequests = await listActiveRequests()
+
+  for (const request of activeRequests) {
+    if (!["answered", "rejected", "expired"].includes(request.status)) {
+      continue
+    }
+
+    const terminalAt = getTerminalTimestamp(request)
+    if (typeof terminalAt !== "number") {
+      continue
+    }
+    if (now - terminalAt < cleanAfterMs) {
+      continue
+    }
+
+    const cleaned = await markCleaned({
+      kind: request.kind,
+      routeKey: request.routeKey,
+      cleanedAt: now,
+    })
+    await appendBrokerDiagnostic({
+      type: "requestCleaned",
+      code: "requestCleaned",
+      instanceID: cleaned.scopeKey ?? "unknown",
+      kind: cleaned.kind,
+      routeKey: cleaned.routeKey,
+    })
+  }
+
+  const purged = await purgeCleanedRequestsBefore({
+    cutoffAt: now - purgeRetentionMs,
+  })
+  for (const request of purged) {
+    await appendBrokerDiagnostic({
+      type: "requestPurged",
+      code: "requestPurged",
+      instanceID: request.scopeKey ?? "unknown",
+      kind: request.kind,
+      routeKey: request.routeKey,
+    })
   }
 }
 
@@ -707,6 +789,18 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     process.env.WECHAT_BROKER_STATUS_COLLECT_WINDOW_MS,
     DEFAULT_STATUS_COLLECT_WINDOW_MS,
   )
+  const requestCleanAfterMs = toPositiveNumber(
+    process.env.WECHAT_BROKER_REQUEST_CLEAN_AFTER_MS,
+    DEFAULT_REQUEST_CLEAN_AFTER_MS,
+  )
+  const requestPurgeRetentionMs = toPositiveNumber(
+    process.env.WECHAT_BROKER_REQUEST_PURGE_RETENTION_MS,
+    DEFAULT_REQUEST_PURGE_RETENTION_MS,
+  )
+  const requestCleanupScanIntervalMs = toPositiveNumber(
+    process.env.WECHAT_BROKER_REQUEST_CLEANUP_SCAN_INTERVAL_MS,
+    DEFAULT_REQUEST_CLEANUP_SCAN_INTERVAL_MS,
+  )
 
   const server = net.createServer((socket) => {
     let buffer = ""
@@ -761,6 +855,11 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
       console.error("[wechat-broker] failed to persist stale snapshot", error)
     })
   }, heartbeatScanIntervalMs)
+  const requestCleanupTimer = setInterval(() => {
+    void cleanupTerminalRequests(Date.now(), requestCleanAfterMs, requestPurgeRetentionMs).catch((error) => {
+      console.error("[wechat-broker] failed to clean terminal requests", error)
+    })
+  }, requestCleanupScanIntervalMs)
 
   let closed = false
 
@@ -829,6 +928,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     closed = true
 
     clearInterval(staleScanTimer)
+    clearInterval(requestCleanupTimer)
 
     for (const requestId of pendingCollectStatusByRequestId.keys()) {
       finalizePendingCollectStatus(requestId)

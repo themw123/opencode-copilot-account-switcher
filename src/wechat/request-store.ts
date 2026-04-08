@@ -304,8 +304,13 @@ export async function markCleaned(input: {
 }
 
 export async function purgeCleanedBefore(input: { cutoffAt: number }) {
+  const purged = await purgeCleanedRequestsBefore(input)
+  return purged.length
+}
+
+export async function purgeCleanedRequestsBefore(input: { cutoffAt: number }) {
   await ensureWechatStateLayout()
-  let deleted = 0
+  const deleted: RequestRecord[] = []
 
   for (const kind of ["question", "permission"] as const) {
     const dir = requestKindDir(kind)
@@ -323,7 +328,7 @@ export async function purgeCleanedBefore(input: { cutoffAt: number }) {
       if (current.cleanedAt >= input.cutoffAt) continue
 
       await rm(requestStatePath(kind, routeKey), { force: true })
-      deleted += 1
+      deleted.push(current)
     }
   }
 

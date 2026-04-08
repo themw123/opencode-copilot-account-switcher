@@ -217,6 +217,7 @@ type WechatBridgeDiagnosticEvent =
     }
   | {
       type: "bridgeResyncFailed"
+      code: "bridgeResyncFailed"
       instanceID: string
       reason: "brokerReconnect" | "manual"
       durationMs: number
@@ -607,6 +608,7 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     } catch (error) {
       await Promise.resolve(onDiagnosticEvent?.({
         type: "bridgeResyncFailed",
+        code: "bridgeResyncFailed",
         instanceID: input.instanceID,
         reason,
         durationMs: Date.now() - startedAt,

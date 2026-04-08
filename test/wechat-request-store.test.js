@@ -390,6 +390,37 @@ test("purgeCleanedBefore() 会物理删除超过 7 天窗口的 cleaned 文件",
   assert.equal(files.includes(`${freshOne.routeKey}.json`), true)
 })
 
+test("purgeCleanedRequestsBefore() 返回被删除的 cleaned 记录详情", async () => {
+  const now = 1_700_010_500_000
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-cleaned-detail-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "q-cleaned-detail-1" }),
+    handle: "q13",
+    wechatAccountId: "wx-cleaned-detail",
+    userId: "u-cleaned-detail",
+    createdAt: now - 10_000,
+  })
+  await requestStore.markRequestAnswered({
+    kind: "question",
+    routeKey: created.routeKey,
+    answeredAt: now - 9_000,
+  })
+  await requestStore.markCleaned({
+    kind: "question",
+    routeKey: created.routeKey,
+    cleanedAt: now - 8_000,
+  })
+
+  const purged = await requestStore.purgeCleanedRequestsBefore({
+    cutoffAt: now - 1_000,
+  })
+
+  assert.equal(purged.length, 1)
+  assert.equal(purged[0]?.routeKey, created.routeKey)
+  assert.equal(purged[0]?.status, "cleaned")
+})
+
 test("活动索引忽略 cleaned 记录", async () => {
   const openReq = await requestStore.upsertRequest({
     kind: "question",

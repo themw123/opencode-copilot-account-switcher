@@ -1,10 +1,10 @@
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { mkdir, open, readFile, rm } from "node:fs/promises"
+import { appendFile, mkdir, open, readFile, rm } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { createBrokerSocket, createDefaultBrokerEndpoint } from "./broker-endpoint.js"
-import { wechatStateRoot } from "./state-paths.js"
+import { WECHAT_FILE_MODE, wechatBrokerDiagnosticsPath, wechatStateRoot } from "./state-paths.js"
 import { parseEnvelopeLine, serializeEnvelope } from "./protocol.js"
 
 type BrokerMetadata = {
@@ -42,6 +42,34 @@ type ResolveBrokerSpawnCommandOptions = {
 }
 
 type ResolveBrokerSpawnEnv = NodeJS.ProcessEnv
+
+type AcquireLaunchLockResult = {
+  lock: LaunchLockContent | null
+  recoveredStaleLock?: {
+    pid: number
+  }
+}
+
+type WechatBrokerLauncherDiagnosticEvent = {
+  type: "brokerTakeover"
+  code: "brokerTakeover"
+  reason: "versionMismatch" | "staleLock"
+  previousPid: number
+  previousVersion?: string
+  nextVersion?: string
+}
+
+async function appendBrokerLauncherDiagnostic(stateRoot: string, event: WechatBrokerLauncherDiagnosticEvent) {
+  try {
+    await mkdir(stateRoot, { recursive: true, mode: 0o700 })
+    await appendFile(
+      wechatBrokerDiagnosticsPath(stateRoot),
+      `${JSON.stringify({ at: Date.now(), ...event })}\n`,
+      { encoding: "utf8", mode: WECHAT_FILE_MODE },
+    )
+  } catch {
+  }
+}
 
 export function resolveBrokerSpawnEnv(env: ResolveBrokerSpawnEnv = process.env): NodeJS.ProcessEnv {
   return {
@@ -161,7 +189,7 @@ async function readLaunchLock(filePath: string): Promise<LaunchLockContent | nul
   }
 }
 
-async function acquireLaunchLock(filePath: string): Promise<LaunchLockContent | null> {
+async function acquireLaunchLock(filePath: string): Promise<AcquireLaunchLockResult> {
   const lock: LaunchLockContent = {
     pid: process.pid,
     acquiredAt: Date.now(),
@@ -172,7 +200,7 @@ async function acquireLaunchLock(filePath: string): Promise<LaunchLockContent | 
     const handle = await open(filePath, "wx", 0o600)
     await handle.writeFile(JSON.stringify(lock, null, 2), "utf8")
     await handle.close()
-    return lock
+    return { lock }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
       throw error
@@ -180,11 +208,14 @@ async function acquireLaunchLock(filePath: string): Promise<LaunchLockContent | 
 
     const existing = await readLaunchLock(filePath)
     if (existing && isProcessAlive(existing.pid)) {
-      return null
+      return { lock: null }
     }
 
     await rm(filePath, { force: true })
-    return null
+    return {
+      lock: null,
+      ...(existing ? { recoveredStaleLock: { pid: existing.pid } } : {}),
+    }
   }
 }
 
@@ -295,7 +326,16 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
       return running
     }
 
-    const lock = await acquireLaunchLock(launchLockFile)
+    const lockAttempt = await acquireLaunchLock(launchLockFile)
+    if (lockAttempt.recoveredStaleLock) {
+      await appendBrokerLauncherDiagnostic(stateRoot, {
+        type: "brokerTakeover",
+        code: "brokerTakeover",
+        reason: "staleLock",
+        previousPid: lockAttempt.recoveredStaleLock.pid,
+      })
+    }
+    const lock = lockAttempt.lock
     if (!lock) {
       await delay(backoffMs)
       continue
@@ -311,6 +351,14 @@ export async function connectOrSpawnBroker(options: LaunchOptions = {}): Promise
 
       const versionMismatchedBroker = await readVersionMismatchedBroker(brokerJsonFile, expectedVersion)
       if (versionMismatchedBroker) {
+        await appendBrokerLauncherDiagnostic(stateRoot, {
+          type: "brokerTakeover",
+          code: "brokerTakeover",
+          reason: "versionMismatch",
+          previousVersion: versionMismatchedBroker.version,
+          nextVersion: expectedVersion,
+          previousPid: versionMismatchedBroker.pid,
+        })
         await retireBrokerImpl(versionMismatchedBroker)
       }
 

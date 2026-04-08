@@ -762,6 +762,7 @@ test("锁持有者消失后，后续 launcher 可重新竞争并完成 spawn", a
   const stateRoot = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat")
   const brokerJsonPath = path.join(stateRoot, "broker.json")
   const launchLockPath = path.join(stateRoot, "launch.lock")
+  const diagnosticsPath = path.join(stateRoot, "wechat-broker.diagnostics.jsonl")
   const endpoint = createBrokerEndpoint(sandboxConfigHome)
 
   mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
@@ -804,6 +805,14 @@ test("锁持有者消失后，后续 launcher 可重新竞争并完成 spawn", a
 
   assert.equal(spawned, 1)
   assert.equal(result.endpoint, endpoint)
+
+  const diagnosticsRaw = await waitForFileText(
+    diagnosticsPath,
+    (text) => text.includes('"type":"brokerTakeover"') && text.includes('"reason":"staleLock"'),
+    5_000,
+  )
+  assert.match(diagnosticsRaw, /"code":"brokerTakeover"/)
+  assert.match(diagnosticsRaw, /"previousPid":99999999/)
 })
 
 test("launcher 仅传入自定义 stateRoot 时，默认 broker/lock 路径与目录 ensure 都应基于该 root", async () => {
@@ -854,6 +863,7 @@ test("launcher 遇到版本落后的 broker 会先退役旧进程再拉起当前
   const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-launcher-version-mismatch-"))
   const stateRoot = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat")
   const brokerJsonPath = path.join(stateRoot, "broker.json")
+  const diagnosticsPath = path.join(stateRoot, "wechat-broker.diagnostics.jsonl")
   const oldEndpoint = createBrokerEndpoint(sandboxConfigHome)
   const newEndpoint = createBrokerEndpoint(sandboxConfigHome)
 
@@ -903,6 +913,16 @@ test("launcher 遇到版本落后的 broker 会先退役旧进程再拉起当前
   assert.equal(spawned, 1)
   assert.equal(result.endpoint, newEndpoint)
   assert.equal(result.version, "0.14.9")
+
+  const diagnosticsRaw = await waitForFileText(
+    diagnosticsPath,
+    (text) => text.includes('"type":"brokerTakeover"'),
+    5_000,
+  )
+  assert.match(diagnosticsRaw, /"code":"brokerTakeover"/)
+  assert.match(diagnosticsRaw, /"reason":"versionMismatch"/)
+  assert.match(diagnosticsRaw, /"previousVersion":"0.13.6"/)
+  assert.match(diagnosticsRaw, /"nextVersion":"0.14.9"/)
 })
 
 test("Windows Bun runtime 下默认 broker endpoint 应切到 tcp 回环地址", async () => {
@@ -1334,15 +1354,104 @@ test("stale instance 会把同 scopeKey 的 open request 标记为 expired", asy
     assert.equal(expired.status, "expired")
     assert.equal(typeof expired.expiredAt, "number")
 
-    const diagnosticsRaw = await waitForFileText(
-      diagnosticsPath,
-      (text) => text.includes('"type":"requestExpired"'),
-      5_000,
-    )
+  const diagnosticsRaw = await waitForFileText(
+    diagnosticsPath,
+    (text) => text.includes('"type":"instanceStale"') && text.includes('"type":"requestExpired"'),
+    5_000,
+  )
+    assert.match(diagnosticsRaw, /"code":"instanceStale"/)
+    assert.match(diagnosticsRaw, /"code":"requestExpired"/)
+  assert.match(diagnosticsRaw, /"type":"instanceStale"/)
     assert.match(diagnosticsRaw, /"instanceID":"instance-stale-expire"/)
     assert.match(diagnosticsRaw, /"routeKey":"question-/)
 
     await client.close()
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("terminal request 会被自动 cleaned，并在保留期后 purge", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-request-cleanup-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const requestDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "requests", "question")
+  const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_REQUEST_CLEAN_AFTER_MS: "50",
+      WECHAT_BROKER_REQUEST_PURGE_RETENTION_MS: "100",
+      WECHAT_BROKER_REQUEST_CLEANUP_SCAN_INTERVAL_MS: "20",
+    },
+  })
+
+  try {
+    await mkdirSync(requestDir, { recursive: true })
+
+    const now = Date.now()
+    const answeredRouteKey = "question-clean-target"
+    const oldCleanedRouteKey = "question-cleaned-old"
+
+    await writeFile(
+      path.join(requestDir, `${answeredRouteKey}.json`),
+      JSON.stringify({
+        kind: "question",
+        requestID: "q-clean-target",
+        routeKey: answeredRouteKey,
+        handle: "qclean1",
+        scopeKey: "instance-cleanup",
+        wechatAccountId: "wx-cleanup",
+        userId: "u-cleanup",
+        status: "answered",
+        createdAt: now - 1_000,
+        answeredAt: now - 500,
+      }, null, 2),
+      "utf8",
+    )
+
+    await writeFile(
+      path.join(requestDir, `${oldCleanedRouteKey}.json`),
+      JSON.stringify({
+        kind: "question",
+        requestID: "q-cleaned-old",
+        routeKey: oldCleanedRouteKey,
+        handle: "qclean2",
+        scopeKey: "instance-cleanup",
+        wechatAccountId: "wx-cleanup",
+        userId: "u-cleanup",
+        status: "cleaned",
+        createdAt: now - 5_000,
+        answeredAt: now - 4_000,
+        cleanedAt: now - 1_000,
+      }, null, 2),
+      "utf8",
+    )
+
+    await waitForBrokerMetadata(brokerJsonPath)
+
+    const cleaned = await waitForJsonFile(
+      path.join(requestDir, `${answeredRouteKey}.json`),
+      (record) => record?.status === "cleaned",
+      5_000,
+    )
+    assert.equal(cleaned.status, "cleaned")
+    assert.equal(typeof cleaned.cleanedAt, "number")
+
+    await waitForFileRemoved(path.join(requestDir, `${oldCleanedRouteKey}.json`), 5_000)
+
+    const diagnosticsRaw = await waitForFileText(
+      diagnosticsPath,
+      (text) => text.includes('"type":"requestCleaned"') && text.includes('"type":"requestPurged"'),
+      5_000,
+    )
+    assert.match(diagnosticsRaw, /"code":"requestCleaned"/)
+    assert.match(diagnosticsRaw, /"code":"requestPurged"/)
+    assert.match(diagnosticsRaw, /"routeKey":"question-clean-target"/)
+    assert.match(diagnosticsRaw, /"type":"requestPurged"/)
+    assert.match(diagnosticsRaw, /"routeKey":"question-cleaned-old"/)
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)
@@ -1437,6 +1546,22 @@ test("stale 恢复时 heartbeat 返回后，磁盘快照应已是 connected（�
     const immediateDiskSnapshot = JSON.parse(await readFile(instancePath, "utf8"))
     assert.equal(immediateDiskSnapshot.status, "connected")
     assert.equal("staleSince" in immediateDiskSnapshot, false)
+
+    const diagnosticsPath = path.join(
+      sandboxConfigHome,
+      "opencode",
+      "account-switcher",
+      "wechat",
+      "wechat-broker.diagnostics.jsonl",
+    )
+    const diagnosticsRaw = await waitForFileText(
+      diagnosticsPath,
+      (text) => text.includes('"type":"instanceRecovered"'),
+      5_000,
+    )
+    assert.match(diagnosticsRaw, /"code":"instanceRecovered"/)
+    assert.match(diagnosticsRaw, /"instanceID":"instance-ordering-a"/)
+    assert.match(diagnosticsRaw, /"type":"instanceRecovered"/)
 
     conn.close()
   } finally {

@@ -615,6 +615,46 @@ test("bridge recovery diagnostics: resync 会记录 started/completed", async ()
   assert.equal(typeof completedEvent?.durationMs, "number")
 })
 
+test("bridge recovery diagnostics: resync 失败时会记录稳定 failed code", async () => {
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const events = []
+
+  const bridge = bridgeModule.createWechatBridge({
+    instanceID: "bridge-instance-resync-failed",
+    instanceName: "Bridge Resync Failed",
+    projectName: "project-resync-failed",
+    directory: "/repo",
+    pid: 52348,
+    onDiagnosticEvent: async (event) => {
+      events.push(event)
+    },
+    client: {
+      session: {
+        list: async () => ({ data: 123 }),
+        status: async () => ({ data: {} }),
+        todo: async () => [],
+        messages: async () => [],
+      },
+      question: {
+        list: async () => [],
+      },
+      permission: {
+        list: async () => [],
+      },
+    },
+  })
+
+  await assert.rejects(() => bridge.resyncBrokerState({ reason: "manual" }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const failedEvent = events.find((event) => event.type === "bridgeResyncFailed")
+  assert.equal(failedEvent?.instanceID, "bridge-instance-resync-failed")
+  assert.equal(failedEvent?.reason, "manual")
+  assert.equal(failedEvent?.code, "bridgeResyncFailed")
+  assert.equal(typeof failedEvent?.durationMs, "number")
+  assert.match(failedEvent?.error ?? "", /not iterable|sessions is not iterable|spread/i)
+})
+
 test("bridge live snapshot: 未知当前前台 session 时显式返回 no active sessions", async () => {
   const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
   const statusFormat = await import(`../dist/wechat/status-format.js?reload=${Date.now()}`)
