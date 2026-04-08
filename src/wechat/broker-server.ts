@@ -1,6 +1,6 @@
 import net from "node:net"
 import path from "node:path"
-import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises"
+import { appendFile, chmod, mkdir, rm, stat, writeFile } from "node:fs/promises"
 import { createBrokerSocket, isTcpBrokerEndpoint, listenOnBrokerEndpoint } from "./broker-endpoint.js"
 import { registerConnection, revokeSessionToken, validateSessionToken } from "./ipc-auth.js"
 import {
@@ -14,13 +14,19 @@ import {
   type StatusSnapshotPayload,
   type WechatNotificationCandidate,
 } from "./protocol.js"
-import { WECHAT_DIR_MODE, WECHAT_FILE_MODE, instanceStatePath, instancesDir } from "./state-paths.js"
+import {
+  WECHAT_DIR_MODE,
+  WECHAT_FILE_MODE,
+  instanceStatePath,
+  instancesDir,
+  wechatBrokerDiagnosticsPath,
+} from "./state-paths.js"
 import { formatAggregatedStatusReply } from "./status-format.js"
 import type { WechatSlashCommand } from "./command-parser.js"
 import { upsertNotification } from "./notification-store.js"
 import { readOperatorBinding } from "./operator-store.js"
 import { createHandle, createRouteKey } from "./handle.js"
-import { findOpenRequestByIdentity, listActiveRequests, upsertRequest } from "./request-store.js"
+import { expireOpenRequestsForScope, findOpenRequestByIdentity, listActiveRequests, upsertRequest } from "./request-store.js"
 
 const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
   "collectStatus",
@@ -114,6 +120,25 @@ const snapshotByInstanceID = new Map<string, InstanceSnapshot>()
 const snapshotPersistQueueByInstanceID = new Map<string, Promise<void>>()
 const pendingCollectStatusByRequestId = new Map<string, PendingCollectStatus>()
 let syncWechatNotificationsChain: Promise<void> = Promise.resolve()
+
+type WechatBrokerDiagnosticEvent = {
+  type: "requestExpired"
+  instanceID: string
+  kind: "question" | "permission"
+  routeKey: string
+}
+
+async function appendBrokerDiagnostic(event: WechatBrokerDiagnosticEvent) {
+  try {
+    await mkdir(path.dirname(wechatBrokerDiagnosticsPath()), { recursive: true, mode: WECHAT_DIR_MODE })
+    await appendFile(
+      wechatBrokerDiagnosticsPath(),
+      `${JSON.stringify({ at: Date.now(), ...event })}\n`,
+      { encoding: "utf8", mode: WECHAT_FILE_MODE },
+    )
+  } catch {
+  }
+}
 
 function clearRuntimeState() {
   for (const instanceID of registrationByInstanceID.keys()) {
@@ -307,6 +332,18 @@ async function markStaleSnapshots(now: number, heartbeatTimeoutMs: number): Prom
     }
     snapshotByInstanceID.set(instanceID, staleSnapshot)
     await queuePersistSnapshot(staleSnapshot)
+    const expiredRequests = await expireOpenRequestsForScope({
+      scopeKey: instanceID,
+      expiredAt: now,
+    })
+    for (const request of expiredRequests) {
+      await appendBrokerDiagnostic({
+        type: "requestExpired",
+        instanceID,
+        kind: request.kind,
+        routeKey: request.routeKey,
+      })
+    }
   }
 }
 
@@ -578,6 +615,7 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
             requestID: candidate.requestID,
             routeKey: nextRouteKey,
             handle: nextHandle,
+            scopeKey: envelope.instanceID,
             wechatAccountId: binding.wechatAccountId,
             userId: binding.userId,
             createdAt: candidate.createdAt,

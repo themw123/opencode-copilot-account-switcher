@@ -551,6 +551,70 @@ test("bridge live snapshot diagnostics: 记录超时阶段与总耗时", async (
   assert.equal(typeof completedEvent?.durationMs, "number")
 })
 
+test("bridge recovery diagnostics: resync 会记录 started/completed", async () => {
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const events = []
+  const calls = []
+
+  const bridge = bridgeModule.createWechatBridge({
+    instanceID: "bridge-instance-resync",
+    instanceName: "Bridge Resync",
+    projectName: "project-resync",
+    directory: "/repo",
+    pid: 52347,
+    onDiagnosticEvent: async (event) => {
+      events.push(event)
+    },
+    client: {
+      session: {
+        list: async () => {
+          calls.push("session.list")
+          return [{ id: "s-1", title: "s1", directory: "/repo", time: { updated: 100 } }]
+        },
+        status: async () => {
+          calls.push("session.status")
+          return { "s-1": { type: "busy" } }
+        },
+        todo: async () => {
+          calls.push("session.todo")
+          return []
+        },
+        messages: async () => {
+          calls.push("session.messages")
+          return []
+        },
+      },
+      question: {
+        list: async () => {
+          calls.push("question.list")
+          return []
+        },
+      },
+      permission: {
+        list: async () => {
+          calls.push("permission.list")
+          return []
+        },
+      },
+    },
+  })
+
+  const snapshot = await bridge.resyncBrokerState({ reason: "brokerReconnect" })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(snapshot.sessions.length, 1)
+  assert.deepEqual(calls, ["session.list", "session.status", "question.list", "permission.list", "session.todo", "session.messages"])
+
+  const startedEvent = events.find((event) => event.type === "bridgeResyncStarted")
+  assert.equal(startedEvent?.instanceID, "bridge-instance-resync")
+  assert.equal(startedEvent?.reason, "brokerReconnect")
+
+  const completedEvent = events.find((event) => event.type === "bridgeResyncCompleted")
+  assert.equal(completedEvent?.instanceID, "bridge-instance-resync")
+  assert.equal(completedEvent?.sessionCount, 1)
+  assert.equal(typeof completedEvent?.durationMs, "number")
+})
+
 test("bridge live snapshot: 未知当前前台 session 时显式返回 no active sessions", async () => {
   const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
   const statusFormat = await import(`../dist/wechat/status-format.js?reload=${Date.now()}`)

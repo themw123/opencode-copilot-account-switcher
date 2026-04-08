@@ -119,6 +119,51 @@ async function waitForInstanceSnapshot(instancePath, predicate, timeoutMs = 5000
   throw new Error(`timeout waiting for instance snapshot: ${instancePath}`)
 }
 
+async function waitForRequestRecord(requestStore, lookup, predicate, timeoutMs = 5000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const record = await requestStore.findRequestByRouteKey(lookup)
+    if (record && (!predicate || predicate(record))) {
+      return record
+    }
+    await delay(50)
+  }
+  throw new Error(`timeout waiting for request record: ${lookup.kind}:${lookup.routeKey}`)
+}
+
+async function waitForJsonFile(filePath, predicate, timeoutMs = 5000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const raw = await readFile(filePath, "utf8")
+      const parsed = JSON.parse(raw)
+      if (!predicate || predicate(parsed)) {
+        return parsed
+      }
+    } catch {
+      // keep polling
+    }
+    await delay(50)
+  }
+  throw new Error(`timeout waiting for json file: ${filePath}`)
+}
+
+async function waitForFileText(filePath, predicate, timeoutMs = 5000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const text = await readFile(filePath, "utf8")
+      if (!predicate || predicate(text)) {
+        return text
+      }
+    } catch {
+      // keep polling
+    }
+    await delay(50)
+  }
+  throw new Error(`timeout waiting for file text: ${filePath}`)
+}
+
 function spawnBrokerEntry({ endpoint, xdgConfigHome, extraEnv = {} }) {
   const child = spawn(process.execPath, [DIST_BROKER_ENTRY, `--endpoint=${endpoint}`], {
     cwd: REPO_ROOT,
@@ -1224,6 +1269,80 @@ test("instances 快照：注册即落盘，超时标记 stale，后续 heartbeat
     assert.equal(recoveredSnapshot.lastHeartbeatAt >= staleSnapshot.lastHeartbeatAt, true)
 
     conn.close()
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("stale instance 会把同 scopeKey 的 open request 标记为 expired", async () => {
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}`)
+
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-stale-request-expire-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const requestDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "requests", "question")
+  const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_HEARTBEAT_TIMEOUT_MS: "200",
+      WECHAT_BROKER_HEARTBEAT_SCAN_INTERVAL_MS: "50",
+    },
+  })
+
+  try {
+    const handleValue = `q${Date.now()}`
+    const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-stale-expire-1", scopeKey: "instance-stale-expire" })
+
+    await mkdirSync(requestDir, { recursive: true })
+    await writeFile(
+      path.join(requestDir, `${routeKey}.json`),
+      JSON.stringify({
+        kind: "question",
+        requestID: "q-stale-expire-1",
+        routeKey,
+        handle: handleValue,
+        scopeKey: "instance-stale-expire",
+        wechatAccountId: "wx-stale-expire",
+        userId: "u-stale-expire",
+        status: "open",
+        createdAt: Date.now(),
+      }, null, 2),
+      "utf8",
+    )
+
+    await waitForBrokerMetadata(brokerJsonPath)
+
+    const client = await brokerClient.connect(endpoint)
+    await client.registerInstance({ instanceID: "instance-stale-expire", pid: process.pid })
+
+    await waitForInstanceSnapshot(
+      path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "instances", "instance-stale-expire.json"),
+      (snapshot) => snapshot?.status === "stale",
+      5_000,
+    )
+
+    const expired = await waitForJsonFile(
+      path.join(requestDir, `${routeKey}.json`),
+      (record) => record?.status === "expired",
+      5_000,
+    )
+
+    assert.equal(expired.status, "expired")
+    assert.equal(typeof expired.expiredAt, "number")
+
+    const diagnosticsRaw = await waitForFileText(
+      diagnosticsPath,
+      (text) => text.includes('"type":"requestExpired"'),
+      5_000,
+    )
+    assert.match(diagnosticsRaw, /"instanceID":"instance-stale-expire"/)
+    assert.match(diagnosticsRaw, /"routeKey":"question-/)
+
+    await client.close()
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)

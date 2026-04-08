@@ -29,6 +29,7 @@ test("wechat 状态 helper 路径布局稳定", () => {
 
   assert.equal(statePaths.brokerStatePath(), path.join(root, "broker.json"))
   assert.equal(statePaths.brokerStartupDiagnosticsPath(), path.join(root, "broker-startup.diagnostics.log"))
+  assert.equal(statePaths.wechatBrokerDiagnosticsPath(), path.join(root, "wechat-broker.diagnostics.jsonl"))
   assert.equal(statePaths.launchLockPath(), path.join(root, "launch.lock"))
   assert.equal(statePaths.operatorStatePath(), path.join(root, "operator.json"))
   assert.equal(statePaths.instancesDir(), path.join(root, "instances"))

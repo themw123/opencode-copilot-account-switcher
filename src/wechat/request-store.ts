@@ -16,6 +16,7 @@ export type RequestRecord = {
   requestID: string
   routeKey: string
   handle: string
+  scopeKey?: string
   wechatAccountId: string
   userId: string
   status: RequestStatus
@@ -32,6 +33,7 @@ function normalizeRecord(input: RequestRecord): RequestRecord {
     requestID: input.requestID,
     routeKey: input.routeKey,
     handle: input.handle,
+    ...(isNonEmptyString(input.scopeKey) ? { scopeKey: input.scopeKey } : {}),
     wechatAccountId: input.wechatAccountId,
     userId: input.userId,
     status: input.status,
@@ -88,6 +90,7 @@ function toRequestRecord(input: unknown): RequestRecord {
     !isNonEmptyString(parsed.requestID) ||
     !isNonEmptyString(parsed.routeKey) ||
     !isNonEmptyString(parsed.handle) ||
+    (parsed.scopeKey !== undefined && !isNonEmptyString(parsed.scopeKey)) ||
     !isNonEmptyString(parsed.wechatAccountId) ||
     !isNonEmptyString(parsed.userId) ||
     !isFiniteNumber(parsed.createdAt) ||
@@ -211,6 +214,35 @@ export async function upsertRequest(
     handle: normalizedHandle,
     status: "open",
   })
+}
+
+export async function expireOpenRequestsForScope(input: {
+  scopeKey: string
+  expiredAt: number
+}) {
+  if (!isNonEmptyString(input.scopeKey) || !isFiniteNumber(input.expiredAt)) {
+    throw new Error("invalid request record format")
+  }
+
+  const activeRequests = await listActiveRequests()
+  const expired: RequestRecord[] = []
+
+  for (const item of activeRequests) {
+    if (item.status !== "open") {
+      continue
+    }
+    if (item.scopeKey !== input.scopeKey) {
+      continue
+    }
+
+    expired.push(await markRequestExpired({
+      kind: item.kind,
+      routeKey: item.routeKey,
+      expiredAt: input.expiredAt,
+    }))
+  }
+
+  return expired
 }
 
 export async function markRequestAnswered(input: {

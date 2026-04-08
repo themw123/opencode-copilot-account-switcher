@@ -648,3 +648,96 @@ test("bridge lifecycle heartbeat 与 close 边界：仅定时心跳，close 清�
   await lifecycle.close()
   assert.equal(closeCalls, 1)
 })
+
+test("bridge lifecycle heartbeat 失败后会重连 broker 并触发一次 full sync", async () => {
+  const { createWechatBridgeLifecycle } = await importBridgeModule()
+  let connectCalls = 0
+  let registerCalls = 0
+  let closeCalls = 0
+  let timerCallback = null
+
+  const liveReadCalls = []
+  const client = {
+    session: {
+      list: async () => {
+        liveReadCalls.push("session.list")
+        return []
+      },
+      status: async () => {
+        liveReadCalls.push("session.status")
+        return {}
+      },
+      todo: async () => {
+        liveReadCalls.push("session.todo")
+        return []
+      },
+      messages: async () => {
+        liveReadCalls.push("session.messages")
+        return []
+      },
+    },
+    question: {
+      list: async () => {
+        liveReadCalls.push("question.list")
+        return []
+      },
+    },
+    permission: {
+      list: async () => {
+        liveReadCalls.push("permission.list")
+        return []
+      },
+    },
+  }
+
+  const deps = {
+    connectOrSpawnBrokerImpl: async () => ({ endpoint: `fake-endpoint-${connectCalls + 1}` }),
+    connectImpl: async () => {
+      connectCalls += 1
+      const currentConnect = connectCalls
+      return {
+        registerInstance: async () => {
+          registerCalls += 1
+          return { sessionToken: `token-${currentConnect}`, registeredAt: Date.now(), brokerPid: process.pid }
+        },
+        heartbeat: async () => {
+          if (currentConnect === 1) {
+            throw new Error("broker connection closed")
+          }
+          return {}
+        },
+        close: async () => {
+          closeCalls += 1
+        },
+      }
+    },
+    setIntervalImpl: (cb) => {
+      timerCallback = cb
+      return { id: Symbol("timer") }
+    },
+    clearIntervalImpl: () => {},
+  }
+
+  const lifecycle = await createWechatBridgeLifecycle({
+    statusCollectionEnabled: true,
+    heartbeatIntervalMs: 50,
+    client,
+    directory: "/workspace/wechat-stage-a",
+  }, deps)
+
+  assert.equal(registerCalls, 1)
+  assert.equal(typeof timerCallback, "function")
+
+  await timerCallback()
+
+  for (let attempt = 0; attempt < 20 && (registerCalls < 2 || liveReadCalls.length === 0); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  assert.equal(connectCalls, 2)
+  assert.equal(registerCalls, 2)
+  assert.equal(closeCalls >= 1, true)
+  assert.deepEqual(liveReadCalls, ["session.list", "session.status", "question.list", "permission.list"])
+
+  await lifecycle.close()
+})

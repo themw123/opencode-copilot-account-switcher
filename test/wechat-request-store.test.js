@@ -61,6 +61,7 @@ test("open request 可通过 request identity 查询且保持原 handle", async 
     requestID: "identity-permission-1",
     routeKey: handle.createRouteKey({ kind: "permission", requestID: "identity-permission-1" }),
     handle: "p1",
+    scopeKey: "instance-identity",
     wechatAccountId: "wx-identity",
     userId: "u-identity",
     createdAt: 1_700_000_222_000,
@@ -75,6 +76,50 @@ test("open request 可通过 request identity 查询且保持原 handle", async 
 
   assert.equal(found?.routeKey, created.routeKey)
   assert.equal(found?.handle, "p1")
+})
+
+test("scopeKey 会持久化到 request 记录，并支持按 scope 批量 expire open 请求", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-scope-expire-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "q-scope-expire-1", scopeKey: "instance-a" }),
+    handle: "q12",
+    scopeKey: "instance-a",
+    wechatAccountId: "wx-scope",
+    userId: "u-scope",
+    createdAt: 1_700_000_222_500,
+  })
+
+  await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "p-scope-expire-1",
+    routeKey: handle.createRouteKey({ kind: "permission", requestID: "p-scope-expire-1", scopeKey: "instance-b" }),
+    handle: "p12",
+    scopeKey: "instance-b",
+    wechatAccountId: "wx-scope",
+    userId: "u-scope",
+    createdAt: 1_700_000_222_600,
+  })
+
+  const stored = await requestStore.findRequestByRouteKey({
+    kind: "question",
+    routeKey: created.routeKey,
+  })
+  assert.equal(stored?.scopeKey, "instance-a")
+
+  const expired = await requestStore.expireOpenRequestsForScope({
+    scopeKey: "instance-a",
+    expiredAt: 1_700_000_223_000,
+  })
+  assert.equal(expired.length, 1)
+  assert.equal(expired[0]?.routeKey, created.routeKey)
+  assert.equal(expired[0]?.status, "expired")
+
+  const untouched = await requestStore.findOpenRequestByHandle({
+    kind: "permission",
+    handle: "p12",
+  })
+  assert.equal(untouched?.status, "open")
 })
 
 test("request identity 查询对大小写与首尾空白归一化后仍命中同一 open 记录", async () => {

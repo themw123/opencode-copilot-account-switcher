@@ -80,6 +80,7 @@ export type WechatBridgeInput = {
 export type WechatBridge = {
   collectStatusSnapshot: () => Promise<WechatInstanceStatusSnapshot>
   collectNotificationCandidates: () => Promise<WechatNotificationCandidate[]>
+  resyncBrokerState?: (input?: { reason?: "brokerReconnect" | "manual" }) => Promise<WechatInstanceStatusSnapshot>
 }
 
 export type WechatBridgeLifecycleInput = {
@@ -200,6 +201,26 @@ type WechatBridgeDiagnosticEvent =
       durationMs: number
       sessionCount: number
       unavailable?: InstanceUnavailableKind[]
+    }
+  | {
+      type: "bridgeResyncStarted"
+      instanceID: string
+      reason: "brokerReconnect" | "manual"
+    }
+  | {
+      type: "bridgeResyncCompleted"
+      instanceID: string
+      reason: "brokerReconnect" | "manual"
+      durationMs: number
+      sessionCount: number
+      unavailable?: InstanceUnavailableKind[]
+    }
+  | {
+      type: "bridgeResyncFailed"
+      instanceID: string
+      reason: "brokerReconnect" | "manual"
+      durationMs: number
+      error: string
     }
 
 function isErrorWithMessage(value: unknown): value is { message: string } {
@@ -559,9 +580,46 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     return candidates
   }
 
+  const resyncBrokerState = async (
+    options: { reason?: "brokerReconnect" | "manual" } = {},
+  ): Promise<WechatInstanceStatusSnapshot> => {
+    const reason = options.reason ?? "manual"
+    const startedAt = Date.now()
+    const onDiagnosticEvent = input.onDiagnosticEvent
+
+    await Promise.resolve(onDiagnosticEvent?.({
+      type: "bridgeResyncStarted",
+      instanceID: input.instanceID,
+      reason,
+    }))
+
+    try {
+      const snapshot = await collectStatusSnapshot()
+      await Promise.resolve(onDiagnosticEvent?.({
+        type: "bridgeResyncCompleted",
+        instanceID: input.instanceID,
+        reason,
+        durationMs: Date.now() - startedAt,
+        sessionCount: snapshot.sessions.length,
+        unavailable: snapshot.unavailable,
+      }))
+      return snapshot
+    } catch (error) {
+      await Promise.resolve(onDiagnosticEvent?.({
+        type: "bridgeResyncFailed",
+        instanceID: input.instanceID,
+        reason,
+        durationMs: Date.now() - startedAt,
+        error: toDiagnosticErrorMessage(error),
+      })).catch(() => {})
+      throw error
+    }
+  }
+
   return {
     collectStatusSnapshot,
     collectNotificationCandidates,
+    resyncBrokerState,
   }
 }
 
@@ -595,27 +653,65 @@ export async function createWechatBridgeLifecycle(
   })
 
   const broker = await connectOrSpawnBrokerImpl()
-  const brokerClient = await connectImpl(broker.endpoint, { bridge })
+  let brokerClient = await connectImpl(broker.endpoint, { bridge })
 
-  try {
-    await brokerClient.registerInstance({
-      instanceID,
-      pid: process.pid,
-    })
-  } catch (error) {
-    await brokerClient.close().catch(() => {})
-    throw error
+  async function registerCurrentBrokerClient() {
+    try {
+      await brokerClient.registerInstance({
+        instanceID,
+        pid: process.pid,
+      })
+    } catch (error) {
+      await brokerClient.close().catch(() => {})
+      throw error
+    }
   }
+
+  await registerCurrentBrokerClient()
 
   const heartbeatIntervalMs =
     typeof input.heartbeatIntervalMs === "number" && Number.isFinite(input.heartbeatIntervalMs)
       ? Math.max(1_000, Math.floor(input.heartbeatIntervalMs))
       : DEFAULT_HEARTBEAT_INTERVAL_MS
-  const timer = setIntervalImpl(() => {
-    void brokerClient.heartbeat().catch(() => {})
-  }, heartbeatIntervalMs)
-
+  let reconnectPromise: Promise<void> | null = null
   let closed = false
+
+  const reconnectBrokerClient = async () => {
+    if (closed) {
+      return
+    }
+    if (reconnectPromise) {
+      return reconnectPromise
+    }
+
+    reconnectPromise = (async () => {
+      const previousBrokerClient = brokerClient
+      await previousBrokerClient.close().catch(() => {})
+
+      const nextBroker = await connectOrSpawnBrokerImpl()
+      const nextBrokerClient = await connectImpl(nextBroker.endpoint, { bridge })
+      brokerClient = nextBrokerClient
+
+      try {
+        await registerCurrentBrokerClient()
+        await bridge.resyncBrokerState?.({ reason: "brokerReconnect" })
+      } catch (error) {
+        await nextBrokerClient.close().catch(() => {})
+        throw error
+      }
+    })().finally(() => {
+      reconnectPromise = null
+    })
+
+    return reconnectPromise
+  }
+
+  const timer = setIntervalImpl(() => {
+    if (closed) {
+      return
+    }
+    void brokerClient.heartbeat().catch(() => reconnectBrokerClient().catch(() => {}))
+  }, heartbeatIntervalMs)
 
   return {
     close: async () => {
@@ -624,6 +720,7 @@ export async function createWechatBridgeLifecycle(
       }
       closed = true
       clearIntervalImpl(timer)
+      await reconnectPromise?.catch(() => {})
       await brokerClient.close().catch(() => {})
     },
   }
