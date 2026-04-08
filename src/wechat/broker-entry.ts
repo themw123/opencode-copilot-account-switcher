@@ -34,6 +34,8 @@ type BrokerState = {
 }
 
 const BROKER_WECHAT_RUNTIME_AUTOSTART_DELAY_MS = 1_000
+const DEFAULT_BROKER_IDLE_TIMEOUT_MS = 5 * 60 * 1000
+const DEFAULT_BROKER_IDLE_SCAN_INTERVAL_MS = 1_000
 
 async function readPackageVersion(): Promise<string> {
   const packageJsonPath = new URL("../../package.json", import.meta.url)
@@ -77,6 +79,19 @@ function parseStateRootArg(argv: string[]): string {
 
 function brokerStatePathForRoot(stateRoot: string): string {
   return path.join(stateRoot, "broker.json")
+}
+
+function toPositiveNumber(rawValue: string | undefined, fallback: number): number {
+  if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
+    return fallback
+  }
+
+  const parsed = Number(rawValue)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback
+  }
+
+  return parsed
 }
 
 async function writeBrokerState(state: BrokerState, stateRoot: string) {
@@ -368,6 +383,7 @@ async function run() {
   const args = process.argv.slice(2)
   const endpoint = parseEndpointArg(args)
   const stateRoot = parseStateRootArg(args)
+  process.env.WECHAT_STATE_ROOT_OVERRIDE = stateRoot
   const server = await startBrokerServer(endpoint)
   const version = await readPackageVersion()
   const state: BrokerState = {
@@ -397,6 +413,8 @@ async function run() {
     pid: state.pid,
     startedAt: state.startedAt,
   }
+  const idleTimeoutMs = toPositiveNumber(process.env.WECHAT_BROKER_IDLE_TIMEOUT_MS, DEFAULT_BROKER_IDLE_TIMEOUT_MS)
+  const idleScanIntervalMs = toPositiveNumber(process.env.WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS, DEFAULT_BROKER_IDLE_SCAN_INTERVAL_MS)
 
   let shuttingDown = false
   const shutdown = async (exitCode = 0) => {
@@ -405,11 +423,32 @@ async function run() {
     }
     shuttingDown = true
 
+    clearInterval(idleTimer)
     removeOwnedBrokerStateFileSync(ownership, stateRoot)
     await wechatRuntimeLifecycle.close()
     await server.close()
     process.exit(exitCode)
   }
+
+  let idleSince: number | undefined
+  const idleTimer = setInterval(() => {
+    void server.hasBlockingActivity().then((hasBlockingActivity) => {
+      if (hasBlockingActivity) {
+        idleSince = undefined
+        return
+      }
+
+      const now = Date.now()
+      if (idleSince === undefined) {
+        idleSince = now
+        return
+      }
+
+      if (now - idleSince >= idleTimeoutMs) {
+        void shutdown(0)
+      }
+    }).catch(() => {})
+  }, idleScanIntervalMs)
 
   process.once("SIGINT", () => {
     void shutdown(0)

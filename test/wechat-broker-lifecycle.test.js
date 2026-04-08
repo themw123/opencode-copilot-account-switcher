@@ -619,6 +619,228 @@ test("detached + stdio ignore 启动后 broker 持续存活并可 ping", async (
   }
 })
 
+test("broker-entry 空闲超时后在无实例且无 open request 时自动退出", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-idle-exit-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_IDLE_TIMEOUT_MS: "120",
+      WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS: "20",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    const exited = await waitForExit(child, 5_000)
+    assert.equal(exited.code, 0)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      await terminateChild(child)
+    }
+    childProcesses.delete(child)
+  }
+
+  await waitForFileRemoved(brokerJsonPath, 5_000)
+})
+
+test("broker-entry 空闲超时期间若仍有 open request 则保持存活", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-idle-blocked-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const requestDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "requests", "question")
+  const openRouteKey = "question-idle-open"
+  await rm(requestDir, { recursive: true, force: true })
+  await mkdirSync(requestDir, { recursive: true })
+  await writeFile(
+    path.join(requestDir, `${openRouteKey}.json`),
+    JSON.stringify({
+      kind: "question",
+      requestID: "q-idle-open-1",
+      routeKey: openRouteKey,
+      handle: "qidle1",
+      scopeKey: "instance-idle-open",
+      wechatAccountId: "wx-idle-open",
+      userId: "u-idle-open",
+      status: "open",
+      createdAt: Date.now() - 1_000,
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_IDLE_TIMEOUT_MS: "120",
+      WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS: "20",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    await delay(400)
+    assert.equal(isProcessAlive(child.pid), true)
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("broker-entry 空闲计时期间若实例重新注册则取消退出，断开后重新进入空闲并最终退出", async () => {
+  const protocol = await import(DIST_PROTOCOL_MODULE)
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-idle-cancel-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_IDLE_TIMEOUT_MS: "180",
+      WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS: "20",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    await delay(80)
+
+    const conn = await createPersistentConnection(endpoint)
+    const registerAck = await conn.send({
+      id: "register-idle-cancel",
+      type: "registerInstance",
+      instanceID: "instance-idle-cancel",
+      payload: {
+        pid: 9001,
+        displayName: "Idle Cancel",
+        projectDir: "/tmp/idle-cancel",
+      },
+    })
+    assert.equal(registerAck.type, "registerAck")
+
+    await delay(220)
+    assert.equal(isProcessAlive(child.pid), true)
+
+    conn.close()
+    const exited = await waitForExit(child, 5_000)
+    assert.equal(exited.code, 0)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      await terminateChild(child)
+    }
+    childProcesses.delete(child)
+  }
+
+  await waitForFileRemoved(brokerJsonPath, 5_000)
+})
+
+test("broker-entry 启动时会立刻把过期 connected snapshot 标记为 stale", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-startup-stale-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const instanceDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "instances")
+  const instancePath = path.join(instanceDir, "startup-stale-a.json")
+  const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
+  const now = Date.now()
+
+  await rm(instanceDir, { recursive: true, force: true })
+  mkdirSync(instanceDir, { recursive: true })
+  await writeFile(
+    instancePath,
+    JSON.stringify({
+      instanceID: "startup-stale-a",
+      pid: 7788,
+      displayName: "Startup Stale",
+      projectDir: "/tmp/startup-stale",
+      connectedAt: now - 1_000,
+      lastHeartbeatAt: now - 1_000,
+      status: "connected",
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_HEARTBEAT_TIMEOUT_MS: "80",
+      WECHAT_BROKER_HEARTBEAT_SCAN_INTERVAL_MS: "5000",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    const staleSnapshot = await waitForInstanceSnapshot(instancePath, (snapshot) => snapshot.status === "stale", 1_500)
+    assert.equal(staleSnapshot.status, "stale")
+    assert.equal(typeof staleSnapshot.staleSince, "number")
+
+    const diagnosticsRaw = await waitForFileText(
+      diagnosticsPath,
+      (text) => text.includes('"type":"instanceStale"') && text.includes('"instanceID":"startup-stale-a"'),
+      1_500,
+    )
+    assert.match(diagnosticsRaw, /"code":"instanceStale"/)
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("broker-entry 启动时会立刻 purge 过期 cleaned request", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-startup-purge-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const requestDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "requests", "question")
+  const diagnosticsPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "wechat-broker.diagnostics.jsonl")
+  const routeKey = "startup-cleaned-old"
+  const now = Date.now()
+
+  await rm(requestDir, { recursive: true, force: true })
+  mkdirSync(requestDir, { recursive: true })
+  await writeFile(
+    path.join(requestDir, `${routeKey}.json`),
+    JSON.stringify({
+      kind: "question",
+      requestID: "q-startup-cleaned-old",
+      routeKey,
+      handle: "qstartup1",
+      scopeKey: "startup-cleanup",
+      wechatAccountId: "wx-startup-cleanup",
+      userId: "u-startup-cleanup",
+      status: "cleaned",
+      createdAt: now - 10_000,
+      answeredAt: now - 9_000,
+      cleanedAt: now - 8_000,
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({
+    endpoint,
+    xdgConfigHome: sandboxConfigHome,
+    extraEnv: {
+      WECHAT_BROKER_REQUEST_PURGE_RETENTION_MS: "100",
+      WECHAT_BROKER_REQUEST_CLEANUP_SCAN_INTERVAL_MS: "5000",
+    },
+  })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+    await waitForFileRemoved(path.join(requestDir, `${routeKey}.json`), 1_500)
+    const diagnosticsRaw = await waitForFileText(
+      diagnosticsPath,
+      (text) => text.includes('"type":"requestPurged"') && text.includes(`"routeKey":"${routeKey}"`),
+      1_500,
+    )
+    assert.match(diagnosticsRaw, /"code":"requestPurged"/)
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
 test("broker future message 错误优先级: invalidMessage -> unauthorized -> notImplemented，heartbeat 校验 token", async () => {
   const protocol = await import(DIST_PROTOCOL_MODULE)
   const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-priority-"))
@@ -1473,6 +1695,7 @@ test("instances 目录不可写时，registerInstance 不可静默成功", async
 
   try {
     await waitForBrokerMetadata(brokerJsonPath)
+    await rm(instancesPath, { recursive: true, force: true })
     await writeFile(instancesPath, "not-a-directory", "utf8")
 
     const response = await sendFrameAndReadResponse(

@@ -8,6 +8,10 @@ export const WECHAT_FILE_MODE = 0o600
 export type WechatRequestKind = "question" | "permission"
 
 export function wechatStateRoot() {
+  const override = process.env.WECHAT_STATE_ROOT_OVERRIDE
+  if (typeof override === "string" && override.trim().length > 0) {
+    return override
+  }
   return wechatConfigDir()
 }
 

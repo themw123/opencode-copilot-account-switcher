@@ -1,6 +1,6 @@
 import net from "node:net"
 import path from "node:path"
-import { appendFile, chmod, mkdir, rm, stat, writeFile } from "node:fs/promises"
+import { appendFile, chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createBrokerSocket, isTcpBrokerEndpoint, listenOnBrokerEndpoint } from "./broker-endpoint.js"
 import { registerConnection, revokeSessionToken, validateSessionToken } from "./ipc-auth.js"
 import {
@@ -326,6 +326,63 @@ async function recoverSnapshotFromHeartbeat(instanceID: string, now: number): Pr
       code: "instanceRecovered",
       instanceID,
     })
+  }
+}
+
+function toInstanceSnapshot(input: unknown): InstanceSnapshot | undefined {
+  const snapshot = asObject(input)
+  if (!isNonEmptyString(snapshot.instanceID) || !isSafeInstanceID(snapshot.instanceID) || !isFiniteNumber(snapshot.connectedAt) || !isFiniteNumber(snapshot.lastHeartbeatAt)) {
+    return undefined
+  }
+  const instanceID = snapshot.instanceID
+  const connectedAt = snapshot.connectedAt
+  const lastHeartbeatAt = snapshot.lastHeartbeatAt
+
+  const status = snapshot.status === "stale" ? "stale" : snapshot.status === "connected" ? "connected" : undefined
+  if (!status) {
+    return undefined
+  }
+
+  if (status === "stale" && !isFiniteNumber(snapshot.staleSince)) {
+    return undefined
+  }
+  const staleSince: number | undefined = status === "stale" ? (snapshot.staleSince as number) : undefined
+
+  return {
+    instanceID,
+    pid: isFiniteNumber(snapshot.pid) ? snapshot.pid : process.pid,
+    displayName: isNonEmptyString(snapshot.displayName) ? snapshot.displayName : "",
+    projectDir: isNonEmptyString(snapshot.projectDir) ? snapshot.projectDir : "",
+    connectedAt,
+    lastHeartbeatAt,
+    status,
+    ...(status === "stale" ? { staleSince } : {}),
+  }
+}
+
+async function loadPersistedSnapshots(): Promise<void> {
+  const files = await readdir(instancesDir()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return []
+    }
+    throw error
+  })
+
+  for (const fileName of files) {
+    if (!fileName.endsWith(".json")) {
+      continue
+    }
+
+    try {
+      const raw = await readFile(path.join(instancesDir(), fileName), "utf8")
+      const parsed = toInstanceSnapshot(JSON.parse(raw))
+      if (!parsed) {
+        continue
+      }
+      snapshotByInstanceID.set(parsed.instanceID, parsed)
+    } catch {
+      // ignore malformed persisted snapshots during startup cleanup
+    }
   }
 }
 
@@ -771,6 +828,7 @@ export type BrokerServerHandle = {
   startedAt: number
   collectStatus: () => Promise<CollectStatusResult>
   handleWechatSlashCommand: (command: WechatSlashCommand) => Promise<string>
+  hasBlockingActivity: () => Promise<boolean>
   close: () => Promise<void>
 }
 
@@ -849,6 +907,10 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     })
     throw error
   }
+
+  await loadPersistedSnapshots()
+  await markStaleSnapshots(Date.now(), heartbeatTimeoutMs)
+  await cleanupTerminalRequests(Date.now(), requestCleanAfterMs, requestPurgeRetentionMs)
 
   const staleScanTimer = setInterval(() => {
     void markStaleSnapshots(Date.now(), heartbeatTimeoutMs).catch((error) => {
@@ -951,11 +1013,23 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     clearRuntimeState()
   }
 
+  const hasBlockingActivity = async () => {
+    for (const record of registrationByInstanceID.values()) {
+      if (!record.socket.destroyed) {
+        return true
+      }
+    }
+
+    const activeRequests = await listActiveRequests()
+    return activeRequests.some((request) => request.status === "open")
+  }
+
   return {
     endpoint: boundEndpoint,
     startedAt: Date.now(),
     collectStatus,
     handleWechatSlashCommand,
+    hasBlockingActivity,
     close,
   }
 }
