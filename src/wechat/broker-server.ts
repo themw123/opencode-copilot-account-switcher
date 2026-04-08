@@ -35,6 +35,7 @@ import {
   upsertRequest,
   type RequestRecord,
 } from "./request-store.js"
+import { purgeDeadLettersBefore, writeDeadLetter } from "./dead-letter-store.js"
 
 const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
   "collectStatus",
@@ -50,6 +51,8 @@ export const DEFAULT_STATUS_COLLECT_WINDOW_MS = 5_000
 const DEFAULT_REQUEST_CLEAN_AFTER_MS = 5 * 60 * 1000
 const DEFAULT_REQUEST_PURGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const DEFAULT_REQUEST_CLEANUP_SCAN_INTERVAL_MS = 60_000
+const DEFAULT_DEAD_LETTER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const DEFAULT_DEAD_LETTER_SCAN_INTERVAL_MS = 60_000
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
@@ -133,11 +136,12 @@ const pendingCollectStatusByRequestId = new Map<string, PendingCollectStatus>()
 let syncWechatNotificationsChain: Promise<void> = Promise.resolve()
 
 type WechatBrokerDiagnosticEvent = {
-  type: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged"
-  code: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged"
+  type: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged" | "deadLetterWritten" | "deadLetterPurged"
+  code: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged" | "deadLetterWritten" | "deadLetterPurged"
   instanceID: string
   kind?: "question" | "permission"
   routeKey?: string
+  reason?: string
 }
 
 async function appendBrokerDiagnostic(event: WechatBrokerDiagnosticEvent) {
@@ -425,6 +429,28 @@ async function markStaleSnapshots(now: number, heartbeatTimeoutMs: number): Prom
         kind: request.kind,
         routeKey: request.routeKey,
       })
+      await writeDeadLetter({
+        kind: request.kind,
+        routeKey: request.routeKey,
+        requestID: request.requestID,
+        handle: request.handle,
+        scopeKey: request.scopeKey,
+        finalStatus: "expired",
+        reason: "instanceStale",
+        createdAt: request.createdAt,
+        finalizedAt: request.expiredAt ?? now,
+        wechatAccountId: request.wechatAccountId,
+        userId: request.userId,
+        instanceID,
+      })
+      await appendBrokerDiagnostic({
+        type: "deadLetterWritten",
+        code: "deadLetterWritten",
+        instanceID,
+        kind: request.kind,
+        routeKey: request.routeKey,
+        reason: "instanceStale",
+      })
     }
   }
 }
@@ -482,6 +508,20 @@ async function cleanupTerminalRequests(now: number, cleanAfterMs: number, purgeR
       instanceID: request.scopeKey ?? "unknown",
       kind: request.kind,
       routeKey: request.routeKey,
+    })
+  }
+}
+
+async function cleanupDeadLetters(now: number, retentionMs: number): Promise<void> {
+  const purged = await purgeDeadLettersBefore(now - retentionMs)
+  for (const record of purged) {
+    await appendBrokerDiagnostic({
+      type: "deadLetterPurged",
+      code: "deadLetterPurged",
+      instanceID: record.instanceID ?? record.scopeKey ?? "unknown",
+      kind: record.kind,
+      routeKey: record.routeKey,
+      reason: record.reason,
     })
   }
 }
@@ -859,6 +899,14 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     process.env.WECHAT_BROKER_REQUEST_CLEANUP_SCAN_INTERVAL_MS,
     DEFAULT_REQUEST_CLEANUP_SCAN_INTERVAL_MS,
   )
+  const deadLetterRetentionMs = toPositiveNumber(
+    process.env.WECHAT_BROKER_DEAD_LETTER_RETENTION_MS,
+    DEFAULT_DEAD_LETTER_RETENTION_MS,
+  )
+  const deadLetterScanIntervalMs = toPositiveNumber(
+    process.env.WECHAT_BROKER_DEAD_LETTER_SCAN_INTERVAL_MS,
+    DEFAULT_DEAD_LETTER_SCAN_INTERVAL_MS,
+  )
 
   const server = net.createServer((socket) => {
     let buffer = ""
@@ -911,6 +959,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
   await loadPersistedSnapshots()
   await markStaleSnapshots(Date.now(), heartbeatTimeoutMs)
   await cleanupTerminalRequests(Date.now(), requestCleanAfterMs, requestPurgeRetentionMs)
+  await cleanupDeadLetters(Date.now(), deadLetterRetentionMs)
 
   const staleScanTimer = setInterval(() => {
     void markStaleSnapshots(Date.now(), heartbeatTimeoutMs).catch((error) => {
@@ -922,6 +971,11 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
       console.error("[wechat-broker] failed to clean terminal requests", error)
     })
   }, requestCleanupScanIntervalMs)
+  const deadLetterCleanupTimer = setInterval(() => {
+    void cleanupDeadLetters(Date.now(), deadLetterRetentionMs).catch((error) => {
+      console.error("[wechat-broker] failed to clean dead letters", error)
+    })
+  }, deadLetterScanIntervalMs)
 
   let closed = false
 
@@ -991,6 +1045,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
 
     clearInterval(staleScanTimer)
     clearInterval(requestCleanupTimer)
+    clearInterval(deadLetterCleanupTimer)
 
     for (const requestId of pendingCollectStatusByRequestId.keys()) {
       finalizePendingCollectStatus(requestId)
