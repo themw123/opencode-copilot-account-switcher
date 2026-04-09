@@ -1,3 +1,5 @@
+import type { RequestPromptSummary } from "./question-interaction.js"
+
 export type BrokerImplementedMessageType =
   | "registerInstance"
   | "registerAck"
@@ -34,6 +36,7 @@ export type WechatNotificationCandidate =
       createdAt: number
       routeKey: string
       handle: string
+      prompt?: RequestPromptSummary
     }
   | {
       idempotencyKey: string

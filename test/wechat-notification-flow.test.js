@@ -1029,30 +1029,57 @@ test("broker-entry lifecycle: 创建 dispatcher 并在 runtime 注入 drainOutbo
   assert.equal(drainInjectedCount, 1)
 })
 
-test("通知文案格式化：question 与 sessionError 输出稳定文案", async () => {
+test("通知文案格式化：question 输出题面 题型 选项 与回复格式", async () => {
   const notificationFormat = await import(`${DIST_NOTIFICATION_FORMAT_MODULE}?reload=${Date.now()}`)
 
   const questionText = notificationFormat.formatWechatNotificationText({
-    idempotencyKey: "task4-format-question-1",
+    idempotencyKey: "question-rich-1",
     kind: "question",
     wechatAccountId: "wx-main",
     userId: "u-main",
-    routeKey: "task4-format-route-question-1",
+    routeKey: "route-question-rich-1",
     handle: "q8",
-    createdAt: 1_700_500_900_001,
+    createdAt: 1_700_600_100_000,
     status: "pending",
-  })
-  const sessionErrorText = notificationFormat.formatWechatNotificationText({
-    idempotencyKey: "task4-format-session-error-1",
-    kind: "sessionError",
-    wechatAccountId: "wx-main",
-    userId: "u-main",
-    createdAt: 1_700_500_900_002,
-    status: "pending",
+    prompt: {
+      title: "请选择发布环境",
+      mode: "single",
+      options: [
+        { index: 1, label: "staging", value: "staging" },
+        { index: 2, label: "production", value: "production" },
+      ],
+    },
   })
 
-  assert.equal(questionText, "收到新的问题请求（q8），请在 OpenCode 中处理。")
-  assert.equal(sessionErrorText, "检测到会话异常（retry），请在 OpenCode 中检查并处理。")
+  assert.match(questionText, /请选择发布环境/)
+  assert.match(questionText, /类型：单选/)
+  assert.match(questionText, /1\. staging/)
+  assert.match(questionText, /\/reply q8 1/)
+})
+
+test("通知文案格式化：permission 输出标题 类型 与 allow 动作说明", async () => {
+  const notificationFormat = await import(`${DIST_NOTIFICATION_FORMAT_MODULE}?reload=${Date.now()}`)
+
+  const permissionText = notificationFormat.formatWechatNotificationText({
+    idempotencyKey: "permission-rich-1",
+    kind: "permission",
+    wechatAccountId: "wx-main",
+    userId: "u-main",
+    routeKey: "route-permission-rich-1",
+    handle: "p3",
+    createdAt: 1_700_600_100_001,
+    status: "pending",
+    prompt: {
+      title: "允许执行 shell 命令",
+      type: "command",
+    },
+  })
+
+  assert.match(permissionText, /允许执行 shell 命令/)
+  assert.match(permissionText, /类型：command/)
+  assert.match(permissionText, /\/allow p3 once/)
+  assert.match(permissionText, /\/allow p3 always/)
+  assert.match(permissionText, /\/allow p3 reject/)
 })
 
 test("通知分发：发送成功后若 markNotificationSent 因竞争失败，不应降级写成 failed", async () => {

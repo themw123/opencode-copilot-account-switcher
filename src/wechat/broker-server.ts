@@ -795,6 +795,7 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
             routeKey: nextRouteKey,
             handle: nextHandle,
             scopeKey: envelope.instanceID,
+            prompt: candidate.prompt,
             wechatAccountId: binding.wechatAccountId,
             userId: binding.userId,
             createdAt: candidate.createdAt,
@@ -811,6 +812,7 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
           userId: binding.userId,
           routeKey: canonicalRouteKey,
           handle: canonicalHandle,
+          prompt: candidate.prompt,
           createdAt: candidate.createdAt,
         })
       }

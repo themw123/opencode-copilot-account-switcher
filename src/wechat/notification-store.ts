@@ -7,6 +7,7 @@ import {
   notificationsDir,
 } from "./state-paths.js"
 import { type NotificationKind, type NotificationRecord } from "./notification-types.js"
+import { normalizeRequestPromptSummary } from "./question-interaction.js"
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
@@ -36,6 +37,7 @@ function normalizeRecord(input: NotificationRecord): NotificationRecord {
     userId: input.userId,
     createdAt: input.createdAt,
     status: input.status,
+    ...(input.kind !== "sessionError" && input.prompt !== undefined ? { prompt: normalizeRequestPromptSummary(input.kind, input.prompt) } : {}),
     ...(typeof input.sentAt === "number" ? { sentAt: input.sentAt } : {}),
     ...(typeof input.resolvedAt === "number" ? { resolvedAt: input.resolvedAt } : {}),
     ...(typeof input.failedAt === "number" ? { failedAt: input.failedAt } : {}),
@@ -85,12 +87,15 @@ function toRecord(input: unknown): NotificationRecord {
   }
 
   if (parsed.kind === "sessionError") {
-    if (parsed.routeKey !== undefined || parsed.handle !== undefined) {
+    if (parsed.routeKey !== undefined || parsed.handle !== undefined || parsed.prompt !== undefined) {
       throw new Error("invalid notification record format")
     }
   } else {
     if (!isNonEmptyString(parsed.routeKey) || !isNonEmptyString(parsed.handle)) {
       throw new Error("invalid notification record format")
+    }
+    if (parsed.prompt !== undefined) {
+      normalizeRequestPromptSummary(parsed.kind, parsed.prompt)
     }
   }
 

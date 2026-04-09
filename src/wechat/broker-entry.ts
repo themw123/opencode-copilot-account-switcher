@@ -25,6 +25,7 @@ import {
   findSentNotificationByRequest,
   markNotificationResolved,
 } from "./notification-store.js"
+import { buildQuestionAnswersFromReply } from "./question-interaction.js"
 
 type BrokerState = {
   pid: number
@@ -231,9 +232,18 @@ export function createBrokerWechatSlashCommandHandler(input: {
       if (!openQuestion) {
         return `未找到待回复问题：${command.handle}`
       }
+      let answers: QuestionAnswer[]
+      try {
+        answers = buildQuestionAnswersFromReply(
+          openQuestion.prompt && "mode" in openQuestion.prompt ? openQuestion.prompt : undefined,
+          command.text,
+        )
+      } catch (error) {
+        return error instanceof Error ? error.message : "问题回复格式无效"
+      }
       await input.client?.question?.reply?.(withOptionalDirectory({
         requestID: openQuestion.requestID,
-        answers: [[command.text]],
+        answers,
       }, input.directory))
       await markRequestAnswered({
         kind: "question",

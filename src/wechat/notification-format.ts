@@ -7,14 +7,53 @@ function formatHandle(handle: string | undefined, fallback: string): string {
   return fallback
 }
 
+function formatQuestionType(mode: string | undefined) {
+  if (mode === "multiple") return "多选"
+  if (mode === "single") return "单选"
+  return "文本"
+}
+
 export function formatWechatNotificationText(record: NotificationRecord): string {
   if (record.kind === "question") {
     const handle = formatHandle(record.handle, "q?")
+    const prompt = record.prompt
+    if (prompt && "mode" in prompt) {
+      const lines = [
+        `收到新的问题请求（${handle}）`,
+        prompt.title ?? prompt.body ?? "请在 OpenCode 中处理该问题。",
+        `类型：${formatQuestionType(prompt.mode)}`,
+      ]
+      if (Array.isArray(prompt.options) && prompt.options.length > 0) {
+        for (const option of prompt.options) {
+          lines.push(`${option.index}. ${option.label}`)
+        }
+      }
+      if (prompt.mode === "single") {
+        lines.push(`回复示例：/reply ${handle} 1`)
+      } else if (prompt.mode === "multiple") {
+        lines.push(`回复示例：/reply ${handle} 1,2`)
+      } else {
+        lines.push(`回复示例：/reply ${handle} 你的回答`)
+      }
+      return lines.join("\n")
+    }
     return `收到新的问题请求（${handle}），请在 OpenCode 中处理。`
   }
 
   if (record.kind === "permission") {
     const handle = formatHandle(record.handle, "p?")
+    const prompt = record.prompt
+    if (prompt && !('mode' in prompt)) {
+      const lines = [
+        `收到新的权限请求（${handle}）`,
+        prompt.title ?? "请在 OpenCode 中处理该权限请求。",
+        `类型：${prompt.type ?? "unknown"}`,
+        `允许一次：/allow ${handle} once`,
+        `始终允许：/allow ${handle} always`,
+        `拒绝：/allow ${handle} reject`,
+      ]
+      return lines.join("\n")
+    }
     return `收到新的权限请求（${handle}），请在 OpenCode 中处理。`
   }
 

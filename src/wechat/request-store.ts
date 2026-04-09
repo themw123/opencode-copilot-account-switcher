@@ -8,6 +8,7 @@ import {
   type WechatRequestKind,
 } from "./state-paths.js"
 import { assertValidHandleInput, createRouteKey, normalizeHandle } from "./handle.js"
+import { normalizeRequestPromptSummary, type RequestPromptSummary } from "./question-interaction.js"
 
 export type RequestStatus = "open" | "answered" | "rejected" | "expired" | "cleaned"
 
@@ -17,6 +18,7 @@ export type RequestRecord = {
   routeKey: string
   handle: string
   scopeKey?: string
+  prompt?: RequestPromptSummary
   wechatAccountId: string
   userId: string
   status: RequestStatus
@@ -34,6 +36,7 @@ function normalizeRecord(input: RequestRecord): RequestRecord {
     routeKey: input.routeKey,
     handle: input.handle,
     ...(isNonEmptyString(input.scopeKey) ? { scopeKey: input.scopeKey } : {}),
+    ...(input.prompt !== undefined ? { prompt: normalizeRequestPromptSummary(input.kind, input.prompt) } : {}),
     wechatAccountId: input.wechatAccountId,
     userId: input.userId,
     status: input.status,
@@ -97,6 +100,10 @@ function toRequestRecord(input: unknown): RequestRecord {
     !isRequestStatus(parsed.status)
   ) {
     throw new Error("invalid request record format")
+  }
+
+  if (parsed.prompt !== undefined) {
+    normalizeRequestPromptSummary(parsed.kind, parsed.prompt)
   }
 
   if (
