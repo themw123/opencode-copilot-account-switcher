@@ -1992,6 +1992,170 @@ test("broker-entry slash handler: /reply q1 done 命中 open question 并回写 
   assert.equal(typeof resolved.resolvedAt, "number")
 })
 
+test("broker-entry slash handler: /reply 文本题保持兼容并回写自由文本 answers", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-reply-text-mode`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-reply-text-mode-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-reply-text-mode-request-store`)
+
+  const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-reply-text-1" })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-reply-text-1",
+    routeKey,
+    handle: "qtext1",
+    wechatAccountId: "wx-reply-text",
+    userId: "u-reply-text",
+    createdAt: 1_700_600_200_000,
+    prompt: {
+      title: "补充说明",
+      mode: "text",
+    },
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async (input) => {
+          replyCalls.push(input)
+          return { data: true }
+        },
+      },
+      permission: {},
+    },
+  })
+
+  const result = await handler({ type: "reply", handle: "qtext1", text: "hello world" })
+  assert.equal(result, "已回复问题：qtext1")
+  assert.deepEqual(replyCalls, [{ requestID: "q-reply-text-1", answers: [["hello world"]] }])
+})
+
+test("broker-entry slash handler: /reply 单选题把编号转成结构化答案", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-reply-single-mode`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-reply-single-mode-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-reply-single-mode-request-store`)
+
+  const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-reply-single-1" })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-reply-single-1",
+    routeKey,
+    handle: "qsingle1",
+    wechatAccountId: "wx-reply-single",
+    userId: "u-reply-single",
+    createdAt: 1_700_600_210_000,
+    prompt: {
+      title: "请选择发布环境",
+      mode: "single",
+      options: [
+        { index: 1, label: "staging", value: "staging" },
+        { index: 2, label: "production", value: "production" },
+      ],
+    },
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async (input) => {
+          replyCalls.push(input)
+          return { data: true }
+        },
+      },
+      permission: {},
+    },
+  })
+
+  const result = await handler({ type: "reply", handle: "qsingle1", text: "2" })
+  assert.equal(result, "已回复问题：qsingle1")
+  assert.deepEqual(replyCalls, [{ requestID: "q-reply-single-1", answers: [["production"]] }])
+})
+
+test("broker-entry slash handler: /reply 多选题把逗号编号转成结构化答案", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-reply-multiple-mode`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-reply-multiple-mode-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-reply-multiple-mode-request-store`)
+
+  const replyCalls = []
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-reply-multiple-1" })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-reply-multiple-1",
+    routeKey,
+    handle: "qmulti1",
+    wechatAccountId: "wx-reply-multi",
+    userId: "u-reply-multi",
+    createdAt: 1_700_600_220_000,
+    prompt: {
+      title: "请选择需要通知的环境",
+      mode: "multiple",
+      options: [
+        { index: 1, label: "staging", value: "staging" },
+        { index: 2, label: "production", value: "production" },
+        { index: 3, label: "preview", value: "preview" },
+      ],
+    },
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async (input) => {
+          replyCalls.push(input)
+          return { data: true }
+        },
+      },
+      permission: {},
+    },
+  })
+
+  const result = await handler({ type: "reply", handle: "qmulti1", text: "1,3" })
+  assert.equal(result, "已回复问题：qmulti1")
+  assert.deepEqual(replyCalls, [{ requestID: "q-reply-multiple-1", answers: [["staging", "preview"]] }])
+})
+
+test("broker-entry slash handler: /reply 非法编号会返回稳定中文提示", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-reply-invalid-mode`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-reply-invalid-mode-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-reply-invalid-mode-request-store`)
+
+  const routeKey = handle.createRouteKey({ kind: "question", requestID: "q-reply-invalid-1" })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-reply-invalid-1",
+    routeKey,
+    handle: "qinvalid1",
+    wechatAccountId: "wx-reply-invalid",
+    userId: "u-reply-invalid",
+    createdAt: 1_700_600_230_000,
+    prompt: {
+      title: "请选择发布环境",
+      mode: "single",
+      options: [
+        { index: 1, label: "staging", value: "staging" },
+        { index: 2, label: "production", value: "production" },
+      ],
+    },
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async () => ({ data: true }),
+      },
+      permission: {},
+    },
+  })
+
+  const result = await handler({ type: "reply", handle: "qinvalid1", text: "3" })
+  assert.match(result, /选项编号超出范围|无效选项|编号/)
+})
+
 test("broker-entry slash handler: /allow p1 always safe 命中 open permission 并回写 answered + resolved", async () => {
   const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-allow-handler`)
   const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-allow-handler-handle`)

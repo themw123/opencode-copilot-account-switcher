@@ -23,6 +23,7 @@ import {
 import { readOperatorBinding } from "./operator-store.js"
 import { createHandle, createRouteKey } from "./handle.js"
 import type { WechatNotificationCandidate } from "./protocol.js"
+import { extractPermissionPromptSummary, extractQuestionPromptSummary } from "./question-interaction.js"
 
 type SessionMessages = Array<{ info: Message; parts: Part[] }>
 
@@ -518,6 +519,7 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
           createdAt: Date.now(),
           routeKey,
           handle,
+          prompt: extractQuestionPromptSummary(question),
         })
       }
     }
@@ -538,6 +540,7 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
           createdAt: Date.now(),
           routeKey,
           handle,
+          prompt: extractPermissionPromptSummary(permission),
         })
       }
     }

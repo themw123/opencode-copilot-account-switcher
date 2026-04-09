@@ -122,6 +122,34 @@ test("scopeKey 会持久化到 request 记录，并支持按 scope 批量 expire
   assert.equal(untouched?.status, "open")
 })
 
+test("question request 会持久化题面摘要与选项元数据", async () => {
+  const created = await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-structured-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "q-structured-1" }),
+    handle: "q31",
+    wechatAccountId: "wx-structured",
+    userId: "u-structured",
+    createdAt: 1_700_600_000_000,
+    prompt: {
+      title: "请选择发布环境",
+      mode: "single",
+      options: [
+        { index: 1, label: "staging", value: "staging" },
+        { index: 2, label: "production", value: "production" },
+      ],
+    },
+  })
+
+  const stored = await requestStore.findRequestByRouteKey({
+    kind: "question",
+    routeKey: created.routeKey,
+  })
+
+  assert.equal(stored?.prompt?.mode, "single")
+  assert.equal(stored?.prompt?.options?.[1]?.value, "production")
+})
+
 test("request identity 查询对大小写与首尾空白归一化后仍命中同一 open 记录", async () => {
   const created = await requestStore.upsertRequest({
     kind: "question",
