@@ -8,15 +8,37 @@ import {
 } from "./notification-store.js"
 import { formatWechatNotificationText } from "./notification-format.js"
 import type { NotificationKind } from "./notification-types.js"
+import type { NotificationRecord } from "./notification-types.js"
 import { findRequestByRouteKey } from "./request-store.js"
+import { isLiveTokenState, readTokenState } from "./token-store.js"
 
 export type WechatNotificationSendInput = {
   to: string
   text: string
+  contextToken?: string
+}
+
+export type WechatNotificationDeliveryFailureInput = {
+  kind: NotificationKind
+  routeKey?: string
+  scopeKey?: string
+  wechatAccountId: string
+  userId: string
+  registrationEpoch?: string
+}
+
+type NotificationStateOps = {
+  listPendingNotifications: typeof listPendingNotifications
+  markNotificationResolved: typeof markNotificationResolved
+  markNotificationFailed: typeof markNotificationFailed
+  markNotificationSent: typeof markNotificationSent
+  purgeTerminalNotificationsBefore: typeof purgeTerminalNotificationsBefore
 }
 
 type CreateWechatNotificationDispatcherInput = {
   sendMessage: (input: WechatNotificationSendInput) => Promise<unknown>
+  onDeliveryFailed?: (input: WechatNotificationDeliveryFailureInput) => Promise<void> | void
+  notificationStateOps?: Partial<NotificationStateOps>
 }
 
 type WechatNotificationDispatcher = {
@@ -82,10 +104,14 @@ function isNotSuppressibleStateError(error: unknown): boolean {
 
 async function shouldSuppressPendingNotification(record: {
   kind: NotificationKind
+  createdAt: number
+  wechatAccountId: string
+  userId: string
   routeKey?: string
 }): Promise<boolean> {
   if (record.kind === "sessionError") {
-    return false
+    const tokenState = await readTokenState(record.wechatAccountId, record.userId).catch(() => undefined)
+    return isLiveTokenState(tokenState) && tokenState.updatedAt > record.createdAt
   }
   if (typeof record.routeKey !== "string" || record.routeKey.trim().length === 0) {
     return false
@@ -96,21 +122,53 @@ async function shouldSuppressPendingNotification(record: {
     routeKey: record.routeKey,
   })
   if (!request) {
-    return false
+    return true
   }
   return request.status !== "open"
+}
+
+function isNotFailWritableStateError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  return /not pending/i.test(error.message)
+}
+
+export async function suppressPreparedPendingNotifications(records: NotificationRecord[]): Promise<void> {
+  for (const record of records) {
+    try {
+      await markNotificationResolved({
+        idempotencyKey: record.idempotencyKey,
+        resolvedAt: Date.now(),
+        suppressed: true,
+      })
+    } catch (error) {
+      if (!isNotSuppressibleStateError(error)) {
+        throw error
+      }
+    }
+  }
 }
 
 export function createWechatNotificationDispatcher(
   input: CreateWechatNotificationDispatcherInput,
 ): WechatNotificationDispatcher {
+  const notificationStateOps: NotificationStateOps = {
+    listPendingNotifications,
+    markNotificationResolved,
+    markNotificationFailed,
+    markNotificationSent,
+    purgeTerminalNotificationsBefore,
+    ...input.notificationStateOps,
+  }
+
   return {
     drainOutboundMessages: async () => {
       const retentionMs = toPositiveNumber(
         process.env.WECHAT_NOTIFICATION_TERMINAL_RETENTION_MS,
         DEFAULT_NOTIFICATION_TERMINAL_RETENTION_MS,
       )
-      await purgeTerminalNotificationsBefore({
+      await notificationStateOps.purgeTerminalNotificationsBefore({
         cutoffAt: Date.now() - retentionMs,
       })
 
@@ -128,11 +186,11 @@ export function createWechatNotificationDispatcher(
         return
       }
 
-      const pending = await listPendingNotifications()
+      const pending = await notificationStateOps.listPendingNotifications()
       for (const record of pending) {
         if (await shouldSuppressPendingNotification(record)) {
           try {
-            await markNotificationResolved({
+            await notificationStateOps.markNotificationResolved({
               idempotencyKey: record.idempotencyKey,
               resolvedAt: Date.now(),
               suppressed: true,
@@ -152,34 +210,66 @@ export function createWechatNotificationDispatcher(
           continue
         }
 
+        const tokenState = await readTokenState(record.wechatAccountId, record.userId).catch(() => undefined)
+        if (tokenState && !isLiveTokenState(tokenState)) {
+          continue
+        }
+
         try {
           await input.sendMessage({
             to: targetUserId,
             text: formatWechatNotificationText(record),
+            ...(isLiveTokenState(tokenState) ? { contextToken: tokenState.contextToken } : {}),
           })
         } catch (error) {
+          let markFailedError: unknown
+          let persistedFailed = false
           try {
-            await markNotificationFailed({
+            await notificationStateOps.markNotificationFailed({
               idempotencyKey: record.idempotencyKey,
               failedAt: Date.now(),
               reason: toErrorMessage(error),
             })
+            persistedFailed = true
           } catch (markError) {
-            if (!isNotPendingStateError(markError)) {
-              throw markError
+            if (!isNotFailWritableStateError(markError)) {
+              markFailedError = markError
             }
+          }
+          if (persistedFailed) {
+            await input.onDeliveryFailed?.({
+              kind: record.kind,
+              routeKey: record.routeKey,
+              scopeKey: record.scopeKey,
+              wechatAccountId: record.wechatAccountId,
+              userId: record.userId,
+              registrationEpoch: record.registrationEpoch,
+            })
+          }
+          if (markFailedError) {
+            throw markFailedError
           }
           continue
         }
 
         try {
-          await markNotificationSent({
+          await notificationStateOps.markNotificationSent({
             idempotencyKey: record.idempotencyKey,
             sentAt: Date.now(),
           })
         } catch (error) {
           if (!isNotPendingStateError(error)) {
-            throw error
+            try {
+              await notificationStateOps.markNotificationFailed({
+                idempotencyKey: record.idempotencyKey,
+                failedAt: Date.now(),
+                reason: `notification delivered but sent persistence failed: ${toErrorMessage(error)}`,
+              })
+            } catch (markFailedError) {
+              if (!isNotFailWritableStateError(markFailedError)) {
+                throw markFailedError
+              }
+            }
           }
         }
       }

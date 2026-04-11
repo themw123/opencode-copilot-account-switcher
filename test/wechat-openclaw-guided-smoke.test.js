@@ -6,6 +6,9 @@ import path from "node:path"
 import os from "node:os"
 
 const DIST_GUIDED_MODULE = "../dist/wechat/compat/openclaw-guided-smoke.js"
+const DIST_RUNTIME_MODULE = "../dist/wechat/wechat-status-runtime.js"
+const DIST_SLASH_GUARD_MODULE = "../dist/wechat/compat/slash-guard.js"
+const PRODUCTIZED_NON_SLASH_WARNING_TEXT = "PoC 当前仅支持命令型交互，请使用 slash 命令（/status、/reply、/allow）"
 
 function createUnifiedPublicHelpersLoader(overrides = {}) {
   return async () => ({
@@ -596,6 +599,16 @@ test("guided smoke uses default non-slash verification when no override is provi
   assert.match(content, /hello 1/)
 })
 
+test("命令型交互 slash-only 文案在 runtime、compat host 与 guided smoke 路径保持一致", async () => {
+  const guided = await import(`${DIST_GUIDED_MODULE}?reload=${Date.now()}`)
+  const runtime = await import(`${DIST_RUNTIME_MODULE}?reload=${Date.now()}`)
+  const slashGuard = await import(`${DIST_SLASH_GUARD_MODULE}?reload=${Date.now()}`)
+
+  assert.equal(runtime.DEFAULT_NON_SLASH_REPLY_TEXT, PRODUCTIZED_NON_SLASH_WARNING_TEXT)
+  assert.equal(slashGuard.STAGE_A_SLASH_ONLY_MESSAGE, PRODUCTIZED_NON_SLASH_WARNING_TEXT)
+  assert.equal(guided.NON_SLASH_WARNING_TEXT_FOR_TEST, PRODUCTIZED_NON_SLASH_WARNING_TEXT)
+})
+
 test("guided smoke non-slash verification requires 10\/10 and writes count evidence", async () => {
   const guided = await import(DIST_GUIDED_MODULE)
   const evidenceBaseDir = await mkdtemp(path.join(os.tmpdir(), "guided-smoke-test-"))
@@ -656,12 +669,12 @@ test("guided smoke writes sequential non-slash evidence from 007-nonslash-warnin
       attempts: [
         {
           inbound: { text: "hello-1", userId: "u-1", messageId: "m-1" },
-          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
           persisted: true,
         },
         {
           inbound: { text: "hello-2", userId: "u-1", messageId: "m-2" },
-          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
           persisted: true,
         },
       ],
@@ -722,7 +735,7 @@ test("guided smoke blocks when sanitized non-slash evidence still contains sensi
       attempts: [
         {
           inbound: { text: "hello", userId: "u-1", messageId: "m-1", ContextToken: "ctx-raw-123" },
-          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
           persisted: true,
         },
       ],
@@ -755,7 +768,7 @@ test("guided smoke updates go-no-go and writes 090-key-fields-check evidence", a
       failedChecks: [],
       attempts: Array.from({ length: 10 }, (_, index) => ({
         inbound: { text: `hello-${index + 1}`, userId: "u-1", messageId: `m-${index + 1}` },
-        warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+        warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
         persisted: true,
       })),
       keyFieldsCheck: {
@@ -884,7 +897,7 @@ test("guided smoke records final status when go-no-go update fails", async () =>
       failedChecks: [],
       attempts: Array.from({ length: 10 }, (_, index) => ({
         inbound: { text: `hello-${index + 1}`, userId: "u-1", messageId: `m-${index + 1}` },
-        warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+        warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
         persisted: true,
       })),
       keyFieldsCheck: {
@@ -988,7 +1001,7 @@ test("guided smoke accepts normalized real slash inbound structures without raw 
       total: 10,
       attempts: Array.from({ length: 10 }, (_, index) => ({
         inbound: { text: `hello-${index + 1}`, userId: "u-1", messageId: `m-${index + 1}` },
-        warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+        warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
         persisted: true,
       })),
       keyFieldsCheck: {
@@ -1391,13 +1404,13 @@ test("guided smoke prints step-by-step prompts after each confirmed stage", asyn
         {
           input: "hello 1",
           inbound: { text: "hello 1" },
-          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
           persisted: true,
         },
         {
           input: "hello 2",
           inbound: { text: "hello 2" },
-          warningReply: { ok: true, text: "请使用 slash 命令（/status、/reply、/allow）" },
+          warningReply: { ok: true, text: PRODUCTIZED_NON_SLASH_WARNING_TEXT },
           persisted: true,
         },
       ],

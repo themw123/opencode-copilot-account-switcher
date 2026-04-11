@@ -6,7 +6,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { mkdtemp, readFile, stat, access, writeFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, stat, access, writeFile, rm, readdir } from "node:fs/promises"
 import { mkdirSync, readFileSync } from "node:fs"
 
 const DIST_PROTOCOL_MODULE = "../dist/wechat/protocol.js"
@@ -162,6 +162,25 @@ async function waitForFileText(filePath, predicate, timeoutMs = 5000) {
     await delay(50)
   }
   throw new Error(`timeout waiting for file text: ${filePath}`)
+}
+
+async function waitForNotificationRecords(notificationDir, fileNamePredicate, predicate, timeoutMs = 5000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const files = (await readdir(notificationDir)).filter((fileName) => fileNamePredicate(fileName))
+      const records = await Promise.all(
+        files.map(async (fileName) => JSON.parse(await readFile(path.join(notificationDir, fileName), "utf8"))),
+      )
+      if (predicate(records)) {
+        return records
+      }
+    } catch {
+      // keep polling
+    }
+    await delay(50)
+  }
+  throw new Error(`timeout waiting for notification records: ${notificationDir}`)
 }
 
 function spawnBrokerEntry({ endpoint, xdgConfigHome, extraEnv = {} }) {
@@ -1426,7 +1445,7 @@ test("broker-client 收到坏帧时应失败当前等待请求，而不是抛出
   }
 })
 
-test("同连接同 instanceID 注册幂等；新连接接管后旧 token 失效；同 pid 不同 instanceID 可共存", async () => {
+test("同连接同 instanceID 重注册会刷新 token/registrationEpoch；新连接接管后旧 token 失效；同 pid 不同 instanceID 可共存", async () => {
   const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-register-state-machine-"))
   const endpoint = createBrokerEndpoint(sandboxConfigHome)
   const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
@@ -1449,11 +1468,11 @@ test("同连接同 instanceID 注册幂等；新连接接管后旧 token 失效�
       payload: { pid: 12345 },
     })
 
-    assert.equal(firstAck.type, "registerAck")
-    assert.equal(secondAck.type, "registerAck")
-    assert.equal(firstAck.payload.sessionToken, secondAck.payload.sessionToken)
-    assert.equal(firstAck.payload.registeredAt, secondAck.payload.registeredAt)
-    assert.equal(firstAck.payload.brokerPid, secondAck.payload.brokerPid)
+     assert.equal(firstAck.type, "registerAck")
+     assert.equal(secondAck.type, "registerAck")
+     assert.notEqual(firstAck.payload.sessionToken, secondAck.payload.sessionToken)
+     assert.notEqual(firstAck.payload.registrationEpoch, secondAck.payload.registrationEpoch)
+     assert.equal(firstAck.payload.brokerPid, secondAck.payload.brokerPid)
 
     const connB = await createPersistentConnection(endpoint)
     const takeoverAck = await connB.send({
@@ -1934,6 +1953,241 @@ test("非法 instanceID 注册应被拒绝，且不会写出越界快照文件",
       "../escape-out.json",
     )
     await assert.rejects(() => access(escapedPath), (error) => error?.code === "ENOENT")
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("broker 通知合并：短窗口内重复 question 候选只保留一个待发送通知", async () => {
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-notification-merge-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const wechatStateRoot = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat")
+  const operatorPath = path.join(wechatStateRoot, "operator.json")
+  const notificationsDir = path.join(wechatStateRoot, "notifications")
+
+  mkdirSync(path.dirname(operatorPath), { recursive: true })
+  await writeFile(
+    operatorPath,
+    JSON.stringify({
+      wechatAccountId: "wx-merge",
+      userId: "u-merge",
+      boundAt: Date.now(),
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({ endpoint, xdgConfigHome: sandboxConfigHome })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+
+    const client = await brokerClient.connect(endpoint, {
+      bridge: {
+        collectNotificationCandidates: async () => {
+          const createdAt = Date.now()
+          return [
+            {
+              idempotencyKey: "notif-merge-question-1",
+              kind: "question",
+              requestID: "question-merge-1",
+              createdAt,
+              routeKey: "question-merge-1",
+              handle: "q1",
+            },
+            {
+              idempotencyKey: "notif-merge-question-2",
+              kind: "question",
+              requestID: "question-merge-1",
+              createdAt: createdAt + 100,
+              routeKey: "question-merge-1",
+              handle: "q1",
+            },
+          ]
+        },
+      },
+    })
+
+    try {
+      await client.registerInstance({ instanceID: "instance-merge-question", pid: process.pid })
+
+      await waitForNotificationRecords(
+        notificationsDir,
+        (fileName) => fileName.startsWith("notif-merge-question-"),
+        (items) => items.length >= 1,
+      )
+      await delay(300)
+      const records = await waitForNotificationRecords(
+        notificationsDir,
+        (fileName) => fileName.startsWith("notif-merge-question-"),
+        () => true,
+      )
+
+      assert.equal(records.filter((record) => record.status === "pending").length, 1)
+      assert.equal(new Set(records.map((record) => record.routeKey)).size, 1)
+      assert.equal(new Set(records.map((record) => record.handle)).size, 1)
+    } finally {
+      await client.close()
+    }
+  } finally {
+    await terminateChild(child)
+    childProcesses.delete(child)
+  }
+})
+
+test("broker 通知合并：重复候选不会先以 pending 进入可发送集合再被 suppress", async () => {
+  const brokerServer = await import(DIST_BROKER_SERVER_MODULE)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const notificationStore = await import("../dist/wechat/notification-store.js")
+  const operatorStore = await import("../dist/wechat/operator-store.js")
+
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-notification-race-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const notificationsDir = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "notifications")
+  const previousStateRoot = process.env.WECHAT_STATE_ROOT_OVERRIDE
+  const persistedStatuses = []
+
+  process.env.WECHAT_STATE_ROOT_OVERRIDE = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat")
+  notificationStore.setNotificationStoreTestHooks({
+    afterWriteNotification: async (record) => {
+      if (record.idempotencyKey.startsWith("notif-race-question-")) {
+        persistedStatuses.push({ idempotencyKey: record.idempotencyKey, status: record.status })
+      }
+    },
+  })
+
+  const server = await brokerServer.startBrokerServer(endpoint)
+
+  try {
+    await operatorStore.rebindOperator({
+      wechatAccountId: "wx-race",
+      userId: "u-race",
+      boundAt: Date.now(),
+    })
+
+    const client = await brokerClient.connect(server.endpoint, {
+      bridge: {
+        collectNotificationCandidates: async () => {
+          const createdAt = Date.now()
+          return [
+            {
+              idempotencyKey: "notif-race-question-1",
+              kind: "question",
+              requestID: "question-race-1",
+              createdAt,
+              routeKey: "question-race-1",
+              handle: "q1",
+            },
+            {
+              idempotencyKey: "notif-race-question-2",
+              kind: "question",
+              requestID: "question-race-1",
+              createdAt: createdAt + 100,
+              routeKey: "question-race-1",
+              handle: "q1",
+            },
+          ]
+        },
+      },
+    })
+
+    try {
+      await client.registerInstance({ instanceID: "instance-race-question", pid: process.pid })
+      await waitForNotificationRecords(
+        notificationsDir,
+        (fileName) => fileName.startsWith("notif-race-question-"),
+        (items) => items.length === 2,
+      )
+
+      assert.deepEqual(
+        persistedStatuses.filter((entry) => entry.idempotencyKey === "notif-race-question-2").map((entry) => entry.status),
+        ["suppressed"],
+      )
+
+      const pending = await notificationStore.listPendingNotifications()
+      assert.equal(pending.filter((record) => record.idempotencyKey.startsWith("notif-race-question-")).length, 1)
+    } finally {
+      await client.close()
+    }
+  } finally {
+    notificationStore.setNotificationStoreTestHooks(undefined)
+    if (previousStateRoot === undefined) {
+      delete process.env.WECHAT_STATE_ROOT_OVERRIDE
+    } else {
+      process.env.WECHAT_STATE_ROOT_OVERRIDE = previousStateRoot
+    }
+    await server.close()
+  }
+})
+
+test("broker 通知合并不会吞掉不同 handle 的 question 通知", async () => {
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-notification-distinct-"))
+  const endpoint = createBrokerEndpoint(sandboxConfigHome)
+  const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const wechatStateRoot = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat")
+  const operatorPath = path.join(wechatStateRoot, "operator.json")
+  const notificationsDir = path.join(wechatStateRoot, "notifications")
+
+  mkdirSync(path.dirname(operatorPath), { recursive: true })
+  await writeFile(
+    operatorPath,
+    JSON.stringify({
+      wechatAccountId: "wx-distinct",
+      userId: "u-distinct",
+      boundAt: Date.now(),
+    }, null, 2),
+    "utf8",
+  )
+
+  const child = spawnBrokerEntry({ endpoint, xdgConfigHome: sandboxConfigHome })
+
+  try {
+    await waitForBrokerMetadata(brokerJsonPath)
+
+    const client = await brokerClient.connect(endpoint, {
+      bridge: {
+        collectNotificationCandidates: async () => {
+          const createdAt = Date.now()
+          return [
+            {
+              idempotencyKey: "notif-distinct-question-1",
+              kind: "question",
+              requestID: "question-distinct-1",
+              createdAt,
+              routeKey: "question-distinct-1",
+              handle: "q1",
+            },
+            {
+              idempotencyKey: "notif-distinct-question-2",
+              kind: "question",
+              requestID: "question-distinct-2",
+              createdAt: createdAt + 100,
+              routeKey: "question-distinct-2",
+              handle: "q2",
+            },
+          ]
+        },
+      },
+    })
+
+    try {
+      await client.registerInstance({ instanceID: "instance-distinct-question", pid: process.pid })
+
+      const records = await waitForNotificationRecords(
+        notificationsDir,
+        (fileName) => fileName.startsWith("notif-distinct-question-"),
+        (items) => items.filter((item) => item.status === "pending").length === 2,
+      )
+
+      assert.equal(records.filter((record) => record.status === "pending").length, 2)
+      assert.equal(new Set(records.map((record) => record.routeKey)).size, 2)
+      assert.equal(new Set(records.map((record) => record.handle)).size, 2)
+    } finally {
+      await client.close()
+    }
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)

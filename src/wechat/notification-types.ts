@@ -9,10 +9,12 @@ export type NotificationRecord = {
   kind: NotificationKind
   wechatAccountId: string
   userId: string
+  registrationEpoch?: string
   createdAt: number
   status: NotificationStatus
   routeKey?: string
   handle?: string
+  scopeKey?: string
   prompt?: RequestPromptSummary
   sentAt?: number
   resolvedAt?: number

@@ -1033,6 +1033,16 @@ export function buildPluginHooks(input: {
           serverUrl: input.serverUrl,
           statusCollectionEnabled: true,
           getActiveSessionID: () => getWechatBridgeActiveSessionID(wechatBridgeSessionContext),
+          onFallbackToast: async (payload) => {
+            await showStatusToast({
+              client: input.client,
+              message: payload.message,
+              variant: "warning",
+              warn: (scope, error) => {
+                console.warn(`[${scope}] failed to show toast`, error)
+              },
+            })
+          },
         })
       },
     }).catch(() => {})

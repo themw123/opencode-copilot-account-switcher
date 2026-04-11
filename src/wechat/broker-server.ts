@@ -1,5 +1,6 @@
 import net from "node:net"
 import path from "node:path"
+import { randomUUID } from "node:crypto"
 import { appendFile, chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { createBrokerSocket, isTcpBrokerEndpoint, listenOnBrokerEndpoint } from "./broker-endpoint.js"
 import { registerConnection, revokeSessionToken, validateSessionToken } from "./ipc-auth.js"
@@ -10,10 +11,16 @@ import {
   type BrokerEnvelope,
   type BrokerMessageType,
   type CollectStatusPayload,
+  SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON,
   type SyncWechatNotificationsPayload,
+  type ShowFallbackToastPayload,
   type StatusSnapshotPayload,
   type WechatNotificationCandidate,
 } from "./protocol.js"
+import {
+  createBrokerMutationQueue,
+  executeFallbackToastMutation,
+} from "./broker-mutation-queue.js"
 import {
   WECHAT_DIR_MODE,
   WECHAT_FILE_MODE,
@@ -23,7 +30,7 @@ import {
 } from "./state-paths.js"
 import { formatAggregatedStatusReply } from "./status-format.js"
 import type { WechatSlashCommand } from "./command-parser.js"
-import { upsertNotification } from "./notification-store.js"
+import { findMergeableNotification, upsertNotification } from "./notification-store.js"
 import { readOperatorBinding } from "./operator-store.js"
 import { createHandle, createRouteKey } from "./handle.js"
 import {
@@ -36,6 +43,11 @@ import {
   type RequestRecord,
 } from "./request-store.js"
 import { purgeDeadLettersBefore, writeDeadLetter } from "./dead-letter-store.js"
+import { markTokenStale } from "./token-store.js"
+import {
+  createDeliveryFailedFallbackToastPayload,
+  WECHAT_FALLBACK_TOAST_MESSAGE,
+} from "./notification-format.js"
 
 const FUTURE_MESSAGE_TYPES = new Set<BrokerMessageType>([
   "collectStatus",
@@ -66,6 +78,21 @@ function writeEnvelope(socket: net.Socket, envelope: BrokerEnvelope) {
   socket.write(serializeEnvelope(envelope))
 }
 
+function writeFallbackToastEnvelope(input: {
+  instanceID: string
+  socket: net.Socket
+  sessionToken: string
+  payload: ShowFallbackToastPayload
+}) {
+  writeEnvelope(input.socket, {
+    id: `showFallbackToast-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: "showFallbackToast",
+    instanceID: input.instanceID,
+    sessionToken: input.sessionToken,
+    payload: input.payload,
+  })
+}
+
 function writeError(
   socket: net.Socket,
   code: "unauthorized" | "invalidMessage" | "notImplemented" | "brokerUnavailable",
@@ -88,6 +115,7 @@ type RegistrationRecord = {
   socket: net.Socket
   sessionToken: string
   registeredAt: number
+  registrationEpoch: string
   brokerPid: number
 }
 
@@ -134,14 +162,43 @@ const snapshotByInstanceID = new Map<string, InstanceSnapshot>()
 const snapshotPersistQueueByInstanceID = new Map<string, Promise<void>>()
 const pendingCollectStatusByRequestId = new Map<string, PendingCollectStatus>()
 let syncWechatNotificationsChain: Promise<void> = Promise.resolve()
+let brokerMutationQueue = createBrokerMutationQueue()
+
+function queueBrokerMutation<T>(mutationType: string, task: () => Promise<T>): Promise<T> {
+  return brokerMutationQueue.enqueue(mutationType, task)
+}
 
 type WechatBrokerDiagnosticEvent = {
-  type: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged" | "deadLetterWritten" | "deadLetterPurged"
-  code: "instanceStale" | "instanceRecovered" | "requestExpired" | "requestCleaned" | "requestPurged" | "deadLetterWritten" | "deadLetterPurged"
+  type:
+    | "instanceStale"
+    | "instanceRecovered"
+    | "requestExpired"
+    | "requestCleaned"
+    | "requestPurged"
+    | "deadLetterWritten"
+    | "deadLetterPurged"
+    | "showFallbackToast"
+    | "fallbackToastDropped"
+  code:
+    | "instanceStale"
+    | "instanceRecovered"
+    | "requestExpired"
+    | "requestCleaned"
+    | "requestPurged"
+    | "deadLetterWritten"
+    | "deadLetterPurged"
+    | "showFallbackToast"
+    | "fallbackToastDropped"
   instanceID: string
   kind?: "question" | "permission"
   routeKey?: string
   reason?: string
+  registrationEpoch?: string
+  liveRegistrationEpoch?: string
+}
+
+function createRegistrationEpoch(): string {
+  return randomUUID()
 }
 
 async function appendBrokerDiagnostic(event: WechatBrokerDiagnosticEvent) {
@@ -166,6 +223,7 @@ function clearRuntimeState() {
   snapshotPersistQueueByInstanceID.clear()
   pendingCollectStatusByRequestId.clear()
   syncWechatNotificationsChain = Promise.resolve()
+  brokerMutationQueue = createBrokerMutationQueue()
 }
 
 function toPositiveNumber(rawValue: string | undefined, fallback: number): number {
@@ -620,60 +678,52 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
     }
 
     const instanceID = envelope.instanceID as string
-    const existing = registrationByInstanceID.get(instanceID)
-
-    if (existing && existing.socket === socket) {
-      try {
-        await upsertConnectedSnapshot(instanceID, envelope.payload, Date.now())
-      } catch {
-        writeError(socket, "brokerUnavailable", "failed to persist instance snapshot", requestId)
-        return
-      }
-
-      writeEnvelope(socket, {
-        id: `registerAck-${requestId}`,
-        type: "registerAck",
-        instanceID,
-        payload: {
-          sessionToken: existing.sessionToken,
-          registeredAt: existing.registeredAt,
-          brokerPid: existing.brokerPid,
-        },
-      })
-      return
+    let registerAckPayload: {
+      sessionToken: string
+      registeredAt: number
+      registrationEpoch: string
+      brokerPid: number
     }
-
-    const registeredAt = Date.now()
     try {
-      await upsertConnectedSnapshot(instanceID, envelope.payload, registeredAt)
+      registerAckPayload = await queueBrokerMutation("registerInstance", async () => {
+        const existing = registrationByInstanceID.get(instanceID)
+
+        const registeredAt = Date.now()
+        const registrationEpoch = createRegistrationEpoch()
+        await upsertConnectedSnapshot(instanceID, envelope.payload, registeredAt)
+
+        const sessionToken = registerConnection(instanceID, { socket })
+        const nextRecord: RegistrationRecord = {
+          socket,
+          sessionToken,
+          registeredAt,
+          registrationEpoch,
+          brokerPid: process.pid,
+        }
+        registrationByInstanceID.set(instanceID, nextRecord)
+        bindSocketInstance(socket, instanceID)
+
+        if (existing && existing.socket !== socket) {
+          unbindSocketInstance(existing.socket, instanceID)
+        }
+
+        return {
+          sessionToken,
+          registeredAt: nextRecord.registeredAt,
+          registrationEpoch: nextRecord.registrationEpoch,
+          brokerPid: nextRecord.brokerPid,
+        }
+      })
     } catch {
       writeError(socket, "brokerUnavailable", "failed to persist instance snapshot", requestId)
       return
-    }
-
-    const sessionToken = registerConnection(instanceID, { socket })
-    const nextRecord: RegistrationRecord = {
-      socket,
-      sessionToken,
-      registeredAt,
-      brokerPid: process.pid,
-    }
-    registrationByInstanceID.set(instanceID, nextRecord)
-    bindSocketInstance(socket, instanceID)
-
-    if (existing && existing.socket !== socket) {
-      unbindSocketInstance(existing.socket, instanceID)
     }
 
     writeEnvelope(socket, {
       id: `registerAck-${requestId}`,
       type: "registerAck",
       instanceID,
-      payload: {
-        sessionToken,
-        registeredAt: nextRecord.registeredAt,
-        brokerPid: nextRecord.brokerPid,
-      },
+      payload: registerAckPayload,
     })
     return
   }
@@ -744,6 +794,13 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
       return
     }
 
+    const capturedRegistration = isNonEmptyString(envelope.instanceID)
+      ? registrationByInstanceID.get(envelope.instanceID)
+      : undefined
+    const capturedRegistrationEpoch = capturedRegistration && capturedRegistration.sessionToken === envelope.sessionToken
+      ? capturedRegistration.registrationEpoch
+      : undefined
+
     const binding = await readOperatorBinding().catch(() => undefined)
     if (!binding) {
       return
@@ -757,6 +814,7 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
             kind: "sessionError",
             wechatAccountId: binding.wechatAccountId,
             userId: binding.userId,
+            registrationEpoch: capturedRegistrationEpoch,
             createdAt: candidate.createdAt,
           })
           continue
@@ -805,16 +863,37 @@ async function handleMessage(envelope: BrokerEnvelope, socket: net.Socket): Prom
           canonicalHandle = created.handle
         }
 
+        const notificationScopeKey = existingOpen?.scopeKey ?? envelope.instanceID
+        if (!isNonEmptyString(notificationScopeKey)) {
+          continue
+        }
+
+        const mergeableNotification = await findMergeableNotification({
+          kind: candidate.kind,
+          routeKey: canonicalRouteKey,
+          handle: canonicalHandle,
+          scopeKey: notificationScopeKey,
+          createdAt: candidate.createdAt,
+          excludeIdempotencyKey: candidate.idempotencyKey,
+        })
+
         await upsertNotification({
           idempotencyKey: candidate.idempotencyKey,
           kind: candidate.kind,
           wechatAccountId: binding.wechatAccountId,
           userId: binding.userId,
+          registrationEpoch: capturedRegistrationEpoch,
           routeKey: canonicalRouteKey,
           handle: canonicalHandle,
+          scopeKey: notificationScopeKey,
           prompt: candidate.prompt,
           createdAt: candidate.createdAt,
-        })
+        }, mergeableNotification
+          ? {
+              initialStatus: "suppressed",
+              suppressedAt: Date.now(),
+            }
+          : undefined)
       }
     })
     return
@@ -870,6 +949,12 @@ export type BrokerServerHandle = {
   startedAt: number
   collectStatus: () => Promise<CollectStatusResult>
   handleWechatSlashCommand: (command: WechatSlashCommand) => Promise<string>
+  handleNotificationDeliveryFailure: (input: {
+    instanceID: string
+    wechatAccountId: string
+    userId: string
+    registrationEpoch?: string
+  }) => Promise<void>
   hasBlockingActivity: () => Promise<boolean>
   close: () => Promise<void>
 }
@@ -915,11 +1000,15 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     let messageChain: Promise<void> = Promise.resolve()
 
     socket.on("close", () => {
-      cleanupSocketRegistrations(socket)
+      void queueBrokerMutation("cleanupSocketRegistrations", async () => {
+        cleanupSocketRegistrations(socket)
+      }).catch(() => {})
     })
 
     socket.on("error", () => {
-      cleanupSocketRegistrations(socket)
+      void queueBrokerMutation("cleanupSocketRegistrations", async () => {
+        cleanupSocketRegistrations(socket)
+      }).catch(() => {})
     })
 
     socket.on("data", (chunk) => {
@@ -1039,6 +1128,58 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     return "命令暂未实现：/allow"
   }
 
+  const handleNotificationDeliveryFailure = async (input: {
+    instanceID: string
+    wechatAccountId: string
+    userId: string
+    registrationEpoch?: string
+  }): Promise<void> => {
+    const registrationEpoch = input.registrationEpoch
+
+    await queueBrokerMutation("fallbackToastMutation", async () => {
+      await executeFallbackToastMutation<net.Socket>(
+        {
+          type: "fallbackToastMutation",
+          instanceID: input.instanceID,
+          wechatAccountId: input.wechatAccountId,
+          userId: input.userId,
+          message: registrationEpoch === undefined
+            ? WECHAT_FALLBACK_TOAST_MESSAGE
+            : createDeliveryFailedFallbackToastPayload({
+                wechatAccountId: input.wechatAccountId,
+                userId: input.userId,
+                registrationEpoch,
+              }).message,
+          reason: SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON,
+          registrationEpoch,
+        },
+        {
+          markTokenStale,
+          appendDiagnostic: appendBrokerDiagnostic,
+          getLiveRegistration: (instanceID) => {
+            const record = registrationByInstanceID.get(instanceID)
+            if (!record) {
+              return undefined
+            }
+              return {
+                socket: record.socket,
+                sessionToken: record.sessionToken,
+                registrationEpoch: record.registrationEpoch,
+              }
+          },
+          deliverFallbackToast: ({ instanceID, registration, payload }) => {
+            writeFallbackToastEnvelope({
+              instanceID,
+              socket: registration.socket,
+              sessionToken: registration.sessionToken,
+              payload,
+            })
+          },
+        },
+      )
+    }).catch(() => {})
+  }
+
   const close = async () => {
     if (closed) {
       return
@@ -1086,6 +1227,7 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     startedAt: Date.now(),
     collectStatus,
     handleWechatSlashCommand,
+    handleNotificationDeliveryFailure,
     hasBlockingActivity,
     close,
   }

@@ -3,7 +3,10 @@ import {
   parseEnvelopeLine,
   serializeEnvelope,
   type BrokerEnvelope,
+  type BrokerMessageType,
   type CollectStatusPayload,
+  SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON,
+  type ShowFallbackToastPayload,
   type SyncWechatNotificationsPayload,
 } from "./protocol.js"
 import type { WechatBridge } from "./bridge.js"
@@ -16,6 +19,7 @@ type RegisterMeta = {
 export type RegisterAck = {
   sessionToken: string
   registeredAt: number
+  registrationEpoch: string
   brokerPid: number
 }
 
@@ -23,6 +27,7 @@ type SessionSnapshot = {
   instanceID: string
   sessionToken: string
   registeredAt: number
+  registrationEpoch: string
   brokerPid: number
 }
 
@@ -51,6 +56,18 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value)
 }
 
+function isShowFallbackToastPayload(value: unknown): value is ShowFallbackToastPayload {
+  if (typeof value !== "object" || value === null) {
+    return false
+  }
+  const payload = value as Partial<ShowFallbackToastPayload>
+  return isNonEmptyString(payload.wechatAccountId)
+    && isNonEmptyString(payload.userId)
+    && isNonEmptyString(payload.message)
+    && isNonEmptyString(payload.registrationEpoch)
+    && payload.reason === SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON
+}
+
 function isResponseForRequest(response: BrokerEnvelope, requestId: string): boolean {
   if (response.id === requestId) {
     return true
@@ -75,10 +92,71 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
   let pendingResolve: ((value: BrokerEnvelope) => void) | null = null
   let pendingReject: ((reason?: unknown) => void) | null = null
   let pendingRequestId: string | null = null
+  let pendingRequestType: BrokerMessageType | null = null
+  let pendingRequestInstanceID: string | null = null
   let buffer = ""
   let connected = false
   let closed = false
   let session: SessionSnapshot | null = null
+
+  function clearPendingRequest() {
+    pendingResolve = null
+    pendingReject = null
+    pendingRequestId = null
+    pendingRequestType = null
+    pendingRequestInstanceID = null
+  }
+
+  function rejectPendingRequest(reason: unknown) {
+    const reject = pendingReject
+    clearPendingRequest()
+    reject?.(reason)
+  }
+
+  function toSessionSnapshot(instanceID: string, payload: Partial<RegisterAck>): SessionSnapshot {
+    if (!isNonEmptyString(payload.sessionToken)) {
+      throw new Error("registerAck missing sessionToken")
+    }
+    if (!isFiniteNumber(payload.registeredAt)) {
+      throw new Error("registerAck missing registeredAt")
+    }
+    if (!isNonEmptyString(payload.registrationEpoch)) {
+      throw new Error("registerAck missing registrationEpoch")
+    }
+    if (!isFiniteNumber(payload.brokerPid)) {
+      throw new Error("registerAck missing brokerPid")
+    }
+
+    return {
+      instanceID,
+      sessionToken: payload.sessionToken,
+      registeredAt: payload.registeredAt,
+      registrationEpoch: payload.registrationEpoch,
+      brokerPid: payload.brokerPid,
+    }
+  }
+
+  function stageRegisterAckSession(frames: BrokerEnvelope[]) {
+    if (
+      !pendingResolve
+      || pendingRequestId === null
+      || pendingRequestType !== "registerInstance"
+      || !isNonEmptyString(pendingRequestInstanceID)
+    ) {
+      return
+    }
+
+    const requestId = pendingRequestId
+
+    const matchingRegisterAck = frames.find(
+      (frame) => frame.type === "registerAck" && isResponseForRequest(frame, requestId),
+    )
+    if (!matchingRegisterAck) {
+      return
+    }
+
+    session = toSessionSnapshot(pendingRequestInstanceID, matchingRegisterAck.payload as Partial<RegisterAck>)
+  }
 
   const connectedReady = new Promise<void>((resolve, reject) => {
     socket.once("connect", () => {
@@ -90,6 +168,7 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
 
   socket.on("data", (chunk) => {
     buffer += chunk.toString("utf8")
+    const parsedFrames: BrokerEnvelope[] = []
     while (true) {
       const newlineIndex = buffer.indexOf("\n")
       if (newlineIndex === -1) {
@@ -98,50 +177,51 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
 
       const frame = buffer.slice(0, newlineIndex + 1)
       buffer = buffer.slice(newlineIndex + 1)
-      if (pendingResolve) {
-        try {
-          const parsed = parseEnvelopeLine(frame)
-          if (parsed.type === "collectStatus") {
-            handleCollectStatus(parsed)
-            continue
-          }
-
-          if (pendingRequestId && !isResponseForRequest(parsed, pendingRequestId)) {
-            continue
-          }
-
-          const resolve = pendingResolve
-          pendingResolve = null
-          pendingReject = null
-          pendingRequestId = null
-          resolve(parsed)
-        } catch (error) {
-          const reject = pendingReject
-          pendingResolve = null
-          pendingReject = null
-          pendingRequestId = null
-          reject?.(error)
-        }
-      } else {
-        try {
-          const parsed = parseEnvelopeLine(frame)
-          if (parsed.type === "collectStatus") {
-            handleCollectStatus(parsed)
-          }
-        } catch {
-          // ignore unsolicited invalid frames when no pending request exists
+      try {
+        parsedFrames.push(parseEnvelopeLine(frame))
+      } catch (error) {
+        if (pendingReject) {
+          rejectPendingRequest(error)
         }
       }
+    }
+
+    if (parsedFrames.length === 0) {
+      return
+    }
+
+    try {
+      stageRegisterAckSession(parsedFrames)
+    } catch (error) {
+      if (pendingReject) {
+        rejectPendingRequest(error)
+      }
+      return
+    }
+
+    for (const parsed of parsedFrames) {
+      if (pendingResolve) {
+        if (handleServerPush(parsed)) {
+          continue
+        }
+
+        if (pendingRequestId && !isResponseForRequest(parsed, pendingRequestId)) {
+          continue
+        }
+
+        const resolve = pendingResolve
+        clearPendingRequest()
+        resolve?.(parsed)
+        continue
+      }
+
+      handleServerPush(parsed)
     }
   })
 
   socket.on("error", (error) => {
     if (pendingReject) {
-      const reject = pendingReject
-      pendingResolve = null
-      pendingReject = null
-      pendingRequestId = null
-      reject(error)
+      rejectPendingRequest(error)
     }
   })
 
@@ -150,11 +230,7 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
     closed = true
     session = null
     if (pendingReject) {
-      const reject = pendingReject
-      pendingResolve = null
-      pendingReject = null
-      pendingRequestId = null
-      reject(new Error("broker connection closed"))
+      rejectPendingRequest(new Error("broker connection closed"))
     }
   })
 
@@ -224,6 +300,39 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
       })
   }
 
+  function handleShowFallbackToast(envelope: BrokerEnvelope) {
+    const payload = envelope.payload
+    if (!isShowFallbackToastPayload(payload)) {
+      return
+    }
+    if (!session) {
+      return
+    }
+    if (envelope.instanceID !== session.instanceID) {
+      return
+    }
+    if (envelope.sessionToken !== session.sessionToken) {
+      return
+    }
+    if (payload.registrationEpoch !== session.registrationEpoch) {
+      return
+    }
+
+    void Promise.resolve(options.bridge?.showFallbackToast?.(payload)).catch(() => {})
+  }
+
+  function handleServerPush(envelope: BrokerEnvelope): boolean {
+    if (envelope.type === "collectStatus") {
+      handleCollectStatus(envelope)
+      return true
+    }
+    if (envelope.type === "showFallbackToast") {
+      handleShowFallbackToast(envelope)
+      return true
+    }
+    return false
+  }
+
   async function send(envelope: BrokerEnvelope): Promise<BrokerEnvelope> {
     if (!connected || closed) {
       throw new Error("broker connection closed")
@@ -236,6 +345,8 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
       pendingResolve = resolve
       pendingReject = reject
       pendingRequestId = envelope.id
+      pendingRequestType = envelope.type
+      pendingRequestInstanceID = envelope.instanceID ?? null
       socket.write(serializeEnvelope(envelope))
     })
   }
@@ -268,23 +379,7 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
         throw new Error("register failed")
       }
 
-      const payload = response.payload as Partial<RegisterAck>
-      if (!isNonEmptyString(payload.sessionToken)) {
-        throw new Error("registerAck missing sessionToken")
-      }
-      if (!isFiniteNumber(payload.registeredAt)) {
-        throw new Error("registerAck missing registeredAt")
-      }
-      if (!isFiniteNumber(payload.brokerPid)) {
-        throw new Error("registerAck missing brokerPid")
-      }
-
-      session = {
-        instanceID,
-        sessionToken: payload.sessionToken,
-        registeredAt: payload.registeredAt,
-        brokerPid: payload.brokerPid,
-      }
+      session = toSessionSnapshot(instanceID, response.payload as Partial<RegisterAck>)
 
       if (options.bridge?.collectNotificationCandidates) {
         try {
@@ -298,6 +393,7 @@ export async function connect(endpoint: string, options: BrokerClientOptions = {
       return {
         sessionToken: session.sessionToken,
         registeredAt: session.registeredAt,
+        registrationEpoch: session.registrationEpoch,
         brokerPid: session.brokerPid,
       }
     },

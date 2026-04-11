@@ -10,7 +10,7 @@ import {
   type PublicWeixinSendMessage,
 } from "./openclaw-public-helpers.js"
 import { createOpenClawSmokeHarness, runOpenClawSmoke, sanitizeOpenClawEvidenceSample } from "./openclaw-smoke.js"
-import type { SlashOnlyCommand } from "./slash-guard.js"
+import { STAGE_A_SLASH_ONLY_MESSAGE, type SlashOnlyCommand } from "./slash-guard.js"
 
 type GuidedSmokeStatus = "running" | "blocked" | "completed"
 type GuidedSmokeConclusion = "known-unknown" | "no-go" | "go"
@@ -154,7 +154,8 @@ type PreflightData = {
 const DEFAULT_EVIDENCE_BASE_DIR = fileURLToPath(new URL("../../../docs/superpowers/wechat-stage-a/evidence", import.meta.url))
 const DEFAULT_API_SAMPLES_DOC_PATH = fileURLToPath(new URL("../../../docs/superpowers/wechat-stage-a/api-samples-sanitized.md", import.meta.url))
 const DEFAULT_GO_NO_GO_DOC_PATH = fileURLToPath(new URL("../../../docs/superpowers/wechat-stage-a/go-no-go.md", import.meta.url))
-const FIXED_NON_SLASH_WARNING_TEXT = "请使用 slash 命令（/status、/reply、/allow）"
+const FIXED_NON_SLASH_WARNING_TEXT = STAGE_A_SLASH_ONLY_MESSAGE
+export const NON_SLASH_WARNING_TEXT_FOR_TEST = FIXED_NON_SLASH_WARNING_TEXT
 
 const DEFAULT_KEY_FIELDS_CHECK: GuidedSmokeKeyFieldsCheck = {
   login: { status: "known-unknown" },

@@ -1,4 +1,4 @@
-export const STAGE_A_SLASH_ONLY_MESSAGE = "当前阶段仅支持命令型交互，请发送 /status、/reply 或 /allow。"
+export const STAGE_A_SLASH_ONLY_MESSAGE = "PoC 当前仅支持命令型交互，请使用 slash 命令（/status、/reply、/allow）"
 
 export type SlashOnlyCommand = "status" | "reply" | "allow"
 

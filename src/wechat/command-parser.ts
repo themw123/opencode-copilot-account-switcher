@@ -5,6 +5,9 @@ export type WechatSlashCommand = {
   handle: string
   text: string
 } | {
+  type: "recover"
+  handle: string
+} | {
   type: "allow"
   handle: string
   reply: "once" | "always" | "reject"
@@ -35,6 +38,17 @@ export function parseWechatSlashCommand(input: string): WechatSlashCommand | nul
       return null
     }
     return { type: "reply", handle, text }
+  }
+
+  if (command === "/recover") {
+    if (parts.length !== 2) {
+      return null
+    }
+    const handle = parts[1]
+    if (!handle) {
+      return null
+    }
+    return { type: "recover", handle }
   }
 
   if (command === "/allow") {

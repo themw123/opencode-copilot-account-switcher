@@ -2,7 +2,10 @@ import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { WECHAT_FILE_MODE, ensureWechatStateLayout, tokenStatePath } from "./state-paths.js"
 
-export type TokenSource = "question" | "permission"
+export type TokenSource = "question" | "permission" | "message"
+
+export const NOTIFICATION_DELIVERY_FAILED_STALE_REASON = "notification-delivery-failed"
+const SYNTHETIC_STALE_TOKEN_SOURCE_REF_PREFIX = "synthetic-stale"
 
 export type TokenState = {
   contextToken: string
@@ -53,7 +56,17 @@ function normalizeTokenState(input: TokenState): TokenState {
 }
 
 function isTokenSource(value: unknown): value is TokenSource {
-  return value === "question" || value === "permission"
+  return value === "question" || value === "permission" || value === "message"
+}
+
+function createSyntheticStaleTokenState(input: TokenKey & { staleReason: string }): TokenState {
+  return {
+    contextToken: `stale-placeholder:${input.wechatAccountId}:${input.userId}`,
+    updatedAt: Date.now(),
+    source: "question",
+    sourceRef: `${SYNTHETIC_STALE_TOKEN_SOURCE_REF_PREFIX}:${input.staleReason}`,
+    staleReason: input.staleReason,
+  }
 }
 
 function toTokenState(input: unknown): TokenState {
@@ -99,6 +112,10 @@ export async function readTokenState(wechatAccountId: string, userId: string): P
   }
 }
 
+export function isLiveTokenState(state: TokenState | undefined): state is TokenState {
+  return Boolean(state && !state.staleReason)
+}
+
 export async function upsertInboundToken(input: TokenKey & TokenState): Promise<TokenState> {
   const safeKey = toTokenKey(input)
   const next = toTokenState({
@@ -118,12 +135,22 @@ export async function markTokenStale(input: TokenKey & { staleReason: string }):
     throw new Error("invalid token state format")
   }
 
-  const current = await readTokenState(safeKey.wechatAccountId, safeKey.userId)
-  if (!current) {
-    throw new Error("token state not found")
+  let current: TokenState | undefined
+  try {
+    current = await readTokenState(safeKey.wechatAccountId, safeKey.userId)
+  } catch (error) {
+    if (error instanceof Error && error.message === "invalid token state format") {
+      current = undefined
+    } else {
+      throw error
+    }
   }
+
   return writeTokenState(safeKey, {
-    ...current,
+    ...(current ?? createSyntheticStaleTokenState({
+      ...safeKey,
+      staleReason: input.staleReason,
+    })),
     staleReason: input.staleReason,
   })
 }
