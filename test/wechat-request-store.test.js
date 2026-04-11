@@ -55,7 +55,7 @@ test("open request 可通过 handle 查询", async () => {
   assert.equal(found?.handle, "q1")
 })
 
-test("open request 可通过 request identity 查询且保持原 handle", async () => {
+test("open request 在未提供 scopeKey 时仍可通过 request identity 查询且保持原 handle", async () => {
   const created = await requestStore.upsertRequest({
     kind: "permission",
     requestID: "identity-permission-1",
@@ -76,6 +76,61 @@ test("open request 可通过 request identity 查询且保持原 handle", async 
 
   assert.equal(found?.routeKey, created.routeKey)
   assert.equal(found?.handle, "p1")
+})
+
+test("open request 在提供 scopeKey 时仍要求 request identity 精确匹配该 scopeKey", async () => {
+  await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "identity-permission-2",
+    routeKey: handle.createRouteKey({ kind: "permission", requestID: "identity-permission-2", scopeKey: "instance-identity-a" }),
+    handle: "p2",
+    scopeKey: "instance-identity-a",
+    wechatAccountId: "wx-identity",
+    userId: "u-identity",
+    createdAt: 1_700_000_222_100,
+  })
+
+  const found = await requestStore.findOpenRequestByIdentity({
+    kind: "permission",
+    requestID: "identity-permission-2",
+    wechatAccountId: "wx-identity",
+    userId: "u-identity",
+    scopeKey: "instance-identity-b",
+  })
+
+  assert.equal(found, undefined)
+})
+
+test("open request 在未提供 scopeKey 且跨多个 scope 命中同一 identity 时不会返回歧义结果", async () => {
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "identity-ambiguous-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "identity-ambiguous-1", scopeKey: "instance-a" }),
+    handle: "q21",
+    scopeKey: "instance-a",
+    wechatAccountId: "wx-ambiguous",
+    userId: "u-ambiguous",
+    createdAt: 1_700_000_222_200,
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "identity-ambiguous-1",
+    routeKey: handle.createRouteKey({ kind: "question", requestID: "identity-ambiguous-1", scopeKey: "instance-b" }),
+    handle: "q22",
+    scopeKey: "instance-b",
+    wechatAccountId: "wx-ambiguous",
+    userId: "u-ambiguous",
+    createdAt: 1_700_000_222_300,
+  })
+
+  const found = await requestStore.findOpenRequestByIdentity({
+    kind: "question",
+    requestID: "identity-ambiguous-1",
+    wechatAccountId: "wx-ambiguous",
+    userId: "u-ambiguous",
+  })
+
+  assert.equal(found, undefined)
 })
 
 test("scopeKey 会持久化到 request 记录，并支持按 scope 批量 expire open 请求", async () => {

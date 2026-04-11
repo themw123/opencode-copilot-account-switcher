@@ -5,7 +5,7 @@ const DIST_GUARD_MODULE = "../dist/wechat/compat/slash-guard.js"
 const DIST_SMOKE_MODULE = "../dist/wechat/compat/openclaw-smoke.js"
 
 const NON_SLASH_TEXT = "hello wechat"
-const NON_SLASH_REJECT_TEXT = "当前阶段仅支持命令型交互，请发送 /status、/reply 或 /allow。"
+const { STAGE_A_SLASH_ONLY_MESSAGE: NON_SLASH_REJECT_TEXT } = await import(DIST_GUARD_MODULE)
 
 test("slash guard rejects non-slash content with fixed chinese message", async () => {
   const guard = await import(DIST_GUARD_MODULE)

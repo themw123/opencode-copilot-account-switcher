@@ -22,7 +22,7 @@ import {
 } from "./session-digest.js"
 import { readOperatorBinding } from "./operator-store.js"
 import { createHandle, createRouteKey } from "./handle.js"
-import type { WechatNotificationCandidate } from "./protocol.js"
+import type { ShowFallbackToastPayload, WechatNotificationCandidate } from "./protocol.js"
 import { extractPermissionPromptSummary, extractQuestionPromptSummary } from "./question-interaction.js"
 
 type SessionMessages = Array<{ info: Message; parts: Part[] }>
@@ -76,12 +76,14 @@ export type WechatBridgeInput = {
   liveReadTimeoutMs?: number
   getActiveSessionID?: () => string | undefined
   onDiagnosticEvent?: (event: WechatBridgeDiagnosticEvent) => Promise<void> | void
+  onFallbackToast?: (payload: ShowFallbackToastPayload) => Promise<void> | void
 }
 
 export type WechatBridge = {
   collectStatusSnapshot: () => Promise<WechatInstanceStatusSnapshot>
   collectNotificationCandidates: () => Promise<WechatNotificationCandidate[]>
   resyncBrokerState?: (input?: { reason?: "brokerReconnect" | "manual" }) => Promise<WechatInstanceStatusSnapshot>
+  showFallbackToast?: (payload: ShowFallbackToastPayload) => Promise<void>
 }
 
 export type WechatBridgeLifecycleInput = {
@@ -95,6 +97,7 @@ export type WechatBridgeLifecycleInput = {
   statusCollectionEnabled?: boolean
   heartbeatIntervalMs?: number
   getActiveSessionID?: () => string | undefined
+  onFallbackToast?: (payload: ShowFallbackToastPayload) => Promise<void> | void
 }
 
 export type WechatBridgeLifecycle = {
@@ -625,6 +628,9 @@ export function createWechatBridge(input: WechatBridgeInput): WechatBridge {
     collectStatusSnapshot,
     collectNotificationCandidates,
     resyncBrokerState,
+    showFallbackToast: async (payload: ShowFallbackToastPayload) => {
+      await Promise.resolve(input.onFallbackToast?.(payload))
+    },
   }
 }
 
@@ -655,6 +661,7 @@ export async function createWechatBridgeLifecycle(
     client: input.client,
     getActiveSessionID: input.getActiveSessionID,
     onDiagnosticEvent: createWechatBridgeDiagnosticsWriter(),
+    onFallbackToast: input.onFallbackToast,
   })
 
   const broker = await connectOrSpawnBrokerImpl()

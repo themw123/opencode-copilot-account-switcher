@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { readDeadLetter } from "./dead-letter-store.js"
 import {
   WECHAT_FILE_MODE,
   ensureWechatStateLayout,
@@ -8,6 +9,15 @@ import {
 } from "./state-paths.js"
 import { type NotificationKind, type NotificationRecord } from "./notification-types.js"
 import { normalizeRequestPromptSummary } from "./question-interaction.js"
+import { findRequestByRouteKey } from "./request-store.js"
+import { isLiveTokenState, readTokenState } from "./token-store.js"
+
+type NotificationStoreTestHooks = {
+  beforePersistBackfilledScopeKey?: (input: { record: NotificationRecord; scopeKey: string }) => Promise<void> | void
+  afterWriteNotification?: (record: NotificationRecord) => Promise<void> | void
+}
+
+let notificationStoreTestHooks: NotificationStoreTestHooks | undefined
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
@@ -29,12 +39,19 @@ function normalizeLookupValue(value: string): string {
   return value.trim().toLowerCase()
 }
 
+const DEFAULT_NOTIFICATION_MERGE_WINDOW_MS = 2_000
+
+function sameNotificationSnapshot(left: NotificationRecord, right: NotificationRecord): boolean {
+  return JSON.stringify(normalizeRecord(left)) === JSON.stringify(normalizeRecord(right))
+}
+
 function normalizeRecord(input: NotificationRecord): NotificationRecord {
   const base = {
     idempotencyKey: input.idempotencyKey,
     kind: input.kind,
     wechatAccountId: input.wechatAccountId,
     userId: input.userId,
+    ...(isNonEmptyString(input.registrationEpoch) ? { registrationEpoch: input.registrationEpoch } : {}),
     createdAt: input.createdAt,
     status: input.status,
     ...(input.kind !== "sessionError" && input.prompt !== undefined ? { prompt: normalizeRequestPromptSummary(input.kind, input.prompt) } : {}),
@@ -53,6 +70,7 @@ function normalizeRecord(input: NotificationRecord): NotificationRecord {
     ...base,
     ...(isNonEmptyString(input.routeKey) ? { routeKey: input.routeKey } : {}),
     ...(isNonEmptyString(input.handle) ? { handle: input.handle } : {}),
+    ...(isNonEmptyString(input.scopeKey) ? { scopeKey: input.scopeKey } : {}),
   }
 }
 
@@ -70,6 +88,7 @@ function toRecord(input: unknown): NotificationRecord {
     !isNotificationKind(parsed.kind) ||
     !isNonEmptyString(parsed.wechatAccountId) ||
     !isNonEmptyString(parsed.userId) ||
+    (parsed.registrationEpoch !== undefined && !isNonEmptyString(parsed.registrationEpoch)) ||
     !isFiniteNumber(parsed.createdAt) ||
     !isNotificationStatus(parsed.status)
   ) {
@@ -92,6 +111,9 @@ function toRecord(input: unknown): NotificationRecord {
     }
   } else {
     if (!isNonEmptyString(parsed.routeKey) || !isNonEmptyString(parsed.handle)) {
+      throw new Error("invalid notification record format")
+    }
+    if (parsed.scopeKey !== undefined && !isNonEmptyString(parsed.scopeKey)) {
       throw new Error("invalid notification record format")
     }
     if (parsed.prompt !== undefined) {
@@ -121,7 +143,8 @@ function toRecord(input: unknown): NotificationRecord {
 async function readNotification(idempotencyKey: string): Promise<NotificationRecord> {
   try {
     const raw = await readFile(notificationStatePath(idempotencyKey), "utf8")
-    const record = toRecord(JSON.parse(raw))
+    const parsed = toRecord(JSON.parse(raw))
+    const record = await backfillNotificationScopeKey(parsed)
     if (record.idempotencyKey !== idempotencyKey) {
       throw new Error("invalid notification record format")
     }
@@ -134,17 +157,73 @@ async function readNotification(idempotencyKey: string): Promise<NotificationRec
   }
 }
 
+async function readNotificationSnapshot(idempotencyKey: string): Promise<NotificationRecord> {
+  const raw = await readFile(notificationStatePath(idempotencyKey), "utf8")
+  return toRecord(JSON.parse(raw))
+}
+
+async function backfillNotificationScopeKey(record: NotificationRecord): Promise<NotificationRecord> {
+  if (record.kind === "sessionError" || !isNonEmptyString(record.routeKey) || isNonEmptyString(record.scopeKey)) {
+    return record
+  }
+
+  const request = await findRequestByRouteKey({
+    kind: record.kind,
+    routeKey: record.routeKey,
+  }).catch(() => undefined)
+  const fallbackScopeKey = request?.scopeKey
+    ?? await readDeadLetter(record.kind, record.routeKey)
+      .then((deadLetter) => deadLetter?.scopeKey ?? deadLetter?.instanceID)
+      .catch(() => undefined)
+
+  if (!isNonEmptyString(fallbackScopeKey)) {
+    return record
+  }
+
+  await notificationStoreTestHooks?.beforePersistBackfilledScopeKey?.({
+    record,
+    scopeKey: fallbackScopeKey,
+  })
+
+  const current = await readNotificationSnapshot(record.idempotencyKey)
+  if (current.kind === "sessionError") {
+    return current
+  }
+  if (isNonEmptyString(current.scopeKey)) {
+    return current
+  }
+
+  const enriched = {
+    ...current,
+    scopeKey: fallbackScopeKey,
+  }
+  if (!sameNotificationSnapshot(current, record)) {
+    return enriched
+  }
+  await writeNotification(enriched)
+  return enriched
+}
+
+export function setNotificationStoreTestHooks(hooks: NotificationStoreTestHooks | undefined): void {
+  notificationStoreTestHooks = hooks
+}
+
 async function writeNotification(record: NotificationRecord): Promise<NotificationRecord> {
   await ensureWechatStateLayout()
   const filePath = notificationStatePath(record.idempotencyKey)
   await mkdir(path.dirname(filePath), { recursive: true })
   const normalized = normalizeRecord(record)
   await writeFile(filePath, JSON.stringify(normalized, null, 2), { mode: WECHAT_FILE_MODE })
+  await notificationStoreTestHooks?.afterWriteNotification?.(normalized)
   return normalized
 }
 
 export async function upsertNotification(
   input: Omit<NotificationRecord, "status" | "sentAt" | "resolvedAt" | "failedAt" | "suppressedAt" | "failureReason">,
+  options: {
+    initialStatus?: "pending" | "suppressed"
+    suppressedAt?: number
+  } = {},
 ): Promise<NotificationRecord> {
   if (
     !isNonEmptyString((input as { idempotencyKey: unknown }).idempotencyKey) ||
@@ -158,6 +237,11 @@ export async function upsertNotification(
 
   assertValidIdempotencyKey(input.idempotencyKey)
 
+  const initialStatus = options.initialStatus ?? "pending"
+  if (initialStatus === "suppressed" && !isFiniteNumber(options.suppressedAt)) {
+    throw new Error("invalid notification record format")
+  }
+
   if (input.kind === "sessionError") {
     if ((input as { routeKey?: string }).routeKey !== undefined || (input as { handle?: string }).handle !== undefined) {
       throw new Error("invalid notification record format")
@@ -167,10 +251,23 @@ export async function upsertNotification(
     !isNonEmptyString((input as { handle?: unknown }).handle)
   ) {
     throw new Error("invalid notification record format")
+  } else if ((input as { scopeKey?: unknown }).scopeKey !== undefined && !isNonEmptyString((input as { scopeKey?: unknown }).scopeKey)) {
+    throw new Error("invalid notification record format")
   }
 
   try {
-    return await readNotification(input.idempotencyKey)
+    const current = await readNotification(input.idempotencyKey)
+    if (current.status === "failed") {
+      const tokenState = await readTokenState(input.wechatAccountId, input.userId).catch(() => undefined)
+      if (isLiveTokenState(tokenState)) {
+        return writeNotification({
+          ...input,
+          status: initialStatus,
+          ...(initialStatus === "suppressed" ? { suppressedAt: options.suppressedAt } : {}),
+        })
+      }
+    }
+    return current
   } catch (error) {
     const issue = error as NodeJS.ErrnoException
     if (issue.code !== "ENOENT") throw error
@@ -178,7 +275,8 @@ export async function upsertNotification(
 
   return writeNotification({
     ...input,
-    status: "pending",
+    status: initialStatus,
+    ...(initialStatus === "suppressed" ? { suppressedAt: options.suppressedAt } : {}),
   })
 }
 
@@ -269,6 +367,61 @@ export async function listPendingNotifications(): Promise<NotificationRecord[]> 
   }
   pending.sort((a, b) => a.createdAt - b.createdAt)
   return pending
+}
+
+function isMergeableNotificationStatus(status: NotificationRecord["status"]): boolean {
+  return status === "pending" || status === "sent"
+}
+
+export async function findMergeableNotification(input: {
+  kind: Exclude<NotificationKind, "sessionError">
+  routeKey: string
+  handle: string
+  scopeKey: string
+  createdAt: number
+  excludeIdempotencyKey?: string
+}): Promise<NotificationRecord | undefined> {
+  if (
+    (input.kind !== "question" && input.kind !== "permission")
+    || !isNonEmptyString(input.routeKey)
+    || !isNonEmptyString(input.handle)
+    || !isNonEmptyString(input.scopeKey)
+    || !isFiniteNumber(input.createdAt)
+    || (input.excludeIdempotencyKey !== undefined && !isNonEmptyString(input.excludeIdempotencyKey))
+  ) {
+    throw new Error("invalid notification record format")
+  }
+
+  await ensureWechatStateLayout()
+  const files = await readdir(notificationsDir()).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return []
+    throw error
+  })
+
+  const expectedRouteKey = normalizeLookupValue(input.routeKey)
+  const expectedHandle = normalizeLookupValue(input.handle)
+  let mergeable: NotificationRecord | undefined
+
+  for (const fileName of files) {
+    if (!fileName.endsWith(".json")) continue
+    const idempotencyKey = fileName.slice(0, -5)
+    if (input.excludeIdempotencyKey !== undefined && idempotencyKey === input.excludeIdempotencyKey) {
+      continue
+    }
+
+    const record = await readNotification(idempotencyKey)
+    if (record.kind !== input.kind || !isMergeableNotificationStatus(record.status)) continue
+    if (!isNonEmptyString(record.routeKey) || !isNonEmptyString(record.handle) || !isNonEmptyString(record.scopeKey)) continue
+    if (record.scopeKey !== input.scopeKey) continue
+    if (normalizeLookupValue(record.routeKey) !== expectedRouteKey) continue
+    if (normalizeLookupValue(record.handle) !== expectedHandle) continue
+    if (Math.abs(record.createdAt - input.createdAt) > DEFAULT_NOTIFICATION_MERGE_WINDOW_MS) continue
+    if (!mergeable || record.createdAt > mergeable.createdAt) {
+      mergeable = record
+    }
+  }
+
+  return mergeable
 }
 
 export async function findSentNotificationByRequest(input: {

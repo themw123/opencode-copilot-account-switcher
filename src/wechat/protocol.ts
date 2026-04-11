@@ -28,6 +28,16 @@ export type StatusSnapshotPayload = {
   snapshot: unknown
 }
 
+export const SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON = "deliveryFailed"
+
+export type ShowFallbackToastPayload = {
+  wechatAccountId: string
+  userId: string
+  message: string
+  reason: typeof SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON
+  registrationEpoch: string
+}
+
 export type WechatNotificationCandidate =
   | {
       idempotencyKey: string

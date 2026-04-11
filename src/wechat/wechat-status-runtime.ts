@@ -4,12 +4,14 @@ import {
   type OpenClawWeixinPublicHelpersLoaderOptions,
   type PublicWeixinMessage,
 } from "./compat/openclaw-public-helpers.js"
+import { STAGE_A_SLASH_ONLY_MESSAGE } from "./compat/slash-guard.js"
 import { parseWechatSlashCommand, type WechatSlashCommand } from "./command-parser.js"
+import { upsertInboundToken, type TokenSource } from "./token-store.js"
 
 const DEFAULT_RETRY_DELAY_MS = 1_000
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 25_000
 
-export const DEFAULT_NON_SLASH_REPLY_TEXT = "请使用 slash 命令（/status、/reply、/allow）"
+export const DEFAULT_NON_SLASH_REPLY_TEXT = STAGE_A_SLASH_ONLY_MESSAGE
 export const DEFAULT_SLASH_HANDLER_ERROR_REPLY_TEXT = "命令处理失败，请稍后重试。"
 
 type PublicHelpersForRuntime = Pick<
@@ -182,6 +184,16 @@ function toErrorMessage(error: unknown): string {
   return String(error)
 }
 
+function toInboundTokenSource(command: WechatSlashCommand | null): TokenSource {
+  if (command?.type === "reply") {
+    return "question"
+  }
+  if (command?.type === "allow") {
+    return "permission"
+  }
+  return "message"
+}
+
 export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput = {}): WechatStatusRuntime {
   const loadPublicHelpers = input.loadPublicHelpers ?? loadOpenClawWeixinPublicHelpers
   const onSlashCommand =
@@ -338,9 +350,24 @@ export function createWechatStatusRuntime(input: CreateWechatStatusRuntimeInput 
           }
 
           const parsedCommand = parseWechatSlashCommand(text)
+          const inboundContextToken = toNonEmptyString(message.context_token) ?? undefined
+
           let replyText = DEFAULT_NON_SLASH_REPLY_TEXT
 
           if (parsedCommand) {
+            if (inboundContextToken) {
+              try {
+                await upsertInboundToken({
+                  wechatAccountId: initialized.accountId,
+                  userId: to,
+                  contextToken: inboundContextToken,
+                  updatedAt: Date.now(),
+                  source: toInboundTokenSource(parsedCommand),
+                })
+              } catch (error) {
+                onRuntimeError(error)
+              }
+            }
             emitDiagnosticEvent({
               type: "slashCommandRecognized",
               command: parsedCommand,

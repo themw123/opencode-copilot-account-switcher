@@ -18,6 +18,7 @@ const DIST_NOTIFICATION_DISPATCHER_MODULE = "../dist/wechat/notification-dispatc
 const DIST_NOTIFICATION_FORMAT_MODULE = "../dist/wechat/notification-format.js"
 const DIST_WECHAT_STATUS_RUNTIME_MODULE = "../dist/wechat/wechat-status-runtime.js"
 const DIST_BROKER_ENTRY_MODULE = "../dist/wechat/broker-entry.js"
+const DIST_TOKEN_STORE_MODULE = "../dist/wechat/token-store.js"
 
 function createBrokerEndpoint(tempDir) {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -54,6 +55,18 @@ function createWechatClientWithFixedPending(input) {
       list: async () => [{ id: input.permissionID, sessionID: input.sessionID, tool: "bash", command: "ls" }],
     },
   }
+}
+
+async function createOpenRequest(requestStore, input) {
+  return requestStore.upsertRequest({
+    kind: input.kind,
+    requestID: input.requestID,
+    routeKey: input.routeKey,
+    handle: input.handle,
+    wechatAccountId: input.wechatAccountId,
+    userId: input.userId,
+    createdAt: input.createdAt,
+  })
 }
 
 test("两个实例出现相同 question/permission/session 标识时不会互相覆盖", async () => {
@@ -216,6 +229,7 @@ test("register 成功返回前应完成首轮通知同步，而不是依赖后�
             payload: {
               sessionToken: "session-token",
               registeredAt: Date.now(),
+              registrationEpoch: "epoch-register-sync",
               brokerPid: process.pid,
             },
           }),
@@ -241,8 +255,9 @@ test("register 成功返回前应完成首轮通知同步，而不是依赖后�
 
   try {
     const startedAt = Date.now()
-    await client.registerInstance({ instanceID: "instance-register-sync", pid: process.pid })
+    const ack = await client.registerInstance({ instanceID: "instance-register-sync", pid: process.pid })
     const elapsedMs = Date.now() - startedAt
+    assert.equal(ack.registrationEpoch, "epoch-register-sync")
     assert.equal(elapsedMs >= 200, true)
   } finally {
     await client.close().catch(() => {})
@@ -278,6 +293,7 @@ test("register 时 collectNotificationCandidates 抛错不应拖垮主链路", a
             payload: {
               sessionToken: "session-token-soft-fail",
               registeredAt,
+              registrationEpoch: "epoch-register-soft-fail",
               brokerPid: process.pid,
             },
           }),
@@ -304,6 +320,7 @@ test("register 时 collectNotificationCandidates 抛错不应拖垮主链路", a
     const ack = await client.registerInstance({ instanceID: "instance-register-soft-fail", pid: process.pid })
     assert.equal(ack.sessionToken, "session-token-soft-fail")
     assert.equal(ack.registeredAt, registeredAt)
+    assert.equal(ack.registrationEpoch, "epoch-register-soft-fail")
     assert.equal(ack.brokerPid, process.pid)
   } finally {
     await client.close().catch(() => {})
@@ -592,6 +609,7 @@ test("通知分发：总开关关闭时不发送任何通知", async () => {
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -605,6 +623,16 @@ test("通知分发：总开关关闭时不发送任何通知", async () => {
           sessionError: true,
         },
       },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-global-off-question-1",
+      routeKey: "task4-route-question-1",
+      handle: "q1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_000_000,
     })
 
     await notificationStore.upsertNotification({
@@ -646,6 +674,7 @@ test("通知分发：question/permission/sessionError 各自受子开关控制",
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -659,6 +688,25 @@ test("通知分发：question/permission/sessionError 各自受子开关控制",
           sessionError: false,
         },
       },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-kind-switch-question",
+      routeKey: "task4-route-question",
+      handle: "q1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_100_000,
+    })
+    await createOpenRequest(requestStore, {
+      kind: "permission",
+      requestID: "req-task4-kind-switch-permission",
+      routeKey: "task4-route-permission",
+      handle: "p1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_100_000,
     })
 
     await notificationStore.upsertNotification({
@@ -722,6 +770,7 @@ test("通知分发：缺少 primaryBinding.userId 时不发送", async () => {
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -776,6 +825,7 @@ test("通知分发：发送成功后记录 sent", async () => {
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -789,6 +839,16 @@ test("通知分发：发送成功后记录 sent", async () => {
           sessionError: true,
         },
       },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-sent-question",
+      routeKey: "task4-route-sent-question",
+      handle: "q1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_300_000,
     })
 
     await notificationStore.upsertNotification({
@@ -827,6 +887,7 @@ test("通知分发：发送失败后记录 failed，且同一轮 drain 不会无
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -874,6 +935,302 @@ test("通知分发：发送失败后记录 failed，且同一轮 drain 不会无
   }
 })
 
+test("通知分发：failed 记录只有在 token 已重新激活后才会回到 pending，并携带 live contextToken 发送", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-notification-dispatch-reactivate-"))
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = sandboxConfigHome
+
+  const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
+  const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
+  const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
+  const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
+  const tokenStore = await import(`${DIST_TOKEN_STORE_MODULE}?reload=${Date.now()}`)
+
+  try {
+    await commonSettingsStore.writeCommonSettingsStore({
+      wechat: {
+        primaryBinding: { accountId: "wx-main", userId: "u-main" },
+        notifications: {
+          enabled: true,
+          question: true,
+          permission: true,
+          sessionError: true,
+        },
+      },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-reactivated-question",
+      routeKey: "task4-reactivated-route",
+      handle: "q1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_410_000,
+    })
+
+    await tokenStore.upsertInboundToken({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      contextToken: "ctx-before-fail",
+      updatedAt: 1_700_500_410_001,
+      source: "question",
+      sourceRef: "req-task4-reactivated-question",
+    })
+
+    await notificationStore.upsertNotification({
+      idempotencyKey: "task4-reactivated-question",
+      kind: "question",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      routeKey: "task4-reactivated-route",
+      handle: "q1",
+      createdAt: 1_700_500_410_002,
+    })
+
+    const failingDispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+      sendMessage: async () => {
+        throw new Error("mock-send-failed-once")
+      },
+    })
+    await failingDispatcher.drainOutboundMessages()
+
+    const failedRecord = JSON.parse(await readFile(statePaths.notificationStatePath("task4-reactivated-question"), "utf8"))
+    assert.equal(failedRecord.status, "failed")
+    assert.match(String(failedRecord.failureReason), /mock-send-failed-once/i)
+
+    const stale = await tokenStore.markTokenStale({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+    })
+    assert.equal(stale.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+
+    const stillFailed = await notificationStore.upsertNotification({
+      idempotencyKey: "task4-reactivated-question",
+      kind: "question",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      routeKey: "task4-reactivated-route",
+      handle: "q1",
+      createdAt: 1_700_500_410_050,
+    })
+    assert.equal(stillFailed.status, "failed")
+
+    const pendingBeforeReactivation = await notificationStore.listPendingNotifications()
+    assert.equal(pendingBeforeReactivation.some((record) => record.idempotencyKey === "task4-reactivated-question"), false)
+
+    await tokenStore.upsertInboundToken({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      contextToken: "ctx-reactivated",
+      updatedAt: 1_700_500_410_100,
+      source: "message",
+      sourceRef: "/status",
+    })
+
+    const reopened = await notificationStore.upsertNotification({
+      idempotencyKey: "task4-reactivated-question",
+      kind: "question",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      routeKey: "task4-reactivated-route",
+      handle: "q1",
+      createdAt: 1_700_500_410_101,
+    })
+    assert.equal(reopened.status, "pending")
+    assert.equal(reopened.failedAt, undefined)
+    assert.equal(reopened.failureReason, undefined)
+
+    const pending = await notificationStore.listPendingNotifications()
+    assert.equal(pending.some((record) => record.idempotencyKey === "task4-reactivated-question"), true)
+
+    const sendCalls = []
+    const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+      sendMessage: async (input) => {
+        sendCalls.push(input)
+      },
+    })
+    await dispatcher.drainOutboundMessages()
+
+    assert.equal(sendCalls.length, 1)
+    assert.equal(sendCalls[0]?.contextToken, "ctx-reactivated")
+
+    const sentRecord = JSON.parse(await readFile(statePaths.notificationStatePath("task4-reactivated-question"), "utf8"))
+    assert.equal(sentRecord.status, "sent")
+  } finally {
+    await rm(statePaths.wechatStateRoot(), { recursive: true, force: true }).catch(() => {})
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+  }
+})
+
+test("通知分发：token stale 时 pending 保持不可发送，token live 后才会使用持久化 contextToken 发送", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-notification-dispatch-stale-skip-"))
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = sandboxConfigHome
+
+  const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
+  const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
+  const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
+  const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
+  const tokenStore = await import(`${DIST_TOKEN_STORE_MODULE}?reload=${Date.now()}`)
+
+  try {
+    await commonSettingsStore.writeCommonSettingsStore({
+      wechat: {
+        primaryBinding: { accountId: "wx-main", userId: "u-main" },
+        notifications: {
+          enabled: true,
+          question: true,
+          permission: true,
+          sessionError: true,
+        },
+      },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-stale-pending-question",
+      routeKey: "task4-stale-pending-route",
+      handle: "q2",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_420_000,
+    })
+
+    await notificationStore.upsertNotification({
+      idempotencyKey: "task4-stale-pending-question",
+      kind: "question",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      routeKey: "task4-stale-pending-route",
+      handle: "q2",
+      createdAt: 1_700_500_420_001,
+    })
+    await tokenStore.markTokenStale({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+    })
+
+    const sendCalls = []
+    const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+      sendMessage: async (input) => {
+        sendCalls.push(input)
+      },
+    })
+    await dispatcher.drainOutboundMessages()
+
+    assert.equal(sendCalls.length, 0)
+    const pendingWhileStale = JSON.parse(await readFile(statePaths.notificationStatePath("task4-stale-pending-question"), "utf8"))
+    assert.equal(pendingWhileStale.status, "pending")
+
+    await tokenStore.upsertInboundToken({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      contextToken: "ctx-live-after-status",
+      updatedAt: 1_700_500_420_100,
+      source: "message",
+      sourceRef: "/status",
+    })
+    await dispatcher.drainOutboundMessages()
+
+    assert.equal(sendCalls.length, 1)
+    assert.equal(sendCalls[0]?.contextToken, "ctx-live-after-status")
+    const sentAfterReactivation = JSON.parse(await readFile(statePaths.notificationStatePath("task4-stale-pending-question"), "utf8"))
+    assert.equal(sentAfterReactivation.status, "sent")
+  } finally {
+    await rm(statePaths.wechatStateRoot(), { recursive: true, force: true }).catch(() => {})
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+  }
+})
+
+test("通知分发：stale 期间积压的 sessionError 在重新激活后不会被补发为陈旧告警", async () => {
+  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-notification-session-error-reactivation-"))
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = sandboxConfigHome
+
+  const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
+  const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
+  const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
+  const tokenStore = await import(`${DIST_TOKEN_STORE_MODULE}?reload=${Date.now()}`)
+
+  try {
+    await commonSettingsStore.writeCommonSettingsStore({
+      wechat: {
+        primaryBinding: { accountId: "wx-main", userId: "u-main" },
+        notifications: {
+          enabled: true,
+          question: true,
+          permission: true,
+          sessionError: true,
+        },
+      },
+    })
+
+    await tokenStore.markTokenStale({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+    })
+
+    await notificationStore.upsertNotification({
+      idempotencyKey: "task4-session-error-stale-replay",
+      kind: "sessionError",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_430_001,
+    })
+
+    const sendCalls = []
+    const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+      sendMessage: async (input) => {
+        sendCalls.push(input)
+      },
+    })
+
+    await dispatcher.drainOutboundMessages()
+    assert.equal(sendCalls.length, 0)
+
+    const pendingWhileStale = JSON.parse(await readFile(statePaths.notificationStatePath("task4-session-error-stale-replay"), "utf8"))
+    assert.equal(pendingWhileStale.status, "pending")
+
+    await tokenStore.upsertInboundToken({
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      contextToken: "ctx-status-reactivated",
+      updatedAt: 1_700_500_430_100,
+      source: "message",
+      sourceRef: "/status",
+    })
+
+    await dispatcher.drainOutboundMessages()
+
+    assert.equal(sendCalls.length, 0)
+    const suppressedAfterReactivation = JSON.parse(await readFile(statePaths.notificationStatePath("task4-session-error-stale-replay"), "utf8"))
+    assert.equal(suppressedAfterReactivation.status, "suppressed")
+    assert.equal(typeof suppressedAfterReactivation.suppressedAt, "number")
+  } finally {
+    await rm(statePaths.wechatStateRoot(), { recursive: true, force: true }).catch(() => {})
+    if (previousXdgConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+    }
+  }
+})
+
 test("通知分发：并发 drain 竞争下，已 sent 记录不会被失败分支回写成 failed", async () => {
   const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-notification-dispatch-concurrent-race-"))
   const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
@@ -882,6 +1239,7 @@ test("通知分发：并发 drain 竞争下，已 sent 记录不会被失败分�
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -895,6 +1253,16 @@ test("通知分发：并发 drain 竞争下，已 sent 记录不会被失败分�
           sessionError: true,
         },
       },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task6-race-no-downgrade-question",
+      routeKey: "task6-race-no-downgrade-route",
+      handle: "q1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_500_450_000,
     })
 
     await notificationStore.upsertNotification({
@@ -981,7 +1349,7 @@ test("status runtime: 支持注入 drainOutboundMessages，并复用 runtime 的
     drainOutboundMessages: async ({ sendMessage }) => {
       drainCalls += 1
       if (drainCalls === 1) {
-        await sendMessage({ to: "u-runtime", text: "runtime-drain-message" })
+        await sendMessage({ to: "u-runtime", text: "runtime-drain-message", contextToken: "ctx-runtime" })
       }
     },
   })
@@ -998,6 +1366,7 @@ test("status runtime: 支持注入 drainOutboundMessages，并复用 runtime 的
   assert.equal(sendCalls[0]?.text, "runtime-drain-message")
   assert.equal(sendCalls[0]?.opts?.baseUrl, "https://wx-runtime.example.com")
   assert.equal(sendCalls[0]?.opts?.token, "token-runtime")
+  assert.equal(sendCalls[0]?.opts?.contextToken, "ctx-runtime")
 })
 
 test("broker-entry lifecycle: 创建 dispatcher 并在 runtime 注入 drainOutboundMessages", async () => {
@@ -1090,6 +1459,7 @@ test("通知分发：发送成功后若 markNotificationSent 因竞争失败，�
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
@@ -1103,6 +1473,16 @@ test("通知分发：发送成功后若 markNotificationSent 因竞争失败，�
           sessionError: true,
         },
       },
+    })
+
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-race-sent-question",
+      routeKey: "task4-race-route-question",
+      handle: "q1",
+      wechatAccountId: "wx-main",
+      userId: "u-main",
+      createdAt: 1_700_501_000_000,
     })
 
     await notificationStore.upsertNotification({
@@ -1150,9 +1530,20 @@ test("通知分发：rebind 后 binding 与记录不一致时，旧 pending 不�
   const commonSettingsStore = await import(`${DIST_COMMON_SETTINGS_STORE_MODULE}?reload=${Date.now()}`)
   const notificationDispatcher = await import(`${DIST_NOTIFICATION_DISPATCHER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
+  const requestStore = await import(`${DIST_REQUEST_STORE_MODULE}?reload=${Date.now()}`)
   const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   try {
+    await createOpenRequest(requestStore, {
+      kind: "question",
+      requestID: "req-task4-rebind-old-user-question",
+      routeKey: "task4-rebind-route-question",
+      handle: "q1",
+      wechatAccountId: "wx-old",
+      userId: "u-old",
+      createdAt: 1_700_501_100_000,
+    })
+
     await notificationStore.upsertNotification({
       idempotencyKey: "task4-rebind-old-user-question",
       kind: "question",

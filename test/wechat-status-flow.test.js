@@ -8,6 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 const DIST_BROKER_SERVER_MODULE = "../dist/wechat/broker-server.js"
 const DIST_BROKER_CLIENT_MODULE = "../dist/wechat/broker-client.js"
 const DIST_BRIDGE_MODULE = "../dist/wechat/bridge.js"
+const DIST_BROKER_MUTATION_QUEUE_MODULE = "../dist/wechat/broker-mutation-queue.js"
 
 const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-config-"))
 const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
@@ -39,6 +40,144 @@ async function waitFor(predicate, timeoutMs = 2000, intervalMs = 20) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
   throw new Error("waitFor timeout")
+}
+
+async function waitForAsync(predicate, timeoutMs = 2000, intervalMs = 20) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+  throw new Error("waitForAsync timeout")
+}
+
+async function readJsonLines(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8")
+    return raw
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return []
+    }
+    throw error
+  }
+}
+
+function toIdempotencyPart(value) {
+  const normalized = String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  return normalized.length > 0 ? normalized : "na"
+}
+
+function createFallbackQuestion(requestID) {
+  return [
+    {
+      id: requestID,
+      questions: [
+        {
+          header: "Fallback Question",
+          question: "Need fallback delivery",
+        },
+      ],
+    },
+  ]
+}
+
+async function createBridgeLifecycleForFallbackTest({
+  bridgeModule,
+  brokerClient,
+  endpoint,
+  directory,
+  onFallbackToast,
+  questionList,
+}) {
+  let bridgeInstanceID = ""
+  let registerAck = null
+  const bridgeLifecycle = await bridgeModule.createWechatBridgeLifecycle(
+    {
+      statusCollectionEnabled: true,
+      heartbeatIntervalMs: 60_000,
+      directory,
+      client: {
+        session: {
+          list: async () => [],
+          status: async () => ({}),
+          todo: async () => [],
+          messages: async () => [],
+        },
+        question: {
+          list: questionList,
+        },
+        permission: {
+          list: async () => [],
+        },
+      },
+      onFallbackToast,
+    },
+    {
+      connectOrSpawnBrokerImpl: async () => ({ endpoint }),
+      connectImpl: async (brokerEndpoint, options) => {
+        const client = await brokerClient.connect(brokerEndpoint, options)
+        return {
+          ...client,
+          registerInstance: async (meta) => {
+            bridgeInstanceID = meta.instanceID
+            registerAck = await client.registerInstance(meta)
+            return registerAck
+          },
+        }
+      },
+    },
+  )
+
+  assert.equal(bridgeInstanceID.length > 0, true)
+  return {
+    bridgeLifecycle,
+    bridgeInstanceID,
+    registerAck,
+  }
+}
+
+function createFailingNotificationRuntimeLifecycle({ brokerEntry, brokerServerHandle, errorMessage = "mock delivery failed" }) {
+  let sendAttempts = 0
+  const lifecycle = brokerEntry.createBrokerWechatStatusRuntimeLifecycle({
+    handleNotificationDeliveryFailure: brokerServerHandle.handleNotificationDeliveryFailure,
+    createStatusRuntime: ({ drainOutboundMessages }) => ({
+      start: async () => {
+        await drainOutboundMessages({
+          sendMessage: async () => {
+            sendAttempts += 1
+            throw new Error(errorMessage)
+          },
+        })
+      },
+      close: async () => {},
+    }),
+  })
+
+  return {
+    lifecycle,
+    getSendAttempts: () => sendAttempts,
+  }
+}
+
+async function markOpenQuestionAnsweredIfPresent(requestStore, requestID) {
+  const openRequest = await requestStore.listActiveRequests()
+    .then((records) => records.find((record) => record.kind === "question" && record.requestID === requestID))
+    .catch(() => undefined)
+  if (!openRequest) {
+    return
+  }
+  await requestStore.markRequestAnswered({
+    kind: "question",
+    routeKey: openRequest.routeKey,
+    answeredAt: Date.now(),
+  }).catch(() => {})
 }
 
 test("collectStatus/statusSnapshot 往返：broker 广播，bridge 回包，broker 仅聚合 snapshot", async () => {
@@ -251,6 +390,758 @@ test("broker-server.close 会主动断开客户端连接，避免 close 卡住",
       await client.close().catch(() => {})
     }
   }
+})
+
+test("broker 通知发送失败会标记 token stale 并发送 showFallbackToast", async () => {
+  const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}`)
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}`)
+  const operatorStore = await import(`../dist/wechat/operator-store.js?reload=${Date.now()}`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}`)
+  const tokenStore = await import(`../dist/wechat/token-store.js?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-fallback-toast-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const wechatAccountId = `wx-fallback-${Date.now()}`
+  const userId = `u-fallback-${Math.random().toString(16).slice(2)}`
+  const requestID = `req-fallback-${Math.random().toString(16).slice(2)}`
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: wechatAccountId, userId },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+  await operatorStore.rebindOperator({
+    wechatAccountId,
+    userId,
+    boundAt: Date.now(),
+  })
+
+  const server = await brokerServer.startBrokerServer(endpoint)
+  let bridgeLifecycle = null
+  let lifecycle = null
+  const toastCalls = []
+  let questionListCalls = 0
+
+  try {
+    const bridge = await createBridgeLifecycleForFallbackTest({
+      bridgeModule,
+      brokerClient,
+      endpoint,
+      directory: "/workspace/wechat-fallback-toast",
+      onFallbackToast: async (payload) => {
+        toastCalls.push(payload)
+      },
+      questionList: async () => {
+        questionListCalls += 1
+        return questionListCalls > 1 ? [] : createFallbackQuestion(requestID)
+      },
+    })
+    bridgeLifecycle = bridge.bridgeLifecycle
+    const expectedNotificationKey = `question-${toIdempotencyPart(bridge.bridgeInstanceID)}-${toIdempotencyPart(requestID)}`
+
+    await waitForAsync(async () => {
+      const pending = await notificationStore.listPendingNotifications()
+      return pending.some((record) => record.idempotencyKey === expectedNotificationKey)
+    })
+
+    const failingRuntime = createFailingNotificationRuntimeLifecycle({
+      brokerEntry,
+      brokerServerHandle: server,
+    })
+    lifecycle = failingRuntime.lifecycle
+    await lifecycle.start()
+
+    await waitForAsync(async () => {
+      try {
+        const record = JSON.parse(await readFile(statePaths.notificationStatePath(expectedNotificationKey), "utf8"))
+        return record.status === "failed"
+      } catch {
+        return false
+      }
+    })
+    const failedRecord = JSON.parse(await readFile(statePaths.notificationStatePath(expectedNotificationKey), "utf8"))
+    assert.equal(failingRuntime.getSendAttempts(), 1)
+    assert.equal(failedRecord.status, "failed")
+    assert.match(String(failedRecord.failureReason), /mock delivery failed/i)
+
+    await waitFor(() => toastCalls.length === 1)
+
+    const toast = toastCalls[0]
+    assert.equal(toast?.wechatAccountId, wechatAccountId)
+    assert.equal(toast?.userId, userId)
+    assert.equal(toast?.reason, "deliveryFailed")
+    assert.equal(typeof toast?.registrationEpoch, "string")
+    assert.equal((toast?.registrationEpoch ?? "").length > 0, true)
+    assert.equal(toast?.message, "微信会话可能已失效，请在微信发送 /status 重新激活")
+
+    const tokenState = await tokenStore.readTokenState(wechatAccountId, userId)
+    assert.equal(Boolean(tokenState), true)
+    assert.equal(tokenState?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+    assert.equal(typeof tokenState?.contextToken, "string")
+    assert.equal((tokenState?.contextToken ?? "").length > 0, true)
+
+    const diagnosticsRaw = await readFile(statePaths.wechatBrokerDiagnosticsPath(), "utf8")
+    const diagnostics = diagnosticsRaw
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+    const fallbackEvent = diagnostics.find(
+      (event) =>
+        event.instanceID === bridge.bridgeInstanceID
+        &&
+        event.type === "showFallbackToast"
+        && event.code === "showFallbackToast"
+        && event.reason === "deliveryFailed",
+    )
+    assert.equal(Boolean(fallbackEvent), true)
+  } finally {
+    await markOpenQuestionAnsweredIfPresent(requestStore, requestID)
+    await lifecycle?.close?.().catch(() => {})
+    await bridgeLifecycle?.close?.().catch(() => {})
+    await server.close()
+  }
+})
+
+test("fallbackToastMutation 在 registrationEpoch 不匹配时写入 fallbackToastDropped 且不误投递新连接", async () => {
+  const brokerMutationQueue = await import(`${DIST_BROKER_MUTATION_QUEUE_MODULE}?reload=${Date.now()}`)
+
+  const diagnostics = []
+  const deliveredPayloads = []
+  const blocker = {}
+  blocker.promise = new Promise((resolve) => {
+    blocker.resolve = resolve
+  })
+
+  let liveRegistration = {
+    socket: {
+      destroyed: false,
+    },
+    sessionToken: "session-old",
+    registrationEpoch: "epoch-old",
+  }
+
+  const queue = brokerMutationQueue.createBrokerMutationQueue()
+  const holdMutation = queue.enqueue("holdMutation", async () => {
+    await blocker.promise
+  })
+  const fallbackMutation = queue.enqueue("fallbackToastMutation", async () => {
+    await brokerMutationQueue.executeFallbackToastMutation(
+      {
+        type: "fallbackToastMutation",
+        instanceID: "bridge-instance-reconnect",
+        wechatAccountId: "wx-stale-reconnect",
+        userId: "u-stale-reconnect",
+        message: "微信会话可能已失效，请在微信发送 /status 重新激活",
+        reason: "deliveryFailed",
+        registrationEpoch: "epoch-old",
+      },
+      {
+        markTokenStale: async () => undefined,
+        appendDiagnostic: async (event) => {
+          diagnostics.push(event)
+        },
+        getLiveRegistration: () => liveRegistration,
+        deliverFallbackToast: async ({ payload }) => {
+          deliveredPayloads.push(payload)
+        },
+      },
+    )
+  })
+
+  liveRegistration = {
+    socket: {
+      destroyed: false,
+    },
+    sessionToken: "session-new",
+    registrationEpoch: "epoch-new",
+  }
+  blocker.resolve()
+
+  await holdMutation
+  await fallbackMutation
+
+  assert.deepEqual(deliveredPayloads, [])
+  assert.equal(diagnostics.some((event) => event.type === "showFallbackToast"), false)
+  assert.equal(
+    diagnostics.some(
+      (event) =>
+        event.type === "fallbackToastDropped"
+        && event.code === "fallbackToastDropped"
+        && event.reason === "deliveryFailed"
+        && event.registrationEpoch === "epoch-old"
+        && event.liveRegistrationEpoch === "epoch-new",
+    ),
+    true,
+  )
+})
+
+test("broker 通知发送失败在 bridge 重连后使用旧 registrationEpoch 并写入 fallbackToastDropped", async () => {
+  const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}`)
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}`)
+  const operatorStore = await import(`../dist/wechat/operator-store.js?reload=${Date.now()}`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-fallback-reconnect-integrated-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const wechatAccountId = `wx-stale-reconnect-${Date.now()}`
+  const userId = `u-stale-reconnect-${Math.random().toString(16).slice(2)}`
+  const requestID = `req-stale-reconnect-${Math.random().toString(16).slice(2)}`
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: wechatAccountId, userId },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+  await operatorStore.rebindOperator({
+    wechatAccountId,
+    userId,
+    boundAt: Date.now(),
+  })
+
+  const server = await brokerServer.startBrokerServer(endpoint)
+  let firstBridgeLifecycle = null
+  let secondBridgeLifecycle = null
+  let runtimeLifecycle = null
+  const secondBridgeToastCalls = []
+
+  try {
+    const diagnosticsBefore = await readJsonLines(statePaths.wechatBrokerDiagnosticsPath())
+
+    const firstBridge = await createBridgeLifecycleForFallbackTest({
+      bridgeModule,
+      brokerClient,
+      endpoint,
+      directory: "/workspace/wechat-fallback-reconnect-a",
+      onFallbackToast: async () => {},
+      questionList: async () => createFallbackQuestion(requestID),
+    })
+    firstBridgeLifecycle = firstBridge.bridgeLifecycle
+    const expectedNotificationKey = `question-${toIdempotencyPart(firstBridge.bridgeInstanceID)}-${toIdempotencyPart(requestID)}`
+
+    await waitForAsync(async () => {
+      const pending = await notificationStore.listPendingNotifications()
+      return pending.some((record) => record.idempotencyKey === expectedNotificationKey)
+    })
+
+    await firstBridgeLifecycle.close()
+    firstBridgeLifecycle = null
+
+    const secondBridge = await createBridgeLifecycleForFallbackTest({
+      bridgeModule,
+      brokerClient,
+      endpoint,
+      directory: "/workspace/wechat-fallback-reconnect-b",
+      onFallbackToast: async (payload) => {
+        secondBridgeToastCalls.push(payload)
+      },
+      questionList: async () => [],
+    })
+    secondBridgeLifecycle = secondBridge.bridgeLifecycle
+
+    const failingRuntime = createFailingNotificationRuntimeLifecycle({
+      brokerEntry,
+      brokerServerHandle: server,
+      errorMessage: "reconnect-send-failed",
+    })
+    runtimeLifecycle = failingRuntime.lifecycle
+    await runtimeLifecycle.start()
+
+    await waitForAsync(async () => {
+      try {
+        const record = JSON.parse(await readFile(statePaths.notificationStatePath(expectedNotificationKey), "utf8"))
+        return record.status === "failed"
+      } catch {
+        return false
+      }
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(secondBridgeToastCalls.length, 0)
+
+    const diagnosticsAfter = await readJsonLines(statePaths.wechatBrokerDiagnosticsPath())
+    const droppedEvent = diagnosticsAfter
+      .slice(diagnosticsBefore.length)
+      .find(
+        (event) =>
+          event.instanceID === firstBridge.bridgeInstanceID
+          && event.type === "fallbackToastDropped"
+          && event.code === "fallbackToastDropped"
+          && event.reason === "deliveryFailed",
+      )
+
+    assert.equal(Boolean(droppedEvent), true)
+    assert.equal(droppedEvent?.registrationEpoch, firstBridge.registerAck?.registrationEpoch)
+    assert.equal(droppedEvent?.liveRegistrationEpoch, secondBridge.registerAck?.registrationEpoch)
+  } finally {
+    await markOpenQuestionAnsweredIfPresent(requestStore, requestID)
+    await runtimeLifecycle?.close?.().catch(() => {})
+    await firstBridgeLifecycle?.close?.().catch(() => {})
+    await secondBridgeLifecycle?.close?.().catch(() => {})
+    await server.close()
+  }
+})
+
+test("broker 同 socket registerInstance 重注册会刷新 sessionToken/registrationEpoch，并丢弃首轮失败 toast", async () => {
+  const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}`)
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}`)
+  const operatorStore = await import(`../dist/wechat/operator-store.js?reload=${Date.now()}`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-same-socket-reregister-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const instanceID = `same-socket-instance-${Math.random().toString(16).slice(2)}`
+  const wechatAccountId = `wx-same-socket-${Date.now()}`
+  const userId = `u-same-socket-${Math.random().toString(16).slice(2)}`
+  const requestID = `req-same-socket-${Math.random().toString(16).slice(2)}`
+  const expectedNotificationKey = `question-${toIdempotencyPart(instanceID)}-${toIdempotencyPart(requestID)}`
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: wechatAccountId, userId },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+  await operatorStore.rebindOperator({
+    wechatAccountId,
+    userId,
+    boundAt: Date.now(),
+  })
+
+  const server = await brokerServer.startBrokerServer(endpoint)
+  let runtimeLifecycle = null
+  let client = null
+  let notificationCollectionCalls = 0
+  const toastCalls = []
+
+  try {
+    client = await brokerClient.connect(endpoint, {
+      bridge: {
+        collectStatusSnapshot: async () => ({ ok: true }),
+        collectNotificationCandidates: async () => {
+          notificationCollectionCalls += 1
+          if (notificationCollectionCalls > 1) {
+            return []
+          }
+          return [
+            {
+              idempotencyKey: expectedNotificationKey,
+              kind: "question",
+              requestID,
+              createdAt: Date.now(),
+              routeKey: `question-${requestID}`,
+              handle: "q1",
+            },
+          ]
+        },
+        showFallbackToast: async (payload) => {
+          toastCalls.push(payload)
+        },
+      },
+    })
+
+    const firstAck = await client.registerInstance({ instanceID, pid: process.pid })
+    await waitForAsync(async () => {
+      const pending = await notificationStore.listPendingNotifications()
+      return pending.some((record) => record.idempotencyKey === expectedNotificationKey)
+    })
+
+    const secondAck = await client.registerInstance({ instanceID, pid: process.pid })
+    assert.notEqual(firstAck.sessionToken, secondAck.sessionToken)
+    assert.notEqual(firstAck.registrationEpoch, secondAck.registrationEpoch)
+
+    const failingRuntime = createFailingNotificationRuntimeLifecycle({
+      brokerEntry,
+      brokerServerHandle: server,
+      errorMessage: "same-socket-send-failed",
+    })
+    runtimeLifecycle = failingRuntime.lifecycle
+    await runtimeLifecycle.start()
+
+    await waitForAsync(async () => {
+      try {
+        const record = JSON.parse(await readFile(statePaths.notificationStatePath(expectedNotificationKey), "utf8"))
+        return record.status === "failed"
+      } catch {
+        return false
+      }
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(toastCalls.length, 0)
+
+    const diagnostics = await readJsonLines(statePaths.wechatBrokerDiagnosticsPath())
+    const droppedEvent = diagnostics.find(
+      (event) =>
+        event.instanceID === instanceID
+        && event.type === "fallbackToastDropped"
+        && event.code === "fallbackToastDropped"
+        && event.reason === "deliveryFailed"
+        && event.registrationEpoch === firstAck.registrationEpoch
+        && event.liveRegistrationEpoch === secondAck.registrationEpoch,
+    )
+    assert.equal(Boolean(droppedEvent), true)
+  } finally {
+    await markOpenQuestionAnsweredIfPresent(requestStore, requestID)
+    await runtimeLifecycle?.close?.().catch(() => {})
+    await client?.close().catch(() => {})
+    await server.close()
+  }
+})
+
+test("broker-client showFallbackToast 仅透传匹配当前 sessionToken 与 registrationEpoch 的 push", async () => {
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-client-toast-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const toastCalls = []
+  let registerCount = 0
+
+  const server = net.createServer((socket) => {
+    let buffer = ""
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8")
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n")
+        if (newlineIndex === -1) {
+          break
+        }
+        const line = buffer.slice(0, newlineIndex)
+        buffer = buffer.slice(newlineIndex + 1)
+        const request = JSON.parse(line)
+        if (request.type !== "registerInstance") {
+          continue
+        }
+
+        registerCount += 1
+        if (registerCount === 1) {
+          socket.write(`${JSON.stringify({
+            id: `registerAck-${request.id}`,
+            type: "registerAck",
+            instanceID: request.instanceID,
+            payload: {
+              sessionToken: "token-old",
+              registeredAt: 1,
+              registrationEpoch: "epoch-old",
+              brokerPid: process.pid,
+            },
+          })}\n`)
+          continue
+        }
+
+        socket.write(`${JSON.stringify({
+          id: `registerAck-${request.id}`,
+          type: "registerAck",
+          instanceID: request.instanceID,
+          payload: {
+            sessionToken: "token-new",
+            registeredAt: 1,
+            registrationEpoch: "epoch-new",
+            brokerPid: process.pid,
+          },
+        })}\n`)
+        setTimeout(() => {
+          socket.write(`${JSON.stringify({
+            id: "showFallbackToast-stale",
+            type: "showFallbackToast",
+            instanceID: request.instanceID,
+            sessionToken: "token-old",
+            payload: {
+              wechatAccountId: "wx-fallback",
+              userId: "u-fallback",
+              message: "微信会话可能已失效，请在微信发送 /status 重新激活",
+              reason: "deliveryFailed",
+              registrationEpoch: "epoch-old",
+            },
+          })}\n`)
+          socket.write(`${JSON.stringify({
+            id: "showFallbackToast-current",
+            type: "showFallbackToast",
+            instanceID: request.instanceID,
+            sessionToken: "token-new",
+            payload: {
+              wechatAccountId: "wx-fallback",
+              userId: "u-fallback",
+              message: "微信会话可能已失效，请在微信发送 /status 重新激活",
+              reason: "deliveryFailed",
+              registrationEpoch: "epoch-new",
+            },
+          })}\n`)
+        }, 0)
+      }
+    })
+  })
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(endpoint, () => resolve())
+  })
+
+  let client = null
+  try {
+    client = await brokerClient.connect(endpoint, {
+      bridge: {
+        collectStatusSnapshot: async () => ({}),
+        collectNotificationCandidates: async () => [],
+        showFallbackToast: async (payload) => {
+          toastCalls.push(payload)
+        },
+      },
+    })
+
+    await client.registerInstance({ instanceID: "client-toast-instance", pid: process.pid })
+    await client.registerInstance({ instanceID: "client-toast-instance", pid: process.pid })
+
+    await waitFor(() => toastCalls.length === 1)
+    assert.equal(toastCalls.length, 1)
+    assert.equal(toastCalls[0]?.registrationEpoch, "epoch-new")
+  } finally {
+    await client?.close().catch(() => {})
+    await new Promise((resolve) => server.close(() => resolve()))
+  }
+})
+
+test("broker-client 在同 chunk 收到 registerAck 与匹配的 showFallbackToast 时仍透传当前 toast", async () => {
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-client-toast-same-chunk-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const toastCalls = []
+
+  const server = net.createServer((socket) => {
+    let buffer = ""
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8")
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n")
+        if (newlineIndex === -1) {
+          break
+        }
+        const line = buffer.slice(0, newlineIndex)
+        buffer = buffer.slice(newlineIndex + 1)
+        const request = JSON.parse(line)
+        if (request.type !== "registerInstance") {
+          continue
+        }
+
+        socket.write([
+          JSON.stringify({
+            id: `registerAck-${request.id}`,
+            type: "registerAck",
+            instanceID: request.instanceID,
+            payload: {
+              sessionToken: "token-co-delivered",
+              registeredAt: 1,
+              registrationEpoch: "epoch-co-delivered",
+              brokerPid: process.pid,
+            },
+          }),
+          JSON.stringify({
+            id: "showFallbackToast-co-delivered",
+            type: "showFallbackToast",
+            instanceID: request.instanceID,
+            sessionToken: "token-co-delivered",
+            payload: {
+              wechatAccountId: "wx-fallback",
+              userId: "u-fallback",
+              message: "微信会话可能已失效，请在微信发送 /status 重新激活",
+              reason: "deliveryFailed",
+              registrationEpoch: "epoch-co-delivered",
+            },
+          }),
+        ].join("\n") + "\n")
+      }
+    })
+  })
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(endpoint, () => resolve())
+  })
+
+  let client = null
+  try {
+    client = await brokerClient.connect(endpoint, {
+      bridge: {
+        collectStatusSnapshot: async () => ({}),
+        collectNotificationCandidates: async () => [],
+        showFallbackToast: async (payload) => {
+          toastCalls.push(payload)
+        },
+      },
+    })
+
+    const ack = await client.registerInstance({ instanceID: "client-toast-same-chunk", pid: process.pid })
+
+    await waitFor(() => toastCalls.length === 1)
+    assert.equal(ack.sessionToken, "token-co-delivered")
+    assert.equal(ack.registrationEpoch, "epoch-co-delivered")
+    assert.equal(toastCalls.length, 1)
+    assert.equal(toastCalls[0]?.registrationEpoch, "epoch-co-delivered")
+  } finally {
+    await client?.close().catch(() => {})
+    await new Promise((resolve) => server.close(() => resolve()))
+  }
+})
+
+test("broker registerInstance 在同一毫秒重连时仍生成不同 registrationEpoch", async () => {
+  const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-registration-epoch-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const server = await brokerServer.startBrokerServer(endpoint)
+  const originalDateNow = Date.now
+  let firstClient = null
+  let secondClient = null
+
+  try {
+    Date.now = () => 1_717_171_717_171
+    firstClient = await brokerClient.connect(endpoint)
+    const firstAck = await firstClient.registerInstance({ instanceID: "same-ms-registration", pid: process.pid })
+    await firstClient.close()
+    firstClient = null
+
+    secondClient = await brokerClient.connect(endpoint)
+    const secondAck = await secondClient.registerInstance({ instanceID: "same-ms-registration", pid: process.pid })
+
+    assert.equal(firstAck.registeredAt, secondAck.registeredAt)
+    assert.equal(typeof firstAck.registrationEpoch, "string")
+    assert.equal(typeof secondAck.registrationEpoch, "string")
+    assert.equal(firstAck.registrationEpoch.length > 0, true)
+    assert.equal(secondAck.registrationEpoch.length > 0, true)
+    assert.notEqual(firstAck.registrationEpoch, secondAck.registrationEpoch)
+  } finally {
+    Date.now = originalDateNow
+    await firstClient?.close().catch(() => {})
+    await secondClient?.close().catch(() => {})
+    await server.close()
+  }
+})
+
+test("broker 通知发送失败在 stale token 文件损坏时仍发送 showFallbackToast", async () => {
+  const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
+  const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}`)
+  const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}`)
+  const operatorStore = await import(`../dist/wechat/operator-store.js?reload=${Date.now()}`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}`)
+  const tokenStore = await import(`../dist/wechat/token-store.js?reload=${Date.now()}`)
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wechat-status-flow-fallback-corrupt-token-"))
+  const endpoint = createBrokerEndpoint(tempDir)
+  const wechatAccountId = `wx-stale-corrupt-${Date.now()}`
+  const userId = `u-stale-corrupt-${Math.random().toString(16).slice(2)}`
+  const requestID = `req-stale-corrupt-${Math.random().toString(16).slice(2)}`
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: wechatAccountId, userId },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+  await operatorStore.rebindOperator({
+    wechatAccountId,
+    userId,
+    boundAt: Date.now(),
+  })
+  await mkdir(path.dirname(statePaths.tokenStatePath(wechatAccountId, userId)), { recursive: true })
+  await writeFile(statePaths.tokenStatePath(wechatAccountId, userId), "{not-json", "utf8")
+
+  const server = await brokerServer.startBrokerServer(endpoint)
+  let bridgeLifecycle = null
+  let runtimeLifecycle = null
+  const toastCalls = []
+  let questionListCalls = 0
+
+  try {
+    const bridge = await createBridgeLifecycleForFallbackTest({
+      bridgeModule,
+      brokerClient,
+      endpoint,
+      directory: "/workspace/wechat-fallback-corrupt-token",
+      onFallbackToast: async (payload) => {
+        toastCalls.push(payload)
+      },
+      questionList: async () => {
+        questionListCalls += 1
+        return questionListCalls > 1 ? [] : createFallbackQuestion(requestID)
+      },
+    })
+    bridgeLifecycle = bridge.bridgeLifecycle
+    const expectedNotificationKey = `question-${toIdempotencyPart(bridge.bridgeInstanceID)}-${toIdempotencyPart(requestID)}`
+
+    await waitForAsync(async () => {
+      const pending = await notificationStore.listPendingNotifications()
+      return pending.some((record) => record.idempotencyKey === expectedNotificationKey)
+    })
+
+    const failingRuntime = createFailingNotificationRuntimeLifecycle({
+      brokerEntry,
+      brokerServerHandle: server,
+      errorMessage: "corrupt-token-send-failed",
+    })
+    runtimeLifecycle = failingRuntime.lifecycle
+    await runtimeLifecycle.start()
+
+    await waitFor(() => toastCalls.length === 1)
+    assert.equal(toastCalls[0]?.wechatAccountId, wechatAccountId)
+    assert.equal(toastCalls[0]?.userId, userId)
+    assert.equal(toastCalls[0]?.reason, "deliveryFailed")
+    assert.equal(toastCalls[0]?.message, "微信会话可能已失效，请在微信发送 /status 重新激活")
+
+    const tokenState = await tokenStore.readTokenState(wechatAccountId, userId)
+    assert.equal(Boolean(tokenState), true)
+    assert.equal(tokenState?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+    assert.equal(typeof tokenState?.contextToken, "string")
+    assert.equal((tokenState?.contextToken ?? "").length > 0, true)
+  } finally {
+    await markOpenQuestionAnsweredIfPresent(requestStore, requestID)
+    await runtimeLifecycle?.close?.().catch(() => {})
+    await bridgeLifecycle?.close?.().catch(() => {})
+    await server.close()
+  }
+})
+
+test("fallback toast 文案固定提示用户在微信发送 /status 重新激活", async () => {
+  const notificationFormat = await import(`../dist/wechat/notification-format.js?reload=${Date.now()}`)
+
+  assert.equal(
+    notificationFormat.WECHAT_FALLBACK_TOAST_MESSAGE,
+    "微信会话可能已失效，请在微信发送 /status 重新激活",
+  )
 })
 
 test("bridge live snapshot: 读取 session/status/question/permission/todo/messages 并只保留最近 3 个 session", async () => {
@@ -881,7 +1772,7 @@ test("/status 文案边界：最多 3 个 session、并行 highlights、局部�
   assert.equal(statusIndex > todoIndex, true)
 })
 
-test("command parser: 识别 /status /reply /allow", async () => {
+test("command parser: 识别 /status /reply /allow /recover", async () => {
   const parser = await import(`../dist/wechat/command-parser.js?reload=${Date.now()}`)
 
   assert.deepEqual(parser.parseWechatSlashCommand("/status"), { type: "status" })
@@ -904,8 +1795,13 @@ test("command parser: 识别 /status /reply /allow", async () => {
     reply: "reject",
     message: "no",
   })
+  assert.deepEqual(parser.parseWechatSlashCommand("/recover q1"), {
+    type: "recover",
+    handle: "q1",
+  })
   assert.equal(parser.parseWechatSlashCommand("/replyq1 done"), null)
   assert.equal(parser.parseWechatSlashCommand("/allowp1 once ok"), null)
+  assert.equal(parser.parseWechatSlashCommand("/recoverq1"), null)
   assert.equal(parser.parseWechatSlashCommand("status"), null)
 })
 
@@ -1223,6 +2119,105 @@ test("wechat status runtime: 收到响应即推进 get_updates_buf，失败重�
   assert.equal(sendCalls[1].to, "user-text")
   assert.equal(sendCalls[1].text, runtimeModule.DEFAULT_NON_SLASH_REPLY_TEXT)
   assert.equal(sendCalls[1].opts.contextToken, "ctx-2")
+})
+
+test("wechat status runtime: 仅 accepted slash 会持久化 context_token 并清理 stale，non-slash 不会", async () => {
+  const runtimeModule = await import(`../dist/wechat/wechat-status-runtime.js?reload=${Date.now()}`)
+  const tokenStore = await import(`../dist/wechat/token-store.js?reload=${Date.now()}`)
+
+  const accountId = `wx-runtime-token-${Date.now()}`
+  const sendCalls = []
+  let pollCount = 0
+
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: accountId,
+    userId: "user-slash",
+    contextToken: "ctx-old",
+    updatedAt: 1_700_300_000_000,
+    source: "question",
+    sourceRef: "legacy-request",
+  })
+  await tokenStore.markTokenStale({
+    wechatAccountId: accountId,
+    userId: "user-slash",
+    staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+  })
+  await tokenStore.upsertInboundToken({
+    wechatAccountId: accountId,
+    userId: "user-text",
+    contextToken: "ctx-text-old",
+    updatedAt: 1_700_300_000_010,
+    source: "message",
+    sourceRef: "hello-before",
+  })
+  await tokenStore.markTokenStale({
+    wechatAccountId: accountId,
+    userId: "user-text",
+    staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+  })
+
+  const runtime = runtimeModule.createWechatStatusRuntime({
+    retryDelayMs: 0,
+    loadPublicHelpers: async () => ({
+      latestAccountState: {
+        accountId,
+        token: "token-runtime-live",
+        baseUrl: "https://wx.example.com",
+        getUpdatesBuf: "buf-runtime-token",
+      },
+      getUpdates: async () => {
+        pollCount += 1
+        if (pollCount === 1) {
+          return {
+            get_updates_buf: "buf-runtime-token-1",
+            msgs: [
+              {
+                from_user_id: "user-slash",
+                context_token: "ctx-status-refresh",
+                item_list: [{ type: 1, text_item: { text: " /status " } }],
+              },
+              {
+                from_user_id: "user-text",
+                context_token: "ctx-text-refresh",
+                item_list: [{ type: 1, text_item: { text: "hello runtime" } }],
+              },
+            ],
+          }
+        }
+        return new Promise(() => {})
+      },
+      sendMessageWeixin: async (input) => {
+        sendCalls.push(input)
+        return { messageId: `m-${sendCalls.length}` }
+      },
+    }),
+    onSlashCommand: async () => "runtime token refreshed",
+  })
+
+  await runtime.start()
+  try {
+    await waitForAsync(async () => {
+      const slashState = await tokenStore.readTokenState(accountId, "user-slash")
+      const textState = await tokenStore.readTokenState(accountId, "user-text")
+      return sendCalls.length === 2
+        && slashState?.contextToken === "ctx-status-refresh"
+        && slashState?.staleReason === undefined
+        && textState?.contextToken === "ctx-text-old"
+        && textState?.staleReason === tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON
+    })
+  } finally {
+    await runtime.close()
+  }
+
+  const slashState = await tokenStore.readTokenState(accountId, "user-slash")
+  const textState = await tokenStore.readTokenState(accountId, "user-text")
+
+  assert.equal(slashState?.contextToken, "ctx-status-refresh")
+  assert.equal(slashState?.staleReason, undefined)
+  assert.equal(textState?.contextToken, "ctx-text-old")
+  assert.equal(textState?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+  assert.equal(sendCalls[0]?.opts?.contextToken, "ctx-status-refresh")
+  assert.equal(sendCalls[1]?.opts?.contextToken, "ctx-text-refresh")
 })
 
 test("wechat status runtime: get_updates_buf 推进后会持久化回写，重启可从最新 buf 继续", async () => {
@@ -2305,6 +3300,1808 @@ test("broker-entry slash handler: handle 不存在或非法时返回稳定中文
     await handler({ type: "allow", handle: "request-raw-001", reply: "always", message: "ok" }),
     "未找到待处理权限请求：request-raw-001",
   )
+})
+
+test("broker-entry slash handler: /recover 即使旧 handle 空闲也会分配 fresh handle 与 fresh route", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-handler`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-handler-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-handler-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-handler-request-store`)
+
+  const recoverableRouteKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-handler-1",
+    scopeKey: "instance-recover-handler-a",
+  })
+  const nonRecoverableRouteKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-handler-2",
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-handler-1",
+    routeKey: recoverableRouteKey,
+    handle: "q1",
+    scopeKey: "instance-recover-handler-a",
+    wechatAccountId: "wx-recover-handler-a",
+    userId: "u-recover-handler-a",
+    createdAt: 1_700_700_000_000,
+    prompt: {
+      title: "恢复问题标题",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: recoverableRouteKey,
+    expiredAt: 1_700_700_001_000,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: recoverableRouteKey,
+    requestID: "q-recover-handler-1",
+    handle: "q1",
+    scopeKey: "instance-recover-handler-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_700_000_000,
+    finalizedAt: 1_700_700_001_000,
+    wechatAccountId: "wx-recover-handler-a",
+    userId: "u-recover-handler-a",
+    instanceID: "instance-recover-handler-a",
+  })
+
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: nonRecoverableRouteKey,
+    requestID: "q-recover-handler-2",
+    handle: "qrecoverhandler2",
+    finalStatus: "cleaned",
+    reason: "runtimeCleanup",
+    createdAt: 1_700_700_010_000,
+    finalizedAt: 1_700_700_011_000,
+    wechatAccountId: "wx-recover-handler-b",
+    userId: "u-recover-handler-b",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    client: {
+      question: {
+        reply: async () => ({ data: true }),
+      },
+      permission: {
+        reply: async () => ({ data: true }),
+      },
+    },
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecoverhandler2" }),
+    "未找到可恢复的请求：qrecoverhandler2",
+  )
+
+  const recoveredResult = await handler({ type: "recover", handle: "q1" })
+  assert.equal(recoveredResult, "已恢复请求：q2")
+
+  const reopened = await requestStore.findOpenRequestByHandle({
+    kind: "question",
+    handle: "q2",
+  })
+  assert.equal(reopened?.requestID, "q-recover-handler-1")
+  assert.equal(reopened?.handle, "q2")
+  assert.notEqual(reopened?.handle, "q1")
+  assert.equal(reopened?.routeKey !== recoverableRouteKey, true)
+  assert.deepEqual(reopened?.prompt, {
+    title: "恢复问题标题",
+    mode: "text",
+  })
+
+  const original = await requestStore.findRequestByRouteKey({
+    kind: "question",
+    routeKey: recoverableRouteKey,
+  })
+  assert.equal(original, undefined)
+
+  const recoveredDeadLetter = await deadLetterStore.readDeadLetter("question", recoverableRouteKey)
+  assert.equal(recoveredDeadLetter?.recoveryStatus, "recovered")
+  assert.equal(typeof recoveredDeadLetter?.recoveredAt, "number")
+  assert.equal(recoveredDeadLetter?.recoveryErrorCode, undefined)
+  assert.equal(recoveredDeadLetter?.recoveryErrorMessage, undefined)
+
+  assert.equal(
+    await handler({ type: "recover", handle: "q1" }),
+    "未找到可恢复的请求：q1",
+  )
+})
+
+test("broker-entry slash handler: /recover 会把恢复作为单一 recoveryMutation 提交", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-mutation-queue`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-mutation-queue-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-mutation-queue-handle`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-recover-mutation-queue-notification-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-mutation-queue-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-recover-mutation-queue-state-paths`)
+
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-mutation-queue-1",
+    scopeKey: "instance-recover-mutation-queue-a",
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-mutation-queue-1",
+    routeKey,
+    handle: "q1",
+    scopeKey: "instance-recover-mutation-queue-a",
+    wechatAccountId: "wx-recover-mutation-queue",
+    userId: "u-recover-mutation-queue",
+    createdAt: 1_700_800_020_000,
+    prompt: {
+      title: "恢复经队列提交",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_800_020_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-recover-mutation-queue-1",
+    handle: "q1",
+    scopeKey: "instance-recover-mutation-queue-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_800_020_000,
+    finalizedAt: 1_700_800_020_100,
+    wechatAccountId: "wx-recover-mutation-queue",
+    userId: "u-recover-mutation-queue",
+    instanceID: "instance-recover-mutation-queue-a",
+  })
+  await notificationStore.upsertNotification({
+    idempotencyKey: "notif-recover-mutation-queue-old-pending",
+    kind: "question",
+    routeKey,
+    handle: "q1",
+    wechatAccountId: "wx-recover-mutation-queue",
+    userId: "u-recover-mutation-queue",
+    createdAt: 1_700_800_020_200,
+  })
+
+  const enqueuedMutationTypes = []
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    mutationQueue: {
+      enqueue: async (mutationType, task) => {
+        enqueuedMutationTypes.push(mutationType)
+        return task()
+      },
+    },
+  })
+
+  const recoveredResult = await handler({ type: "recover", handle: "q1" })
+
+  assert.match(recoveredResult, /^已恢复请求：q\d+$/)
+  assert.deepEqual(enqueuedMutationTypes, ["recoveryMutation"])
+
+  const notificationRaw = await readFile(statePaths.notificationStatePath("notif-recover-mutation-queue-old-pending"), "utf8")
+  const notification = JSON.parse(notificationRaw)
+  assert.equal(notification.status, "suppressed")
+})
+
+test("broker-entry slash handler: /recover 入队等待期间 fresh handle/route 被占用时会在队列内重新分配", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-refresh-freshness`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-refresh-freshness-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-refresh-freshness-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-refresh-freshness-request-store`)
+
+  const fixedNow = 1_700_800_025_000
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-refresh-freshness-1",
+    scopeKey: "instance-recover-refresh-freshness-a",
+  })
+  const firstPreparedRouteKey = handle.createRouteKey({
+    kind: "question",
+    requestID: `q-recover-refresh-freshness-1-recover-${fixedNow}-1`,
+    scopeKey: "instance-recover-refresh-freshness-a",
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-refresh-freshness-1",
+    routeKey,
+    handle: "q1",
+    scopeKey: "instance-recover-refresh-freshness-a",
+    wechatAccountId: "wx-recover-refresh-freshness",
+    userId: "u-recover-refresh-freshness",
+    createdAt: 1_700_800_024_000,
+    prompt: {
+      title: "恢复 freshness 竞争",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_800_024_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-recover-refresh-freshness-1",
+    handle: "q1",
+    scopeKey: "instance-recover-refresh-freshness-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_800_024_000,
+    finalizedAt: 1_700_800_024_100,
+    wechatAccountId: "wx-recover-refresh-freshness",
+    userId: "u-recover-refresh-freshness",
+    instanceID: "instance-recover-refresh-freshness-a",
+  })
+
+  const originalDateNow = Date.now
+  Date.now = () => fixedNow
+
+  let enqueued = false
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    mutationQueue: {
+      enqueue: async (_mutationType, task) => {
+        if (!enqueued) {
+          enqueued = true
+          await requestStore.upsertRequest({
+            kind: "question",
+            requestID: "q-recover-refresh-freshness-racer",
+            routeKey: firstPreparedRouteKey,
+            handle: "qrefreshrouteoccupier1",
+            scopeKey: "instance-recover-refresh-freshness-racer",
+            wechatAccountId: "wx-recover-refresh-freshness",
+            userId: "u-recover-refresh-freshness",
+            createdAt: fixedNow,
+            prompt: {
+              title: "先占住预测 fresh 值",
+              mode: "text",
+            },
+          })
+        }
+        return task()
+      },
+    },
+  })
+
+  try {
+    const recoveredResult = await handler({ type: "recover", handle: "q1" })
+    assert.match(recoveredResult, /^已恢复请求：q\d+$/)
+    const recoveredHandle = recoveredResult.slice("已恢复请求：".length)
+
+    const occupied = await requestStore.findRequestByRouteKey({
+      kind: "question",
+      routeKey: firstPreparedRouteKey,
+    })
+    assert.equal(occupied?.requestID, "q-recover-refresh-freshness-racer")
+
+    const recovered = await requestStore.findOpenRequestByHandle({
+      kind: "question",
+      handle: recoveredHandle,
+    })
+    assert.notEqual(recovered?.routeKey, firstPreparedRouteKey)
+  } finally {
+    Date.now = originalDateNow
+  }
+})
+
+test("recover mutation: commit 写入 fresh request 后失败时会清理 fresh route 并写 failed metadata", async () => {
+  const brokerMutationQueue = await import(`../dist/wechat/broker-mutation-queue.js?reload=${Date.now()}-recover-partial-write-cleanup`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-partial-write-cleanup-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-partial-write-cleanup-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-partial-write-cleanup-request-store`)
+
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-partial-write-cleanup-1",
+    scopeKey: "instance-recover-partial-write-cleanup-a",
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-partial-write-cleanup-1",
+    routeKey,
+    handle: "qrecoverpartialwrite1",
+    scopeKey: "instance-recover-partial-write-cleanup-a",
+    wechatAccountId: "wx-recover-partial-write-cleanup",
+    userId: "u-recover-partial-write-cleanup",
+    createdAt: 1_700_800_026_000,
+    prompt: {
+      title: "恢复部分写入清理",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_800_026_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-recover-partial-write-cleanup-1",
+    handle: "qrecoverpartialwrite1",
+    scopeKey: "instance-recover-partial-write-cleanup-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_800_026_000,
+    finalizedAt: 1_700_800_026_100,
+    wechatAccountId: "wx-recover-partial-write-cleanup",
+    userId: "u-recover-partial-write-cleanup",
+    instanceID: "instance-recover-partial-write-cleanup-a",
+  })
+
+  const originalRequest = await requestStore.findRequestByRouteKey({ kind: "question", routeKey })
+  assert.equal(originalRequest?.status, "expired")
+
+  const mutation = {
+    type: "recoveryMutation",
+    requestedHandle: "qrecoverpartialwrite1",
+    deadLetter: await deadLetterStore.readDeadLetter("question", routeKey),
+    originalRequest,
+    pendingNotifications: [],
+    recoveryChainHandles: ["qrecoverpartialwrite1"],
+  }
+
+  const result = await brokerMutationQueue.executeRecoveryMutation(mutation, {
+    revalidate: async () => undefined,
+    prepareFreshRecovery: async (_mutation, recoveredAt) => requestStore.prepareRecoveryRequestReopen({
+      kind: "question",
+      routeKey,
+      recoveredAt,
+      bannedHandles: ["qrecoverpartialwrite1"],
+    }),
+    suppressPendingNotifications: async () => {},
+    commitPreparedRecovery: async (preparedRecovery) => {
+      await requestStore.upsertRequest({
+        ...preparedRecovery.originalRequest,
+        routeKey: preparedRecovery.nextRouteKey,
+        handle: preparedRecovery.nextHandle,
+        status: "open",
+        answeredAt: undefined,
+        rejectedAt: undefined,
+        expiredAt: undefined,
+        cleanedAt: undefined,
+      })
+      throw new Error("forced commit after write failure")
+    },
+    rollbackPreparedRecovery: async (preparedRecovery) => requestStore.rollbackPreparedRecoveryRequestReopen(preparedRecovery),
+    markRecovered: async () => {},
+    markFailed: async ({ kind, routeKey: failedRouteKey, failure }) => {
+      await deadLetterStore.markDeadLetterRecoveryFailed({
+        kind,
+        routeKey: failedRouteKey,
+        recoveryErrorCode: failure.recoveryErrorCode,
+        recoveryErrorMessage: failure.recoveryErrorMessage,
+      })
+    },
+    mapFailure: () => ({
+      recoveryErrorCode: "recoveryFailed",
+      recoveryErrorMessage: "无法恢复请求：qrecoverpartialwrite1",
+    }),
+  })
+
+  assert.deepEqual(result, {
+    ok: false,
+    message: "无法恢复请求：qrecoverpartialwrite1",
+  })
+
+  const activeRequests = await requestStore.listActiveRequests()
+  assert.equal(
+    activeRequests.some((item) => item.requestID === "q-recover-partial-write-cleanup-1" && item.status === "open"),
+    false,
+  )
+
+  const original = await requestStore.findRequestByRouteKey({ kind: "question", routeKey })
+  assert.equal(original?.status, "expired")
+  assert.equal(original?.handle, "qrecoverpartialwrite1")
+
+  const recoveredDeadLetter = await deadLetterStore.readDeadLetter("question", routeKey)
+  assert.equal(recoveredDeadLetter?.recoveryStatus, "failed")
+  assert.equal(recoveredDeadLetter?.recoveryErrorCode, "recoveryFailed")
+  assert.equal(recoveredDeadLetter?.recoveryErrorMessage, "无法恢复请求：qrecoverpartialwrite1")
+})
+
+test("recover mutation: rollback 失败时仍会尝试写 failed metadata 并暴露 rollback 错误", async () => {
+  const brokerMutationQueue = await import(`../dist/wechat/broker-mutation-queue.js?reload=${Date.now()}-recover-rollback-error`)
+
+  const mutation = {
+    type: "recoveryMutation",
+    requestedHandle: "q1",
+    deadLetter: {
+      kind: "question",
+      routeKey: "question-recover-rollback-error",
+      requestID: "q-recover-rollback-error",
+      handle: "q1",
+      finalStatus: "expired",
+      reason: "instanceStale",
+      createdAt: 1,
+      finalizedAt: 2,
+      wechatAccountId: "wx-recover-rollback-error",
+      userId: "u-recover-rollback-error",
+    },
+    originalRequest: {
+      kind: "question",
+      requestID: "q-recover-rollback-error",
+      routeKey: "question-recover-rollback-error",
+      handle: "q1",
+      wechatAccountId: "wx-recover-rollback-error",
+      userId: "u-recover-rollback-error",
+      status: "expired",
+      createdAt: 1,
+    },
+    pendingNotifications: [],
+    recoveryChainHandles: ["q1"],
+  }
+
+  const callOrder = []
+
+  await assert.rejects(
+    () => brokerMutationQueue.executeRecoveryMutation(mutation, {
+      revalidate: async () => undefined,
+      prepareFreshRecovery: async () => ({
+        originalRequest: mutation.originalRequest,
+        nextHandle: "q2",
+        nextRouteKey: "question-recover-rollback-error-fresh",
+      }),
+      suppressPendingNotifications: async () => {},
+      commitPreparedRecovery: async () => ({
+        ...mutation.originalRequest,
+        handle: "q2",
+        routeKey: "question-recover-rollback-error-fresh",
+        status: "open",
+      }),
+      rollbackPreparedRecovery: async () => {
+        callOrder.push("rollback")
+        throw new Error("rollback failed")
+      },
+      markRecovered: async () => {},
+      markFailed: async () => {
+        callOrder.push("markFailed")
+      },
+      mapFailure: () => ({
+        recoveryErrorCode: "recoveryFailed",
+        recoveryErrorMessage: "无法恢复请求：q1",
+      }),
+      testHooks: {
+        afterReopenRequest: async () => {
+          throw new Error("forced recover failure")
+        },
+      },
+    }),
+    /rollback failed/i,
+  )
+
+  assert.deepEqual(callOrder, ["rollback", "markFailed"])
+})
+
+test("recover mutation: failed metadata 落盘失败时会暴露错误", async () => {
+  const brokerMutationQueue = await import(`../dist/wechat/broker-mutation-queue.js?reload=${Date.now()}-recover-failed-metadata-error`)
+
+  const mutation = {
+    type: "recoveryMutation",
+    requestedHandle: "q1",
+    deadLetter: {
+      kind: "question",
+      routeKey: "question-recover-failed-metadata-error",
+      requestID: "q-recover-failed-metadata-error",
+      handle: "q1",
+      finalStatus: "expired",
+      reason: "instanceStale",
+      createdAt: 1,
+      finalizedAt: 2,
+      wechatAccountId: "wx-recover-failed-metadata-error",
+      userId: "u-recover-failed-metadata-error",
+    },
+    originalRequest: {
+      kind: "question",
+      requestID: "q-recover-failed-metadata-error",
+      routeKey: "question-recover-failed-metadata-error",
+      handle: "q1",
+      wechatAccountId: "wx-recover-failed-metadata-error",
+      userId: "u-recover-failed-metadata-error",
+      status: "expired",
+      createdAt: 1,
+    },
+    pendingNotifications: [],
+    recoveryChainHandles: ["q1"],
+  }
+
+  const callOrder = []
+
+  await assert.rejects(
+    () => brokerMutationQueue.executeRecoveryMutation(mutation, {
+      revalidate: async () => undefined,
+      prepareFreshRecovery: async () => ({
+        originalRequest: mutation.originalRequest,
+        nextHandle: "q2",
+        nextRouteKey: "question-recover-failed-metadata-error-fresh",
+      }),
+      suppressPendingNotifications: async () => {},
+      commitPreparedRecovery: async () => {
+        throw new Error("forced commit failure")
+      },
+      rollbackPreparedRecovery: async () => {
+        callOrder.push("rollback")
+      },
+      markRecovered: async () => {},
+      markFailed: async () => {
+        callOrder.push("markFailed")
+        throw new Error("persist failed metadata failed")
+      },
+      mapFailure: () => ({
+        recoveryErrorCode: "recoveryFailed",
+        recoveryErrorMessage: "无法恢复请求：q1",
+      }),
+    }),
+    /persist failed metadata failed/i,
+  )
+
+  assert.deepEqual(callOrder, ["rollback", "markFailed"])
+})
+
+test("broker-entry slash handler: /recover 在 mutation 中途失败时会回滚 fresh request 并持久化 failed 状态", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-mutation-rollback`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-mutation-rollback-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-mutation-rollback-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-mutation-rollback-request-store`)
+
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-mutation-rollback-1",
+    scopeKey: "instance-recover-mutation-rollback-a",
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-mutation-rollback-1",
+    routeKey,
+    handle: "qrecoverrollback1",
+    scopeKey: "instance-recover-mutation-rollback-a",
+    wechatAccountId: "wx-recover-mutation-rollback",
+    userId: "u-recover-mutation-rollback",
+    createdAt: 1_700_800_030_000,
+    prompt: {
+      title: "恢复回滚问题",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_800_030_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-recover-mutation-rollback-1",
+    handle: "qrecoverrollback1",
+    scopeKey: "instance-recover-mutation-rollback-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_800_030_000,
+    finalizedAt: 1_700_800_030_100,
+    wechatAccountId: "wx-recover-mutation-rollback",
+    userId: "u-recover-mutation-rollback",
+    instanceID: "instance-recover-mutation-rollback-a",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    mutationQueue: {
+      enqueue: async (_mutationType, task) => task(),
+    },
+    recoveryTestHooks: {
+      afterReopenRequest: async () => {
+        throw new Error("forced recovery mutation failure")
+      },
+    },
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecoverrollback1" }),
+    "无法恢复请求：qrecoverrollback1",
+  )
+
+  const activeRequests = await requestStore.listActiveRequests()
+  assert.equal(
+    activeRequests.some((item) => item.requestID === "q-recover-mutation-rollback-1" && item.status === "open"),
+    false,
+  )
+
+  const original = await requestStore.findRequestByRouteKey({
+    kind: "question",
+    routeKey,
+  })
+  assert.equal(original?.status, "expired")
+  assert.equal(original?.handle, "qrecoverrollback1")
+
+  const recoveredDeadLetter = await deadLetterStore.readDeadLetter("question", routeKey)
+  assert.equal(recoveredDeadLetter?.recoveryStatus, "failed")
+  assert.equal(recoveredDeadLetter?.recoveryErrorCode, "recoveryFailed")
+  assert.equal(recoveredDeadLetter?.recoveryErrorMessage, "无法恢复请求：qrecoverrollback1")
+})
+
+test("broker-entry slash handler: /recover 会 suppress 旧 routeKey 的 pending notification，后续 drain 不会发送旧 handle", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-suppress-pending`)
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}-recover-suppress-pending-settings`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-suppress-pending-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-suppress-pending-handle`)
+  const notificationDispatcher = await import(`../dist/wechat/notification-dispatcher.js?reload=${Date.now()}-recover-suppress-pending-dispatcher`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-recover-suppress-pending-notification-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-suppress-pending-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-recover-suppress-pending-state-paths`)
+
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-suppress-pending-1",
+    scopeKey: "instance-recover-suppress-pending-a",
+  })
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: "wx-recover-suppress", userId: "u-recover-suppress" },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-suppress-pending-1",
+    routeKey,
+    handle: "qrecoversuppressold1",
+    scopeKey: "instance-recover-suppress-pending-a",
+    wechatAccountId: "wx-recover-suppress",
+    userId: "u-recover-suppress",
+    createdAt: 1_700_800_000_000,
+    prompt: {
+      title: "恢复旧通知",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_800_000_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-recover-suppress-pending-1",
+    handle: "qrecoversuppressold1",
+    scopeKey: "instance-recover-suppress-pending-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_800_000_000,
+    finalizedAt: 1_700_800_000_100,
+    wechatAccountId: "wx-recover-suppress",
+    userId: "u-recover-suppress",
+    instanceID: "instance-recover-suppress-pending-a",
+  })
+  await notificationStore.upsertNotification({
+    idempotencyKey: "notif-recover-suppress-old-pending",
+    kind: "question",
+    routeKey,
+    handle: "qrecoversuppressold1",
+    wechatAccountId: "wx-recover-suppress",
+    userId: "u-recover-suppress",
+    createdAt: 1_700_800_000_200,
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+
+  const recoveredResult = await handler({ type: "recover", handle: "qrecoversuppressold1" })
+  assert.match(recoveredResult, /^已恢复请求：q\d+$/)
+  const recoveredHandle = recoveredResult.slice("已恢复请求：".length)
+  assert.notEqual(recoveredHandle, "qrecoversuppressold1")
+
+  const suppressedRaw = await readFile(statePaths.notificationStatePath("notif-recover-suppress-old-pending"), "utf8")
+  const suppressed = JSON.parse(suppressedRaw)
+  assert.equal(suppressed.status, "suppressed")
+  assert.equal(typeof suppressed.suppressedAt, "number")
+
+  const sendCalls = []
+  const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+    sendMessage: async (input) => {
+      sendCalls.push(input)
+    },
+  })
+
+  await dispatcher.drainOutboundMessages()
+
+  assert.equal(sendCalls.length, 0)
+})
+
+test("notification dispatcher: recover 并发窗口下旧 pending request 缺失时会 suppress，不发送旧 handle", async () => {
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}-recover-race-missing-request-settings`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-race-missing-request-handle`)
+  const notificationDispatcher = await import(`../dist/wechat/notification-dispatcher.js?reload=${Date.now()}-recover-race-missing-request-dispatcher`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-recover-race-missing-request-notification-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-race-missing-request-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-recover-race-missing-request-state-paths`)
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: "wx-recover-race", userId: "u-recover-race" },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+
+  const recoveredRouteKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-race-active-1-recovered",
+    scopeKey: "instance-recover-race-a",
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-race-active-1",
+    routeKey: recoveredRouteKey,
+    handle: "qrecoverraceactive1",
+    scopeKey: "instance-recover-race-a",
+    wechatAccountId: "wx-recover-race",
+    userId: "u-recover-race",
+    createdAt: 1_700_810_000_000,
+    prompt: {
+      title: "恢复后的请求",
+      mode: "text",
+    },
+  })
+
+  await notificationStore.upsertNotification({
+    idempotencyKey: "notif-recover-race-old-pending",
+    kind: "question",
+    routeKey: "question-recover-race-old",
+    handle: "q1",
+    wechatAccountId: "wx-recover-race",
+    userId: "u-recover-race",
+    createdAt: 1_700_810_000_100,
+  })
+
+  const sendCalls = []
+  const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+    sendMessage: async (input) => {
+      sendCalls.push(input)
+    },
+  })
+
+  await dispatcher.drainOutboundMessages()
+
+  assert.equal(sendCalls.length, 0)
+  const notificationRaw = await readFile(statePaths.notificationStatePath("notif-recover-race-old-pending"), "utf8")
+  const notification = JSON.parse(notificationRaw)
+  assert.equal(notification.status, "suppressed")
+  assert.equal(typeof notification.suppressedAt, "number")
+})
+
+test("notification dispatcher: 发送成功后 sent 持久化失败不会在后续 drain 重发", async () => {
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}-notification-sent-persist-failure-settings`)
+  const notificationDispatcher = await import(`../dist/wechat/notification-dispatcher.js?reload=${Date.now()}-notification-sent-persist-failure-dispatcher`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-notification-sent-persist-failure-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-notification-sent-persist-failure-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-notification-sent-persist-failure-state-paths`)
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: "wx-notification-sent-persist-failure", userId: "u-notification-sent-persist-failure" },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+
+  await notificationStore.upsertNotification({
+    idempotencyKey: "notif-sent-persist-failure",
+    kind: "question",
+    routeKey: "question-notif-sent-persist-failure",
+    handle: "qnotifpersist1",
+    scopeKey: "instance-notif-sent-persist-failure",
+    wechatAccountId: "wx-notification-sent-persist-failure",
+    userId: "u-notification-sent-persist-failure",
+    createdAt: 1_700_840_000_000,
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-notification-sent-persist-failure",
+    routeKey: "question-notif-sent-persist-failure",
+    handle: "qnotifpersist1",
+    scopeKey: "instance-notif-sent-persist-failure",
+    wechatAccountId: "wx-notification-sent-persist-failure",
+    userId: "u-notification-sent-persist-failure",
+    createdAt: 1_700_840_000_000,
+    prompt: {
+      title: "sent persist failure",
+      mode: "text",
+    },
+  })
+
+  let sendCalls = 0
+  let markSentOverrideCalls = 0
+  const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+    sendMessage: async () => {
+      sendCalls += 1
+    },
+    notificationStateOps: {
+      markNotificationSent: async () => {
+        markSentOverrideCalls += 1
+        throw new Error("persist sent failed")
+      },
+    },
+  })
+
+  await assert.doesNotReject(() => dispatcher.drainOutboundMessages())
+  await assert.doesNotReject(() => dispatcher.drainOutboundMessages())
+
+  assert.equal(sendCalls, 1)
+  assert.equal(markSentOverrideCalls, 1)
+  const stored = JSON.parse(await readFile(statePaths.notificationStatePath("notif-sent-persist-failure"), "utf8"))
+  assert.notEqual(stored.status, "pending")
+})
+
+test("notification dispatcher: 旧通知缺少 scopeKey 时 delivery failure callback 仍会回填 immutable scopeKey", async () => {
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}-notification-failure-scope-settings`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-notification-failure-scope-dead-letter-store`)
+  const notificationDispatcher = await import(`../dist/wechat/notification-dispatcher.js?reload=${Date.now()}-notification-failure-scope-dispatcher`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-notification-failure-scope-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-notification-failure-scope-state-paths`)
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: "wx-notification-failure-scope", userId: "u-notification-failure-scope" },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+
+  await writeFile(statePaths.notificationStatePath("notif-failure-scope"), JSON.stringify({
+    idempotencyKey: "notif-failure-scope",
+    kind: "question",
+    routeKey: "question-notif-failure-scope",
+    handle: "qnotifscope1",
+    wechatAccountId: "wx-notification-failure-scope",
+    userId: "u-notification-failure-scope",
+    createdAt: 1_700_840_000_100,
+    status: "pending",
+  }, null, 2))
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-notification-failure-scope",
+    routeKey: "question-notif-failure-scope",
+    handle: "qnotifscope1",
+    scopeKey: "instance-notification-failure-scope",
+    wechatAccountId: "wx-notification-failure-scope",
+    userId: "u-notification-failure-scope",
+    createdAt: 1_700_840_000_050,
+    prompt: {
+      title: "failure scope",
+      mode: "text",
+    },
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    requestID: "q-notification-failure-scope",
+    routeKey: "question-notif-failure-scope",
+    handle: "qnotifscope1",
+    scopeKey: "instance-notification-failure-scope",
+    wechatAccountId: "wx-notification-failure-scope",
+    userId: "u-notification-failure-scope",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_840_000_100,
+    finalizedAt: 1_700_840_000_200,
+    instanceID: "instance-notification-failure-scope",
+  })
+
+  const failureCalls = []
+  const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+    sendMessage: async () => {
+      throw new Error("late delivery failed")
+    },
+    onDeliveryFailed: async (failure) => {
+      failureCalls.push(failure)
+    },
+  })
+
+  await dispatcher.drainOutboundMessages()
+
+  assert.equal(failureCalls.length, 1)
+  assert.equal(failureCalls[0]?.routeKey, "question-notif-failure-scope")
+  assert.equal(failureCalls[0]?.scopeKey, "instance-notification-failure-scope")
+})
+
+test("notification store: backfill 旧通知 scopeKey 时不会回退并发更新到的 sent 状态", async () => {
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-notification-backfill-race-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-notification-backfill-race-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-notification-backfill-race-state-paths`)
+
+  let releaseBackfill
+  const backfillReached = new Promise((resolve) => {
+    notificationStore.setNotificationStoreTestHooks({
+      beforePersistBackfilledScopeKey: async () => {
+        resolve(undefined)
+        await new Promise((resume) => {
+          releaseBackfill = resume
+        })
+      },
+    })
+  })
+
+  try {
+    await requestStore.upsertRequest({
+      kind: "question",
+      requestID: "q-notification-backfill-race",
+      routeKey: "question-notification-backfill-race",
+      handle: "qnotifbackfillrace1",
+      scopeKey: "instance-notification-backfill-race",
+      wechatAccountId: "wx-notification-backfill-race",
+      userId: "u-notification-backfill-race",
+      createdAt: 1_700_870_000_000,
+      prompt: {
+        title: "notification backfill race",
+        mode: "text",
+      },
+    })
+    await writeFile(statePaths.notificationStatePath("notif-backfill-race"), JSON.stringify({
+      idempotencyKey: "notif-backfill-race",
+      kind: "question",
+      routeKey: "question-notification-backfill-race",
+      handle: "qnotifbackfillrace1",
+      wechatAccountId: "wx-notification-backfill-race",
+      userId: "u-notification-backfill-race",
+      createdAt: 1_700_870_000_100,
+      status: "pending",
+    }, null, 2))
+
+    const readPromise = notificationStore.findSentNotificationByRequest({
+      kind: "question",
+      routeKey: "question-notification-backfill-race",
+      handle: "qnotifbackfillrace1",
+    })
+
+    await backfillReached
+    await writeFile(statePaths.notificationStatePath("notif-backfill-race"), JSON.stringify({
+      idempotencyKey: "notif-backfill-race",
+      kind: "question",
+      routeKey: "question-notification-backfill-race",
+      handle: "qnotifbackfillrace1",
+      wechatAccountId: "wx-notification-backfill-race",
+      userId: "u-notification-backfill-race",
+      createdAt: 1_700_870_000_100,
+      status: "sent",
+      sentAt: 1_700_870_000_200,
+    }, null, 2))
+    releaseBackfill()
+
+    const result = await readPromise
+    assert.equal(result?.status, "sent")
+    assert.equal(result?.scopeKey, "instance-notification-backfill-race")
+
+    const stored = JSON.parse(await readFile(statePaths.notificationStatePath("notif-backfill-race"), "utf8"))
+    assert.equal(stored.status, "sent")
+  } finally {
+    notificationStore.setNotificationStoreTestHooks(undefined)
+  }
+})
+
+test("notification dispatcher: 晚到的 delivery failure 不会把 sent 或 suppressed 通知改写成 failed，也不会触发 fallback", async () => {
+  const commonSettingsStore = await import(`../dist/common-settings-store.js?reload=${Date.now()}-notification-late-failure-terminal-settings`)
+  const notificationDispatcher = await import(`../dist/wechat/notification-dispatcher.js?reload=${Date.now()}-notification-late-failure-terminal-dispatcher`)
+  const notificationStore = await import(`../dist/wechat/notification-store.js?reload=${Date.now()}-notification-late-failure-terminal-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-notification-late-failure-terminal-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-notification-late-failure-terminal-state-paths`)
+
+  await commonSettingsStore.writeCommonSettingsStore({
+    wechat: {
+      primaryBinding: { accountId: "wx-notification-late-failure-terminal", userId: "u-notification-late-failure-terminal" },
+      notifications: {
+        enabled: true,
+        question: true,
+        permission: true,
+        sessionError: true,
+      },
+    },
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-notification-late-failure-terminal",
+    routeKey: "question-notification-late-failure-terminal",
+    handle: "qnotlaterm1",
+    scopeKey: "instance-notification-late-failure-terminal",
+    wechatAccountId: "wx-notification-late-failure-terminal",
+    userId: "u-notification-late-failure-terminal",
+    createdAt: 1_700_840_000_300,
+    prompt: {
+      title: "late failure terminal",
+      mode: "text",
+    },
+  })
+  await notificationStore.upsertNotification({
+    idempotencyKey: "notif-late-failure-sent",
+    kind: "question",
+    routeKey: "question-notification-late-failure-terminal",
+    handle: "qnotlaterm1",
+    scopeKey: "instance-notification-late-failure-terminal",
+    wechatAccountId: "wx-notification-late-failure-terminal",
+    userId: "u-notification-late-failure-terminal",
+    createdAt: Date.now(),
+  })
+  await notificationStore.markNotificationSent({
+    idempotencyKey: "notif-late-failure-sent",
+    sentAt: Date.now(),
+  })
+  await notificationStore.upsertNotification({
+    idempotencyKey: "notif-late-failure-suppressed",
+    kind: "question",
+    routeKey: "question-notification-late-failure-terminal",
+    handle: "qnotlaterm1",
+    scopeKey: "instance-notification-late-failure-terminal",
+    wechatAccountId: "wx-notification-late-failure-terminal",
+    userId: "u-notification-late-failure-terminal",
+    createdAt: Date.now(),
+  })
+  await notificationStore.markNotificationResolved({
+    idempotencyKey: "notif-late-failure-suppressed",
+    resolvedAt: Date.now(),
+    suppressed: true,
+  })
+
+  let pendingCallCount = 0
+  const failureCalls = []
+  const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
+    sendMessage: async () => {
+      throw new Error("late failure should not resend terminal notifications")
+    },
+    onDeliveryFailed: async (failure) => {
+      failureCalls.push(failure)
+    },
+    notificationStateOps: {
+      listPendingNotifications: async () => {
+        pendingCallCount += 1
+        const sent = JSON.parse(await readFile(statePaths.notificationStatePath("notif-late-failure-sent"), "utf8"))
+        const suppressed = JSON.parse(await readFile(statePaths.notificationStatePath("notif-late-failure-suppressed"), "utf8"))
+        return pendingCallCount === 1 ? [sent, suppressed] : []
+      },
+    },
+  })
+
+  await dispatcher.drainOutboundMessages()
+
+  const sent = JSON.parse(await readFile(statePaths.notificationStatePath("notif-late-failure-sent"), "utf8"))
+  const suppressed = JSON.parse(await readFile(statePaths.notificationStatePath("notif-late-failure-suppressed"), "utf8"))
+  assert.equal(sent.status, "sent")
+  assert.equal(suppressed.status, "suppressed")
+  assert.deepEqual(failureCalls, [])
+})
+
+test("broker-entry runtime lifecycle: 旧 route 被 recovery 移除后 late delivery failure 仍会按 immutable scopeKey 处理", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-late-delivery-failure-after-recover`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-late-delivery-failure-after-recover-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-late-delivery-failure-after-recover-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-late-delivery-failure-after-recover-request-store`)
+
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-late-delivery-failure-after-recover-1",
+    scopeKey: "instance-late-delivery-failure-after-recover-a",
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-late-delivery-failure-after-recover-1",
+    routeKey,
+    handle: "qlatedelivery1",
+    scopeKey: "instance-late-delivery-failure-after-recover-a",
+    wechatAccountId: "wx-late-delivery-failure-after-recover",
+    userId: "u-late-delivery-failure-after-recover",
+    createdAt: 1_700_840_000_200,
+    prompt: {
+      title: "late delivery failure after recover",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_840_000_300,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-late-delivery-failure-after-recover-1",
+    handle: "qlatedelivery1",
+    scopeKey: "instance-late-delivery-failure-after-recover-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_840_000_200,
+    finalizedAt: 1_700_840_000_300,
+    wechatAccountId: "wx-late-delivery-failure-after-recover",
+    userId: "u-late-delivery-failure-after-recover",
+    instanceID: "instance-late-delivery-failure-after-recover-a",
+  })
+
+  const slashHandler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+  const recoveredResult = await slashHandler({ type: "recover", handle: "qlatedelivery1" })
+  assert.match(recoveredResult, /^已恢复请求：q\d+$/)
+  assert.equal(await requestStore.findRequestByRouteKey({ kind: "question", routeKey }), undefined)
+
+  const failureCalls = []
+  const lifecycle = brokerEntry.createBrokerWechatStatusRuntimeLifecycle({
+    handleNotificationDeliveryFailure: async (input) => {
+      failureCalls.push(input)
+    },
+    createNotificationDispatcher: ({ onDeliveryFailed }) => ({
+      drainOutboundMessages: async () => {
+        await onDeliveryFailed?.({
+          kind: "question",
+          routeKey,
+          scopeKey: "instance-late-delivery-failure-after-recover-a",
+          wechatAccountId: "wx-late-delivery-failure-after-recover",
+          userId: "u-late-delivery-failure-after-recover",
+          registrationEpoch: "epoch-late-delivery-failure-after-recover",
+        })
+      },
+    }),
+    createStatusRuntime: ({ drainOutboundMessages }) => ({
+      start: async () => {
+        await drainOutboundMessages()
+      },
+      close: async () => {},
+    }),
+  })
+
+  await lifecycle.start()
+
+  assert.deepEqual(failureCalls, [{
+    instanceID: "instance-late-delivery-failure-after-recover-a",
+    wechatAccountId: "wx-late-delivery-failure-after-recover",
+    userId: "u-late-delivery-failure-after-recover",
+    registrationEpoch: "epoch-late-delivery-failure-after-recover",
+  }])
+})
+
+test("broker-entry slash handler: /recover 队列重验发现候选已失效时仍会写 failed metadata", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-queue-invalid-persists-failure`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-queue-invalid-persists-failure-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-queue-invalid-persists-failure-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-queue-invalid-persists-failure-request-store`)
+  const statePaths = await import(`../dist/wechat/state-paths.js?reload=${Date.now()}-recover-queue-invalid-persists-failure-state-paths`)
+
+  const routeKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-queue-invalid-persists-failure-1",
+    scopeKey: "instance-recover-queue-invalid-persists-failure-a",
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-queue-invalid-persists-failure-1",
+    routeKey,
+    handle: "qrecoverqueueinvalid1",
+    scopeKey: "instance-recover-queue-invalid-persists-failure-a",
+    wechatAccountId: "wx-recover-queue-invalid-persists-failure",
+    userId: "u-recover-queue-invalid-persists-failure",
+    createdAt: 1_700_860_000_000,
+    prompt: {
+      title: "队列失效仍落 failed",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey,
+    expiredAt: 1_700_860_000_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey,
+    requestID: "q-recover-queue-invalid-persists-failure-1",
+    handle: "qrecoverqueueinvalid1",
+    scopeKey: "instance-recover-queue-invalid-persists-failure-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_860_000_000,
+    finalizedAt: 1_700_860_000_100,
+    wechatAccountId: "wx-recover-queue-invalid-persists-failure",
+    userId: "u-recover-queue-invalid-persists-failure",
+    instanceID: "instance-recover-queue-invalid-persists-failure-a",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    mutationQueue: {
+      enqueue: async (_mutationType, task) => {
+        await rm(statePaths.requestStatePath("question", routeKey), { force: true })
+        return task()
+      },
+    },
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecoverqueueinvalid1" }),
+    "无法恢复请求，原始记录不存在：qrecoverqueueinvalid1",
+  )
+
+  const deadLetter = await deadLetterStore.readDeadLetter("question", routeKey)
+  assert.equal(deadLetter?.recoveryStatus, "failed")
+  assert.equal(deadLetter?.recoveryErrorCode, "requestMissing")
+  assert.equal(deadLetter?.recoveryErrorMessage, "无法恢复请求，原始记录不存在：qrecoverqueueinvalid1")
+})
+
+test("broker-entry slash handler: /recover 连续恢复不会复用同一请求链的历史 handle", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-historical-handles`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-historical-handles-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-historical-handles-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-historical-handles-request-store`)
+
+  const firstRouteKey = handle.createRouteKey({
+    kind: "permission",
+    requestID: "p-recover-history-1",
+    scopeKey: "instance-recover-history-a",
+  })
+
+  await requestStore.upsertRequest({
+    kind: "permission",
+    requestID: "p-recover-history-1",
+    routeKey: firstRouteKey,
+    handle: "p1",
+    scopeKey: "instance-recover-history-a",
+    wechatAccountId: "wx-recover-history",
+    userId: "u-recover-history",
+    createdAt: 1_700_800_010_000,
+    prompt: {
+      title: "连续恢复权限",
+      type: "command",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "permission",
+    routeKey: firstRouteKey,
+    expiredAt: 1_700_800_010_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "permission",
+    routeKey: firstRouteKey,
+    requestID: "p-recover-history-1",
+    handle: "p1",
+    scopeKey: "instance-recover-history-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_800_010_000,
+    finalizedAt: 1_700_800_010_100,
+    wechatAccountId: "wx-recover-history",
+    userId: "u-recover-history",
+    instanceID: "instance-recover-history-a",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+
+  const firstRecoveredResult = await handler({ type: "recover", handle: "p1" })
+  assert.match(firstRecoveredResult, /^已恢复请求：p\d+$/)
+  const firstRecoveredHandle = firstRecoveredResult.slice("已恢复请求：".length)
+  assert.notEqual(firstRecoveredHandle, "p1")
+  const firstRecovered = await requestStore.findOpenRequestByHandle({ kind: "permission", handle: firstRecoveredHandle })
+  assert.equal(firstRecovered?.requestID, "p-recover-history-1")
+
+  await requestStore.markRequestExpired({
+    kind: "permission",
+    routeKey: firstRecovered.routeKey,
+    expiredAt: 1_700_800_010_200,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "permission",
+    routeKey: firstRecovered.routeKey,
+    requestID: firstRecovered.requestID,
+    handle: firstRecovered.handle,
+    scopeKey: firstRecovered.scopeKey,
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: firstRecovered.createdAt,
+    finalizedAt: 1_700_800_010_200,
+    wechatAccountId: firstRecovered.wechatAccountId,
+    userId: firstRecovered.userId,
+    instanceID: "instance-recover-history-a",
+  })
+
+  const secondRecoveredResult = await handler({ type: "recover", handle: firstRecoveredHandle })
+  assert.match(secondRecoveredResult, /^已恢复请求：p\d+$/)
+  const secondRecoveredHandle = secondRecoveredResult.slice("已恢复请求：".length)
+
+  const secondRecovered = await requestStore.findOpenRequestByHandle({ kind: "permission", handle: secondRecoveredHandle })
+  assert.equal(secondRecovered?.requestID, "p-recover-history-1")
+  assert.equal(secondRecovered?.handle, secondRecoveredHandle)
+  assert.notEqual(secondRecovered?.handle, "p1")
+  assert.notEqual(secondRecovered?.handle, firstRecoveredHandle)
+  assert.equal(await requestStore.findOpenRequestByHandle({ kind: "permission", handle: "p1" }), undefined)
+  assert.equal(await requestStore.findOpenRequestByHandle({ kind: "permission", handle: firstRecoveredHandle }), undefined)
+})
+
+test("broker-entry slash handler: /recover 同 handle 下孤儿 dead-letter 不应制造歧义并阻塞有效恢复", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-ignore-orphan-ambiguity`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-ignore-orphan-ambiguity-dead-letter-store`)
+  const handle = await import(`../dist/wechat/handle.js?reload=${Date.now()}-recover-ignore-orphan-ambiguity-handle`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-ignore-orphan-ambiguity-request-store`)
+
+  const validRouteKey = handle.createRouteKey({
+    kind: "question",
+    requestID: "q-recover-ignore-orphan-valid-1",
+    scopeKey: "instance-recover-ignore-orphan-a",
+  })
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-ignore-orphan-valid-1",
+    routeKey: validRouteKey,
+    handle: "qrecovermix1",
+    scopeKey: "instance-recover-ignore-orphan-a",
+    wechatAccountId: "wx-recover-ignore-orphan",
+    userId: "u-recover-ignore-orphan",
+    createdAt: 1_700_820_000_000,
+    prompt: {
+      title: "可恢复请求",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: validRouteKey,
+    expiredAt: 1_700_820_000_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: validRouteKey,
+    requestID: "q-recover-ignore-orphan-valid-1",
+    handle: "qrecovermix1",
+    scopeKey: "instance-recover-ignore-orphan-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_820_000_000,
+    finalizedAt: 1_700_820_000_100,
+    wechatAccountId: "wx-recover-ignore-orphan",
+    userId: "u-recover-ignore-orphan",
+    instanceID: "instance-recover-ignore-orphan-a",
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-ignore-orphan-missing-1",
+    requestID: "q-recover-ignore-orphan-missing-1",
+    handle: "qrecovermix1",
+    scopeKey: "instance-recover-ignore-orphan-b",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_820_000_200,
+    finalizedAt: 1_700_820_000_300,
+    wechatAccountId: "wx-recover-ignore-orphan",
+    userId: "u-recover-ignore-orphan",
+    instanceID: "instance-recover-ignore-orphan-b",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+
+  const recoveredResult = await handler({ type: "recover", handle: "qrecovermix1" })
+  assert.match(recoveredResult, /^已恢复请求：q\d+$/)
+
+  const validDeadLetter = await deadLetterStore.readDeadLetter("question", validRouteKey)
+  assert.equal(validDeadLetter?.recoveryStatus, "recovered")
+
+  const orphanDeadLetter = await deadLetterStore.readDeadLetter("question", "question-recover-ignore-orphan-missing-1")
+  assert.notEqual(orphanDeadLetter?.recoveryErrorCode, "ambiguousHandle")
+})
+
+test("broker-entry slash handler: /recover 批量 failed metadata 更新部分失败时不会回滚并发 newer failed 状态", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-batch-failure-explicit`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-batch-failure-explicit-dead-letter-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-batch-failure-explicit-request-store`)
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-batch-failure-a",
+    routeKey: "question-recover-batch-failure-a",
+    handle: "qrecoverbatchfailure1",
+    scopeKey: "instance-recover-batch-failure-a",
+    wechatAccountId: "wx-recover-batch-failure-a",
+    userId: "u-recover-batch-failure-a",
+    createdAt: 1_700_850_000_000,
+    prompt: {
+      title: "批量失败 A",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: "question-recover-batch-failure-a",
+    expiredAt: 1_700_850_000_100,
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-batch-failure-b",
+    routeKey: "question-recover-batch-failure-b",
+    handle: "qrecoverbatchfailure1",
+    scopeKey: "instance-recover-batch-failure-b",
+    wechatAccountId: "wx-recover-batch-failure-b",
+    userId: "u-recover-batch-failure-b",
+    createdAt: 1_700_850_000_200,
+    prompt: {
+      title: "批量失败 B",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: "question-recover-batch-failure-b",
+    expiredAt: 1_700_850_000_300,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-batch-failure-a",
+    requestID: "q-recover-batch-failure-a",
+    handle: "qrecoverbatchfailure1",
+    scopeKey: "instance-recover-batch-failure-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_850_000_000,
+    finalizedAt: 1_700_850_000_100,
+    wechatAccountId: "wx-recover-batch-failure-a",
+    userId: "u-recover-batch-failure-a",
+    instanceID: "instance-recover-batch-failure-a",
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-batch-failure-b",
+    requestID: "q-recover-batch-failure-b",
+    handle: "qrecoverbatchfailure1",
+    scopeKey: "instance-recover-batch-failure-b",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_850_000_200,
+    finalizedAt: 1_700_850_000_300,
+    wechatAccountId: "wx-recover-batch-failure-b",
+    userId: "u-recover-batch-failure-b",
+    instanceID: "instance-recover-batch-failure-b",
+  })
+
+  const markedRouteKeys = []
+  const realMarkDeadLetterRecoveryFailed = deadLetterStore.markDeadLetterRecoveryFailed
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    markDeadLetterRecoveryFailedImpl: async (failureInput) => {
+      markedRouteKeys.push(failureInput.routeKey)
+      if (failureInput.routeKey === "question-recover-batch-failure-b") {
+        await realMarkDeadLetterRecoveryFailed({
+          kind: "question",
+          routeKey: "question-recover-batch-failure-a",
+          recoveryErrorCode: "requestMissing",
+          recoveryErrorMessage: "无法恢复请求，原始记录不存在：qrecoverbatchfailure1",
+        })
+        throw new Error("forced batch failed metadata write")
+      }
+      return realMarkDeadLetterRecoveryFailed(failureInput)
+    },
+  })
+
+  await assert.rejects(
+    () => handler({ type: "recover", handle: "qrecoverbatchfailure1" }),
+    /failed to persist recovery failure metadata/i,
+  )
+
+  assert.deepEqual(markedRouteKeys, ["question-recover-batch-failure-a", "question-recover-batch-failure-b"])
+  const first = await deadLetterStore.readDeadLetter("question", "question-recover-batch-failure-a")
+  const second = await deadLetterStore.readDeadLetter("question", "question-recover-batch-failure-b")
+  assert.equal(first?.recoveryStatus, "failed")
+  assert.equal(first?.recoveryErrorCode, "requestMissing")
+  assert.equal(first?.recoveryErrorMessage, "无法恢复请求，原始记录不存在：qrecoverbatchfailure1")
+  assert.equal(first?.recoveredAt, undefined)
+  assert.equal(second?.recoveryStatus, undefined)
+  assert.equal(second?.recoveryErrorCode, undefined)
+  assert.equal(second?.recoveryErrorMessage, undefined)
+})
+
+test("broker-entry slash handler: /recover 遇到多个可恢复候选时拒绝歧义恢复", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-ambiguous`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-ambiguous-dead-letter-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-ambiguous-request-store`)
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-ambiguous-a",
+    routeKey: "question-recover-ambiguous-a",
+    handle: "qrecoverambiguous1",
+    scopeKey: "instance-recover-ambiguous-a",
+    wechatAccountId: "wx-recover-ambiguous-a",
+    userId: "u-recover-ambiguous-a",
+    createdAt: 1_700_700_020_000,
+    prompt: {
+      title: "歧义恢复 A",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: "question-recover-ambiguous-a",
+    expiredAt: 1_700_700_021_000,
+  })
+
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-ambiguous-a",
+    requestID: "q-recover-ambiguous-a",
+    handle: "qrecoverambiguous1",
+    scopeKey: "instance-recover-ambiguous-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_700_020_000,
+    finalizedAt: 1_700_700_021_000,
+    wechatAccountId: "wx-recover-ambiguous-a",
+    userId: "u-recover-ambiguous-a",
+    instanceID: "instance-recover-ambiguous-a",
+  })
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-ambiguous-b",
+    routeKey: "question-recover-ambiguous-b",
+    handle: "qrecoverambiguous1",
+    scopeKey: "instance-recover-ambiguous-b",
+    wechatAccountId: "wx-recover-ambiguous-b",
+    userId: "u-recover-ambiguous-b",
+    createdAt: 1_700_700_022_000,
+    prompt: {
+      title: "歧义恢复 B",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: "question-recover-ambiguous-b",
+    expiredAt: 1_700_700_023_000,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-ambiguous-b",
+    requestID: "q-recover-ambiguous-b",
+    handle: "qrecoverambiguous1",
+    scopeKey: "instance-recover-ambiguous-b",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_700_022_000,
+    finalizedAt: 1_700_700_023_000,
+    wechatAccountId: "wx-recover-ambiguous-b",
+    userId: "u-recover-ambiguous-b",
+    instanceID: "instance-recover-ambiguous-b",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecoverambiguous1" }),
+    "找到多个可恢复的请求：qrecoverambiguous1",
+  )
+
+  const first = await deadLetterStore.readDeadLetter("question", "question-recover-ambiguous-a")
+  const second = await deadLetterStore.readDeadLetter("question", "question-recover-ambiguous-b")
+  assert.equal(first?.recoveryStatus, "failed")
+  assert.equal(first?.recoveryErrorCode, "ambiguousHandle")
+  assert.equal(first?.recoveryErrorMessage, "找到多个可恢复的请求：qrecoverambiguous1")
+  assert.equal(second?.recoveryStatus, "failed")
+  assert.equal(second?.recoveryErrorCode, "ambiguousHandle")
+  assert.equal(second?.recoveryErrorMessage, "找到多个可恢复的请求：qrecoverambiguous1")
+})
+
+test("broker-entry slash handler: /recover 入队等待期间若出现新的可恢复候选会在队列内拒绝歧义恢复", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-queue-ambiguity`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-queue-ambiguity-dead-letter-store`)
+  const requestStore = await import(`../dist/wechat/request-store.js?reload=${Date.now()}-recover-queue-ambiguity-request-store`)
+
+  await requestStore.upsertRequest({
+    kind: "question",
+    requestID: "q-recover-queue-ambiguity-a",
+    routeKey: "question-recover-queue-ambiguity-a",
+    handle: "qrecoverqueueambiguous1",
+    scopeKey: "instance-recover-queue-ambiguity-a",
+    wechatAccountId: "wx-recover-queue-ambiguity-a",
+    userId: "u-recover-queue-ambiguity-a",
+    createdAt: 1_700_850_100_000,
+    prompt: {
+      title: "队列歧义 A",
+      mode: "text",
+    },
+  })
+  await requestStore.markRequestExpired({
+    kind: "question",
+    routeKey: "question-recover-queue-ambiguity-a",
+    expiredAt: 1_700_850_100_100,
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-queue-ambiguity-a",
+    requestID: "q-recover-queue-ambiguity-a",
+    handle: "qrecoverqueueambiguous1",
+    scopeKey: "instance-recover-queue-ambiguity-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_850_100_000,
+    finalizedAt: 1_700_850_100_100,
+    wechatAccountId: "wx-recover-queue-ambiguity-a",
+    userId: "u-recover-queue-ambiguity-a",
+    instanceID: "instance-recover-queue-ambiguity-a",
+  })
+
+  let enqueued = false
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+    mutationQueue: {
+      enqueue: async (_mutationType, task) => {
+        if (!enqueued) {
+          enqueued = true
+          await requestStore.upsertRequest({
+            kind: "question",
+            requestID: "q-recover-queue-ambiguity-b",
+            routeKey: "question-recover-queue-ambiguity-b",
+            handle: "qrecoverqueueambiguous1",
+            scopeKey: "instance-recover-queue-ambiguity-b",
+            wechatAccountId: "wx-recover-queue-ambiguity-b",
+            userId: "u-recover-queue-ambiguity-b",
+            createdAt: 1_700_850_100_200,
+            prompt: {
+              title: "队列歧义 B",
+              mode: "text",
+            },
+          })
+          await requestStore.markRequestExpired({
+            kind: "question",
+            routeKey: "question-recover-queue-ambiguity-b",
+            expiredAt: 1_700_850_100_300,
+          })
+          await deadLetterStore.writeDeadLetter({
+            kind: "question",
+            routeKey: "question-recover-queue-ambiguity-b",
+            requestID: "q-recover-queue-ambiguity-b",
+            handle: "qrecoverqueueambiguous1",
+            scopeKey: "instance-recover-queue-ambiguity-b",
+            finalStatus: "expired",
+            reason: "instanceStale",
+            createdAt: 1_700_850_100_200,
+            finalizedAt: 1_700_850_100_300,
+            wechatAccountId: "wx-recover-queue-ambiguity-b",
+            userId: "u-recover-queue-ambiguity-b",
+            instanceID: "instance-recover-queue-ambiguity-b",
+          })
+        }
+        return task()
+      },
+    },
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecoverqueueambiguous1" }),
+    "找到多个可恢复的请求：qrecoverqueueambiguous1",
+  )
+
+  assert.equal(await requestStore.findOpenRequestByHandle({ kind: "question", handle: "qrecoverqueueambiguous1" }), undefined)
+  const first = await deadLetterStore.readDeadLetter("question", "question-recover-queue-ambiguity-a")
+  const second = await deadLetterStore.readDeadLetter("question", "question-recover-queue-ambiguity-b")
+  assert.equal(first?.recoveryErrorCode, "ambiguousHandle")
+  assert.equal(second?.recoveryErrorCode, "ambiguousHandle")
+})
+
+test("broker-entry slash handler: /recover 原始 request 缺失时拒绝并持久化 failed 状态", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-missing-request`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-missing-request-dead-letter-store`)
+
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-missing-request-1",
+    requestID: "q-recover-missing-request-1",
+    handle: "qrecovermissing1",
+    scopeKey: "instance-recover-missing-request-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_700_030_000,
+    finalizedAt: 1_700_700_031_000,
+    wechatAccountId: "wx-recover-missing-request-a",
+    userId: "u-recover-missing-request-a",
+    instanceID: "instance-recover-missing-request-a",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecovermissing1" }),
+    "无法恢复请求，原始记录不存在：qrecovermissing1",
+  )
+
+  const recoveredDeadLetter = await deadLetterStore.readDeadLetter("question", "question-recover-missing-request-1")
+  assert.equal(recoveredDeadLetter?.recoveryStatus, "failed")
+  assert.equal(recoveredDeadLetter?.recoveryErrorCode, "requestMissing")
+  assert.equal(recoveredDeadLetter?.recoveryErrorMessage, "无法恢复请求，原始记录不存在：qrecovermissing1")
+})
+
+test("broker-entry slash handler: /recover 仅命中不可恢复历史候选时也会持久化 failed 状态", async () => {
+  const brokerEntry = await import(`../dist/wechat/broker-entry.js?reload=${Date.now()}-recover-only-invalid-candidates`)
+  const deadLetterStore = await import(`../dist/wechat/dead-letter-store.js?reload=${Date.now()}-recover-only-invalid-candidates-dead-letter-store`)
+
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-only-invalid-a",
+    requestID: "q-recover-only-invalid-a",
+    handle: "qrecoverinvalid1",
+    scopeKey: "instance-recover-only-invalid-a",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_700_040_000,
+    finalizedAt: 1_700_700_041_000,
+    wechatAccountId: "wx-recover-only-invalid",
+    userId: "u-recover-only-invalid",
+    instanceID: "instance-recover-only-invalid-a",
+  })
+  await deadLetterStore.writeDeadLetter({
+    kind: "question",
+    routeKey: "question-recover-only-invalid-b",
+    requestID: "q-recover-only-invalid-b",
+    handle: "qrecoverinvalid1",
+    scopeKey: "instance-recover-only-invalid-b",
+    finalStatus: "expired",
+    reason: "instanceStale",
+    createdAt: 1_700_700_042_000,
+    finalizedAt: 1_700_700_043_000,
+    wechatAccountId: "wx-recover-only-invalid",
+    userId: "u-recover-only-invalid",
+    instanceID: "instance-recover-only-invalid-b",
+  })
+
+  const handler = brokerEntry.createBrokerWechatSlashCommandHandler({
+    handleStatusCommand: async () => "status reply",
+  })
+
+  assert.equal(
+    await handler({ type: "recover", handle: "qrecoverinvalid1" }),
+    "未找到可恢复的请求：qrecoverinvalid1",
+  )
+
+  const first = await deadLetterStore.readDeadLetter("question", "question-recover-only-invalid-a")
+  const second = await deadLetterStore.readDeadLetter("question", "question-recover-only-invalid-b")
+  assert.equal(first?.recoveryStatus, "failed")
+  assert.equal(first?.recoveryErrorCode, "requestMissing")
+  assert.equal(first?.recoveryErrorMessage, "无法恢复请求，原始记录不存在：qrecoverinvalid1")
+  assert.equal(second?.recoveryStatus, "failed")
+  assert.equal(second?.recoveryErrorCode, "requestMissing")
+  assert.equal(second?.recoveryErrorMessage, "无法恢复请求，原始记录不存在：qrecoverinvalid1")
 })
 
 test("broker-entry slash handler: 仅有 pending notification 时 /allow 仍成功且静默跳过 resolve", async () => {

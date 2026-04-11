@@ -13,18 +13,40 @@ import {
 } from "./wechat-status-runtime.js"
 import {
   createWechatNotificationDispatcher,
+  suppressPreparedPendingNotifications,
+  type WechatNotificationDeliveryFailureInput,
   type WechatNotificationSendInput,
 } from "./notification-dispatcher.js"
 import type { WechatSlashCommand } from "./command-parser.js"
 import {
+  listDeadLettersByHandle,
+  listRecoverableDeadLettersByHandle,
+  listRecoveryChainHandles,
+  markDeadLetterRecoveryFailed,
+  markDeadLetterRecovered,
+  readDeadLetter,
+  writeDeadLetter,
+} from "./dead-letter-store.js"
+import {
+  commitPreparedRecoveryRequestReopen,
+  findRequestByRouteKey,
   findOpenRequestByHandle,
   markRequestAnswered,
   markRequestRejected,
+  prepareRecoveryRequestReopen,
+  rollbackPreparedRecoveryRequestReopen,
 } from "./request-store.js"
 import {
   findSentNotificationByRequest,
+  listPendingNotifications,
   markNotificationResolved,
 } from "./notification-store.js"
+import {
+  createBrokerMutationQueue,
+  executeRecoveryMutation,
+  type BrokerMutationQueue,
+  type RecoveryMutation,
+} from "./broker-mutation-queue.js"
 import { buildQuestionAnswersFromReply } from "./question-interaction.js"
 
 type BrokerState = {
@@ -118,10 +140,17 @@ type BrokerWechatStatusRuntimeLifecycleDeps = {
   }) => WechatStatusRuntime
   createNotificationDispatcher?: (input: {
     sendMessage: (input: WechatNotificationSendInput) => Promise<void>
+    onDeliveryFailed?: (input: WechatNotificationDeliveryFailureInput) => Promise<void>
   }) => {
     drainOutboundMessages: () => Promise<void>
   }
   handleWechatSlashCommand?: (command: import("./command-parser.js").WechatSlashCommand) => Promise<string>
+  handleNotificationDeliveryFailure?: (input: {
+    instanceID: string
+    wechatAccountId: string
+    userId: string
+    registrationEpoch?: string
+  }) => Promise<void>
   onRuntimeError?: (error: unknown) => void
   onDiagnosticEvent?: (event: WechatStatusRuntimeDiagnosticEvent) => void | Promise<void>
   stateRoot?: string
@@ -177,17 +206,152 @@ function isInvalidHandleError(error: unknown): boolean {
   return /invalid handle format|raw requestID cannot be used as handle/i.test(error.message)
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+  if (typeof error === "string") {
+    return error
+  }
+  return String(error)
+}
+
+function createRecoveryFailureToken(): string {
+  return `recovery-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+const brokerEntryMutationQueue = createBrokerMutationQueue()
+
 export function createBrokerWechatSlashCommandHandler(input: {
   handleStatusCommand: () => Promise<string>
   client?: BrokerWechatSlashHandlerClient
   directory?: string
+  mutationQueue?: BrokerMutationQueue
+  markDeadLetterRecoveryFailedImpl?: typeof markDeadLetterRecoveryFailed
+  recoveryTestHooks?: {
+    afterReopenRequest?: (mutation: RecoveryMutation) => Promise<void> | void
+  }
 }): (command: WechatSlashCommand) => Promise<string> {
-  const findOpenRequestSafely = async (input: {
+  const mutationQueue = input.mutationQueue ?? brokerEntryMutationQueue
+  const markDeadLetterRecoveryFailedImpl = input.markDeadLetterRecoveryFailedImpl ?? markDeadLetterRecoveryFailed
+
+  const persistRecoveryFailureWrites = async (records: Array<{
+    kind: "question" | "permission"
+    routeKey: string
+    recoveryErrorCode: string
+    recoveryErrorMessage: string
+  }>) => {
+    const recoveryFailureToken = createRecoveryFailureToken()
+    const originals = await Promise.all(records.map(async (record) => {
+      const original = await readDeadLetter(record.kind, record.routeKey)
+      if (!original) {
+        throw new Error(`dead-letter missing during failure persistence: ${record.routeKey}`)
+      }
+      return original
+    }))
+
+    for (const record of records) {
+      try {
+        await markDeadLetterRecoveryFailedImpl({
+          kind: record.kind,
+          routeKey: record.routeKey,
+          recoveryErrorCode: record.recoveryErrorCode,
+          recoveryErrorMessage: record.recoveryErrorMessage,
+          recoveryFailureToken,
+        })
+      } catch (error) {
+        const rollbackErrors: string[] = []
+        for (const original of originals) {
+          try {
+            const current = await readDeadLetter(original.kind, original.routeKey)
+            if (!current || current.recoveryFailureToken !== recoveryFailureToken) {
+              continue
+            }
+            await writeDeadLetter(original)
+          } catch (rollbackError) {
+            rollbackErrors.push(`${original.routeKey}: ${toErrorMessage(rollbackError)}`)
+          }
+        }
+        if (rollbackErrors.length > 0) {
+          throw new Error(
+            `failed to persist recovery failure metadata and rollback prior updates: ${toErrorMessage(error)}; rollback errors: ${rollbackErrors.join("; ")}`,
+          )
+        }
+        throw new Error(`failed to persist recovery failure metadata: ${toErrorMessage(error)}`)
+      }
+    }
+  }
+
+  const persistRecoveryFailure = async (records: Array<{
+    kind: "question" | "permission"
+    routeKey: string
+  }>, recoveryErrorCode: string, recoveryErrorMessage: string) => {
+    await persistRecoveryFailureWrites(records.map((record) => ({
+      kind: record.kind,
+      routeKey: record.routeKey,
+      recoveryErrorCode,
+      recoveryErrorMessage,
+    })))
+    return recoveryErrorMessage
+  }
+
+  const persistRecoveryFailures = async (records: Array<{
+    kind: "question" | "permission"
+    routeKey: string
+    recoveryErrorCode: string
+    recoveryErrorMessage: string
+  }>) => {
+    await persistRecoveryFailureWrites(records)
+  }
+
+  const classifyRecoveryHandle = async (handle: string) => {
+    const matchedDeadLetters = await listDeadLettersByHandleSafely(handle)
+    const classifiedMatches = await classifyMatchedDeadLetters(matchedDeadLetters)
+    const recoverableMatches = classifiedMatches
+      .filter((item): item is Extract<typeof item, { state: "valid" }> => item.state === "valid")
+    const invalidMatches = classifiedMatches.filter(
+      (item): item is Extract<typeof item, { state: "invalid" }> => item.state === "invalid",
+    )
+
+    return {
+      matchedDeadLetters,
+      classifiedMatches,
+      recoverableMatches,
+      invalidMatches,
+    }
+  }
+
+  const createQueuedInvalidRecoveryResult = async (input: {
+    handle: string
+    invalidMatches: Array<Extract<Awaited<ReturnType<typeof classifyMatchedDeadLetters>>[number], { state: "invalid" }>>
+  }) => {
+    if (input.invalidMatches.length > 0) {
+      await persistRecoveryFailures(input.invalidMatches.map((item) => ({
+        kind: item.record.kind,
+        routeKey: item.record.routeKey,
+        recoveryErrorCode: item.failure.recoveryErrorCode,
+        recoveryErrorMessage: item.failure.recoveryErrorMessage,
+      })))
+      if (input.invalidMatches.length === 1 && input.invalidMatches[0].returnDetailedMessage) {
+        return {
+          ok: false as const,
+          message: input.invalidMatches[0].failure.recoveryErrorMessage,
+        }
+      }
+    }
+
+    return {
+      ok: false as const,
+      message: `未找到可恢复的请求：${input.handle}`,
+    }
+  }
+
+  const findOpenRequestSafely = async (requestInput: {
     kind: "question" | "permission"
     handle: string
   }) => {
     try {
-      return await findOpenRequestByHandle(input)
+      return await findOpenRequestByHandle(requestInput)
     } catch (error) {
       if (isInvalidHandleError(error)) {
         return undefined
@@ -216,6 +380,190 @@ export function createBrokerWechatSlashCommandHandler(input: {
       })
     } catch {
       // best-effort only: notification resolve failure should not fail slash reply
+    }
+  }
+
+  const listDeadLettersByHandleSafely = async (handle: string) => {
+    try {
+      return await listDeadLettersByHandle(handle)
+    } catch (error) {
+      if (isInvalidHandleError(error)) {
+        return []
+      }
+      throw error
+    }
+  }
+
+  const listRecoverableDeadLettersByHandleSafely = async (handle: string) => {
+    try {
+      return await listRecoverableDeadLettersByHandle(handle)
+    } catch (error) {
+      if (isInvalidHandleError(error)) {
+        return []
+      }
+      throw error
+    }
+  }
+
+  const mapRecoveryFailure = (handle: string, error: unknown): {
+    recoveryErrorCode: string
+    recoveryErrorMessage: string
+  } => {
+    if (error instanceof Error) {
+      if (/request missing for recovery/i.test(error.message)) {
+        return {
+          recoveryErrorCode: "requestMissing",
+          recoveryErrorMessage: `无法恢复请求，原始记录不存在：${handle}`,
+        }
+      }
+      if (/request is not recoverable from current status/i.test(error.message)) {
+        return {
+          recoveryErrorCode: "requestNotRecoverable",
+          recoveryErrorMessage: `无法恢复请求，原始记录状态不可恢复：${handle}`,
+        }
+      }
+      if (/failed to allocate recovery routekey/i.test(error.message)) {
+        return {
+          recoveryErrorCode: "routeAllocationFailed",
+          recoveryErrorMessage: `无法恢复请求，无法分配新的路由：${handle}`,
+        }
+      }
+    }
+
+    return {
+      recoveryErrorCode: "recoveryFailed",
+      recoveryErrorMessage: `无法恢复请求：${handle}`,
+    }
+  }
+
+  const classifyMatchedDeadLetters = async (records: Awaited<ReturnType<typeof listDeadLettersByHandleSafely>>) => {
+    const recoverableRouteKeys = new Set(
+      (await Promise.resolve(records.length > 0 ? listRecoverableDeadLettersByHandleSafely(records[0].handle) : []))
+        .map((record) => record.routeKey),
+    )
+
+    return Promise.all(records.map(async (record) => {
+      if (record.recoveryStatus === "recovered") {
+        return {
+          state: "ignored" as const,
+          record,
+        }
+      }
+      if (!recoverableRouteKeys.has(record.routeKey)) {
+        return {
+          state: "invalid" as const,
+          record,
+          returnDetailedMessage: false,
+          failure: {
+            recoveryErrorCode: "deadLetterNotRecoverable",
+            recoveryErrorMessage: `无法恢复请求，记录状态不可恢复：${record.handle}`,
+          },
+        }
+      }
+
+      const request = await findRequestByRouteKey({
+        kind: record.kind,
+        routeKey: record.routeKey,
+      })
+      if (!request) {
+        return {
+          state: "invalid" as const,
+          record,
+          returnDetailedMessage: true,
+          failure: {
+            recoveryErrorCode: "requestMissing",
+            recoveryErrorMessage: `无法恢复请求，原始记录不存在：${record.handle}`,
+          },
+        }
+      }
+      if (request.status !== "expired" && request.status !== "cleaned") {
+        return {
+          state: "invalid" as const,
+          record,
+          returnDetailedMessage: true,
+          failure: {
+            recoveryErrorCode: "requestNotRecoverable",
+            recoveryErrorMessage: `无法恢复请求，原始记录状态不可恢复：${record.handle}`,
+          },
+        }
+      }
+      return {
+        state: "valid" as const,
+        record,
+        request,
+      }
+    }))
+  }
+
+  const prepareRecoveryMutation = async (handle: string): Promise<
+    | { kind: "error"; message: string }
+    | { kind: "ready"; mutation: RecoveryMutation }
+  > => {
+    const {
+      matchedDeadLetters,
+      recoverableMatches,
+      invalidMatches,
+    } = await classifyRecoveryHandle(handle)
+    if (matchedDeadLetters.length === 0) {
+      return {
+        kind: "error",
+        message: `未找到可恢复的请求：${handle}`,
+      }
+    }
+
+    if (recoverableMatches.length === 0) {
+      if (invalidMatches.length > 0) {
+        await persistRecoveryFailures(invalidMatches.map((item) => ({
+          kind: item.record.kind,
+          routeKey: item.record.routeKey,
+          recoveryErrorCode: item.failure.recoveryErrorCode,
+          recoveryErrorMessage: item.failure.recoveryErrorMessage,
+        })))
+      }
+      if (invalidMatches.length === 1 && invalidMatches[0].returnDetailedMessage) {
+        return {
+          kind: "error",
+          message: invalidMatches[0].failure.recoveryErrorMessage,
+        }
+      }
+      return {
+        kind: "error",
+        message: `未找到可恢复的请求：${handle}`,
+      }
+    }
+
+    if (recoverableMatches.length > 1) {
+      return {
+        kind: "error",
+        message: await persistRecoveryFailure(
+          recoverableMatches.map((item) => item.record),
+          "ambiguousHandle",
+          `找到多个可恢复的请求：${handle}`,
+        ),
+      }
+    }
+
+    const recoverable = recoverableMatches[0]
+    const excludedHandles = await listRecoveryChainHandles({
+      kind: recoverable.record.kind,
+      requestID: recoverable.record.requestID,
+      wechatAccountId: recoverable.record.wechatAccountId,
+      userId: recoverable.record.userId,
+    })
+
+    const pendingNotifications = (await listPendingNotifications())
+      .filter((record) => record.kind === recoverable.record.kind && record.routeKey === recoverable.record.routeKey)
+
+    return {
+      kind: "ready",
+      mutation: {
+        type: "recoveryMutation",
+        requestedHandle: handle,
+        deadLetter: recoverable.record,
+        originalRequest: recoverable.request,
+        pendingNotifications,
+        recoveryChainHandles: excludedHandles,
+      },
     }
   }
 
@@ -252,6 +600,96 @@ export function createBrokerWechatSlashCommandHandler(input: {
       })
       await resolveNotificationForOpenRequest(openQuestion)
       return `已回复问题：${openQuestion.handle}`
+    }
+
+    if (command.type === "recover") {
+      const prepared = await prepareRecoveryMutation(command.handle)
+      if (prepared.kind === "error") {
+        return prepared.message
+      }
+
+      const result = await mutationQueue.enqueue("recoveryMutation", () => executeRecoveryMutation(prepared.mutation, {
+        revalidate: async (mutation) => {
+          const { recoverableMatches, invalidMatches } = await classifyRecoveryHandle(mutation.requestedHandle)
+          if (recoverableMatches.length > 1) {
+            return {
+              ok: false,
+              message: await persistRecoveryFailure(
+                recoverableMatches.map((item) => item.record),
+                "ambiguousHandle",
+                `找到多个可恢复的请求：${mutation.requestedHandle}`,
+              ),
+            }
+          }
+          if (recoverableMatches.length === 0) {
+            return createQueuedInvalidRecoveryResult({
+              handle: mutation.requestedHandle,
+              invalidMatches,
+            })
+          }
+          if (recoverableMatches[0].record.routeKey !== mutation.deadLetter.routeKey) {
+            return createQueuedInvalidRecoveryResult({
+              handle: mutation.requestedHandle,
+              invalidMatches,
+            })
+          }
+
+          const currentDeadLetter = await readDeadLetter(mutation.deadLetter.kind, mutation.deadLetter.routeKey)
+          if (
+            !currentDeadLetter
+            || currentDeadLetter.recoveryStatus === "recovered"
+            || currentDeadLetter.reason !== "instanceStale"
+            || !currentDeadLetter.wechatAccountId
+            || !currentDeadLetter.userId
+          ) {
+            return {
+              ok: false,
+              message: `未找到可恢复的请求：${mutation.requestedHandle}`,
+            }
+          }
+
+          const currentRequest = await findRequestByRouteKey({
+            kind: mutation.originalRequest.kind,
+            routeKey: mutation.originalRequest.routeKey,
+          })
+          if (!currentRequest) {
+            throw new Error("request missing for recovery")
+          }
+          if (currentRequest.status !== "expired" && currentRequest.status !== "cleaned") {
+            throw new Error("request is not recoverable from current status")
+          }
+          return undefined
+        },
+        suppressPendingNotifications: async (mutation) => {
+          await suppressPreparedPendingNotifications(mutation.pendingNotifications)
+        },
+        prepareFreshRecovery: async (mutation, recoveredAt) => prepareRecoveryRequestReopen({
+          kind: mutation.deadLetter.kind,
+          routeKey: mutation.deadLetter.routeKey,
+          recoveredAt,
+          bannedHandles: mutation.recoveryChainHandles,
+        }),
+        commitPreparedRecovery: async (preparedRecovery) => commitPreparedRecoveryRequestReopen(preparedRecovery),
+        rollbackPreparedRecovery: async (preparedRecovery) => rollbackPreparedRecoveryRequestReopen(preparedRecovery),
+        markRecovered: async ({ kind, routeKey, recoveredAt }) => {
+          await markDeadLetterRecovered({ kind, routeKey, recoveredAt })
+        },
+        markFailed: async ({ kind, routeKey, failure }) => {
+          await markDeadLetterRecoveryFailed({
+            kind,
+            routeKey,
+            recoveryErrorCode: failure.recoveryErrorCode,
+            recoveryErrorMessage: failure.recoveryErrorMessage,
+          })
+        },
+        mapFailure: (error) => mapRecoveryFailure(prepared.mutation.requestedHandle, error),
+        testHooks: input.recoveryTestHooks,
+      }))
+
+      if (!result.ok) {
+        return result.message
+      }
+      return `已恢复请求：${result.recovered.handle}`
     }
 
     const openPermission = await findOpenRequestSafely({
@@ -339,6 +777,34 @@ export function createBrokerWechatStatusRuntimeLifecycle(
           }
           await runtimeSendMessage(message)
         },
+        onDeliveryFailed: async (failure) => {
+          if (!deps.handleNotificationDeliveryFailure) {
+            return
+          }
+          if (failure.kind === "sessionError") {
+            return
+          }
+          const immutableScopeKey = typeof failure.scopeKey === "string" && failure.scopeKey.trim().length > 0
+            ? failure.scopeKey
+            : undefined
+          const request = !immutableScopeKey && typeof failure.routeKey === "string" && failure.routeKey.trim().length > 0
+            ? await findRequestByRouteKey({
+                kind: failure.kind,
+                routeKey: failure.routeKey,
+              })
+            : undefined
+          const instanceID = immutableScopeKey ?? request?.scopeKey
+          if (!instanceID) {
+            return
+          }
+
+          await deps.handleNotificationDeliveryFailure({
+            instanceID,
+            wechatAccountId: failure.wechatAccountId,
+            userId: failure.userId,
+            registrationEpoch: failure.registrationEpoch,
+          })
+        },
       })
       const created = createStatusRuntime({
         onSlashCommand: async ({ command }) => handleWechatSlashCommand(command),
@@ -413,6 +879,7 @@ async function run() {
       }),
       directory: stateRoot,
     }),
+    handleNotificationDeliveryFailure: server.handleNotificationDeliveryFailure,
   })
   if (shouldEnableBrokerWechatStatusRuntime()) {
     setTimeout(() => {

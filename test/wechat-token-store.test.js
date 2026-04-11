@@ -265,3 +265,37 @@ test("markTokenStale() 拒绝空 staleReason 且不改写原文件", async () =>
   const after = await readFile(statePaths.tokenStatePath("wx-stale-empty", "u-stale-empty"), "utf8")
   assert.equal(after, before)
 })
+
+test("markTokenStale() 在缺失 token 文件时仍会写出 stale state", async () => {
+  const stale = await tokenStore.markTokenStale({
+    wechatAccountId: "wx-stale-missing",
+    userId: "u-stale-missing",
+    staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+  })
+
+  assert.equal(stale.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+  assert.equal(typeof stale.contextToken, "string")
+  assert.equal(stale.contextToken.length > 0, true)
+
+  const fromDisk = await tokenStore.readTokenState("wx-stale-missing", "u-stale-missing")
+  assert.equal(fromDisk?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+})
+
+test("markTokenStale() 在损坏 token 文件时仍会覆盖写出 stale state", async () => {
+  const brokenPath = statePaths.tokenStatePath("wx-stale-corrupt", "u-stale-corrupt")
+  await mkdir(path.dirname(brokenPath), { recursive: true })
+  await writeFile(brokenPath, "{bad-json")
+
+  const stale = await tokenStore.markTokenStale({
+    wechatAccountId: "wx-stale-corrupt",
+    userId: "u-stale-corrupt",
+    staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+  })
+
+  assert.equal(stale.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+  assert.equal(typeof stale.contextToken, "string")
+  assert.equal(stale.contextToken.length > 0, true)
+
+  const fromDisk = await tokenStore.readTokenState("wx-stale-corrupt", "u-stale-corrupt")
+  assert.equal(fromDisk?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+})

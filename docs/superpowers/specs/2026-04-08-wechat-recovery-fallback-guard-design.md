@@ -90,6 +90,7 @@
    - 负责失败回退
    - 负责恢复入口路由
    - 负责通知去抖/合并与 non-slash 拒绝
+4. broker 内部通过串行 mutation 队列提交跨 store 动作，当前真实落点包括 `fallbackToastMutation` 与 `recoveryMutation`，避免 token / request / notification / dead-letter 在并发路径上互相打架。
 
 也就是说，三阶段共享的是：
 
@@ -116,12 +117,14 @@
 ### 设计
 
 1. 不新增第二套 token 系统，只扩展现有 `token-store` 的 stale reason 使用方式。
-2. broker 在通知发送失败时只做三件事：
+2. broker 在通知发送失败时通过 `fallbackToastMutation` 串行提交闭环动作，而不是直接分散写多个 store。
+3. 该 mutation 只做三件事：
    - `markTokenStale(...)`
    - `appendDiagnostic(...)`
    - 向 bridge 发 `showFallbackToast`
-3. toast 只承担本地用户提醒，不承载恢复动作本身。
-4. `/status` 已是现有微信主入口，因此重新激活仍然只通过 `/status` 完成，不在这阶段发明新命令。
+4. 若发送失败发生后 live bridge 的 `registrationEpoch` 已变化，则只记录 dropped 诊断，不把旧 toast 误投给新连接。
+5. toast 只承担本地用户提醒，不承载恢复动作本身。
+6. `/status` 已是现有微信主入口，因此重新激活仍然只通过 `/status` 完成，不在这阶段发明新命令。
 
 ### 成功判定
 
@@ -141,12 +144,14 @@
 ### 设计
 
 1. 恢复入口仍然保持 slash-only。
-2. 恢复只消费 dead-letter 中被标记为可恢复的记录，不对所有历史请求开放。
-3. 恢复动作不直接“复活一切原始状态”，而是执行受控 replay：
+2. `/recover` 在 broker 内作为单一 `recoveryMutation` 提交，保证旧 pending suppress、fresh handle/route 分配、request reopen 与 dead-letter 回写处于同一事务边界。
+3. 恢复只消费 dead-letter 中被标记为可恢复的记录，不对所有历史请求开放。
+4. 恢复动作不直接“复活一切原始状态”，而是执行受控 replay：
    - 恢复前先校验 dead-letter 记录仍合法
    - 生成新的恢复 handle 或恢复路由
    - 成功/失败都写回稳定终态
-4. 这阶段允许新增最小恢复命令，例如 `/recover <handle>` 或等价 broker 命令，但不扩成菜单 wizard。
+5. 恢复失败路径必须保留稳定 failed metadata（如 `recoveryStatus`、错误码、错误文案），不能留下半成功状态。
+6. 这阶段允许新增最小恢复命令，例如 `/recover <handle>` 或等价 broker 命令，但不扩成菜单 wizard。
 
 ### 成功判定
 

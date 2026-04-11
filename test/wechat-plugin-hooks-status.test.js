@@ -260,6 +260,61 @@ test("plugin-hooks 在无 serverUrl 时仍尝试拉起 broker 并给出可见提
   assert.match(String(toastCalls[0]?.body?.message ?? ""), /broker/i)
 })
 
+test("plugin-hooks 将 wechat fallback toast 透传到现有 UI toast", async () => {
+  const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()
+  const toastCalls = []
+  const client = {
+    session: {
+      list: async () => [],
+      status: async () => ({}),
+      todo: async () => [],
+      messages: async () => [],
+    },
+    question: {
+      list: async () => [],
+    },
+    permission: {
+      list: async () => [],
+    },
+    tui: {
+      showToast: async (options) => {
+        toastCalls.push(options)
+      },
+    },
+  }
+
+  buildPluginHooksRaw({
+    auth: {
+      provider: "github-copilot",
+      methods: [],
+    },
+    client,
+    project: { id: "project-id", name: "wechat-stage-a" },
+    directory: "/workspace/wechat-stage-a",
+    serverUrl: new URL("http://127.0.0.1:4096"),
+    ensureWechatBrokerStarted: async () => ({ endpoint: "fake-endpoint" }),
+    createWechatBridgeLifecycleImpl: async (input) => {
+      await input.onFallbackToast?.({
+        wechatAccountId: "wx-fallback",
+        userId: "u-fallback",
+        message: "微信会话可能已失效，请在微信发送 /status 重新激活",
+        reason: "deliveryFailed",
+        registrationEpoch: "epoch-123",
+      })
+      return {
+        close: async () => {},
+      }
+    },
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  const warningToast = toastCalls.find((item) => item?.body?.variant === "warning")
+  assert.equal(Boolean(warningToast), true)
+  assert.equal(warningToast?.body?.message, "微信会话可能已失效，请在微信发送 /status 重新激活")
+})
+
 test("plugin-hooks broker 启动确保失败时仍保持 lifecycle fail-open（reject/throw）", async () => {
   const runCase = async (ensureWechatBrokerStarted) => {
     const { buildPluginHooks: buildPluginHooksRaw } = await importPluginHooks()

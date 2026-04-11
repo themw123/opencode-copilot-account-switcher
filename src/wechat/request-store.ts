@@ -7,7 +7,7 @@ import {
   requestStatePath,
   type WechatRequestKind,
 } from "./state-paths.js"
-import { assertValidHandleInput, createRouteKey, normalizeHandle } from "./handle.js"
+import { assertValidHandleInput, createHandle, createRouteKey, normalizeHandle } from "./handle.js"
 import { normalizeRequestPromptSummary, type RequestPromptSummary } from "./question-interaction.js"
 
 export type RequestStatus = "open" | "answered" | "rejected" | "expired" | "cleaned"
@@ -294,6 +294,237 @@ export async function markRequestExpired(input: {
   })
 }
 
+function createRecoveryRouteKey(input: {
+  kind: WechatRequestKind
+  requestID: string
+  scopeKey?: string
+  recoveredAt: number
+  attempt: number
+}): string {
+  return createRouteKey({
+    kind: input.kind,
+    requestID: `${input.requestID}-recover-${input.recoveredAt}-${input.attempt}`,
+    scopeKey: input.scopeKey,
+  })
+}
+
+export type PreparedRecoveryRequestReopen = {
+  originalRequest: RequestRecord
+  nextHandle: string
+  nextRouteKey: string
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
+
+export async function allocateFreshRecoveryHandle(input: {
+  kind: WechatRequestKind
+  bannedHandles?: string[]
+}): Promise<string> {
+  if (!isRequestKind((input as { kind: unknown }).kind)) {
+    throw new Error("invalid request record format")
+  }
+
+  if (
+    (input as { bannedHandles?: unknown }).bannedHandles !== undefined
+    && !Array.isArray((input as { bannedHandles?: unknown }).bannedHandles)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  const active = await listActiveRequests()
+  const existingOpenHandles = active
+    .filter((item) => item.kind === input.kind && item.status === "open")
+    .map((item) => item.handle)
+  const bannedHandles = Array.isArray(input.bannedHandles)
+    ? input.bannedHandles.filter((item): item is string => isNonEmptyString(item)).map((item) => normalizeHandle(item))
+    : []
+
+  return createHandle(input.kind, [...existingOpenHandles, ...bannedHandles])
+}
+
+export async function prepareRecoveryRequestReopen(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  recoveredAt: number
+  bannedHandles?: string[]
+}): Promise<PreparedRecoveryRequestReopen> {
+  if (
+    !isRequestKind((input as { kind: unknown }).kind) ||
+    !isNonEmptyString((input as { routeKey: unknown }).routeKey) ||
+    !isFiniteNumber((input as { recoveredAt: unknown }).recoveredAt)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  if (
+    (input as { bannedHandles?: unknown }).bannedHandles !== undefined
+    && !Array.isArray((input as { bannedHandles?: unknown }).bannedHandles)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  assertValidRouteKey(input.routeKey)
+  const current = await readRequestIfExists(input.kind, input.routeKey)
+  if (!current) {
+    throw new Error("request missing for recovery")
+  }
+  if (current.status !== "expired" && current.status !== "cleaned") {
+    throw new Error("request is not recoverable from current status")
+  }
+
+  const nextHandle = await allocateFreshRecoveryHandle({
+    kind: current.kind,
+    bannedHandles: [current.handle, ...(input.bannedHandles ?? [])],
+  })
+
+  let nextRouteKey: string | undefined
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const candidateRouteKey = createRecoveryRouteKey({
+      kind: current.kind,
+      requestID: current.requestID,
+      scopeKey: current.scopeKey,
+      recoveredAt: input.recoveredAt,
+      attempt,
+    })
+    const existing = await readRequestIfExists(current.kind, candidateRouteKey)
+    if (!existing) {
+      nextRouteKey = candidateRouteKey
+      break
+    }
+  }
+
+  if (!nextRouteKey) {
+    throw new Error("failed to allocate recovery routeKey")
+  }
+
+  return {
+    originalRequest: current,
+    nextHandle,
+    nextRouteKey,
+  }
+}
+
+export async function commitPreparedRecoveryRequestReopen(
+  prepared: PreparedRecoveryRequestReopen,
+): Promise<RequestRecord> {
+  const current = await readRequestIfExists(prepared.originalRequest.kind, prepared.originalRequest.routeKey)
+  if (!current) {
+    throw new Error("request missing for recovery")
+  }
+  if (current.status !== "expired" && current.status !== "cleaned") {
+    throw new Error("request is not recoverable from current status")
+  }
+
+  const active = await listActiveRequests()
+  if (active.some((item) => (
+    item.kind === prepared.originalRequest.kind
+    && item.status === "open"
+    && item.handle === prepared.nextHandle
+  ))) {
+    throw new Error("recovery handle is no longer fresh")
+  }
+
+  const existingTarget = await readRequestIfExists(prepared.originalRequest.kind, prepared.nextRouteKey)
+  if (existingTarget) {
+    throw new Error("recovery routeKey is no longer fresh")
+  }
+
+  const recovered = await writeRequest({
+    ...current,
+    routeKey: prepared.nextRouteKey,
+    handle: prepared.nextHandle,
+    status: "open",
+    answeredAt: undefined,
+    rejectedAt: undefined,
+    expiredAt: undefined,
+    cleanedAt: undefined,
+  })
+
+  try {
+    await rm(requestStatePath(prepared.originalRequest.kind, prepared.originalRequest.routeKey), { force: true })
+  } catch (error) {
+    try {
+      await rm(requestStatePath(prepared.originalRequest.kind, prepared.nextRouteKey), { force: true })
+    } catch (cleanupError) {
+      throw new Error(
+        `failed to cleanup fresh recovery request after original removal failure: ${toErrorMessage(cleanupError)}`,
+      )
+    }
+    throw error
+  }
+
+  return recovered
+}
+
+export async function rollbackPreparedRecoveryRequestReopen(
+  prepared: PreparedRecoveryRequestReopen,
+): Promise<void> {
+  let cleanupFreshError: Error | undefined
+  let restoreOriginalError: Error | undefined
+
+  try {
+    await rm(requestStatePath(prepared.originalRequest.kind, prepared.nextRouteKey), { force: true })
+  } catch (error) {
+    cleanupFreshError = new Error(toErrorMessage(error))
+  }
+
+  try {
+    const original = await readRequestIfExists(prepared.originalRequest.kind, prepared.originalRequest.routeKey)
+    if (!original) {
+      await writeRequest(prepared.originalRequest)
+    }
+  } catch (error) {
+    restoreOriginalError = new Error(toErrorMessage(error))
+  }
+
+  if (cleanupFreshError && restoreOriginalError) {
+    throw new Error(
+      `failed to cleanup fresh recovery request: ${cleanupFreshError.message}; failed to restore original recovery request: ${restoreOriginalError.message}`,
+    )
+  }
+  if (cleanupFreshError) {
+    throw cleanupFreshError
+  }
+  if (restoreOriginalError) {
+    throw restoreOriginalError
+  }
+}
+
+export async function recoverRequestFromDeadLetter(input: {
+  kind: WechatRequestKind
+  routeKey: string
+  recoveredAt: number
+  excludedHandles?: string[]
+}) {
+  if (
+    !isRequestKind((input as { kind: unknown }).kind) ||
+    !isNonEmptyString((input as { routeKey: unknown }).routeKey) ||
+    !isFiniteNumber((input as { recoveredAt: unknown }).recoveredAt)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  if (
+    (input as { excludedHandles?: unknown }).excludedHandles !== undefined
+    && !Array.isArray((input as { excludedHandles?: unknown }).excludedHandles)
+  ) {
+    throw new Error("invalid request record format")
+  }
+
+  const prepared = await prepareRecoveryRequestReopen({
+    kind: input.kind,
+    routeKey: input.routeKey,
+    recoveredAt: input.recoveredAt,
+    bannedHandles: input.excludedHandles,
+  })
+  return commitPreparedRecoveryRequestReopen(prepared)
+}
+
 export async function markCleaned(input: {
   kind: WechatRequestKind
   routeKey: string
@@ -395,25 +626,21 @@ export async function findOpenRequestByIdentity(input: {
     throw new Error("invalid request record format")
   }
 
-  const routeKey = createRouteKey({
-    kind: input.kind,
-    requestID: input.requestID,
-    scopeKey: input.scopeKey,
-  })
-  const current = await readRequestIfExists(input.kind, routeKey)
-  if (!current) {
-    return undefined
+  const all = await listActiveRequests()
+  const matches = all.filter((item) => (
+    item.kind === input.kind
+    && item.status === "open"
+    && normalizeRequestIdentity(item.requestID) === normalizeRequestIdentity(input.requestID)
+    && item.wechatAccountId === input.wechatAccountId
+    && item.userId === input.userId
+    && (input.scopeKey === undefined || item.scopeKey === input.scopeKey)
+  ))
+
+  if (input.scopeKey === undefined) {
+    return matches.length === 1 ? matches[0] : undefined
   }
-  if (current.status !== "open") {
-    return undefined
-  }
-  if (normalizeRequestIdentity(current.requestID) !== normalizeRequestIdentity(input.requestID)) {
-    return undefined
-  }
-  if (current.wechatAccountId !== input.wechatAccountId || current.userId !== input.userId) {
-    return undefined
-  }
-  return current
+
+  return matches[0]
 }
 
 export async function findRequestByRouteKey(input: {

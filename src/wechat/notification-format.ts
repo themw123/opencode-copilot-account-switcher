@@ -1,4 +1,24 @@
 import type { NotificationRecord } from "./notification-types.js"
+import {
+  SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON,
+  type ShowFallbackToastPayload,
+} from "./protocol.js"
+
+export const WECHAT_FALLBACK_TOAST_MESSAGE = "微信会话可能已失效，请在微信发送 /status 重新激活"
+
+export function createDeliveryFailedFallbackToastPayload(input: {
+  wechatAccountId: string
+  userId: string
+  registrationEpoch: string
+}): ShowFallbackToastPayload {
+  return {
+    wechatAccountId: input.wechatAccountId,
+    userId: input.userId,
+    message: WECHAT_FALLBACK_TOAST_MESSAGE,
+    reason: SHOW_FALLBACK_TOAST_DELIVERY_FAILED_REASON,
+    registrationEpoch: input.registrationEpoch,
+  }
+}
 
 function formatHandle(handle: string | undefined, fallback: string): string {
   if (typeof handle === "string" && handle.trim().length > 0) {
