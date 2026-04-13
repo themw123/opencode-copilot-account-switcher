@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import * as realHostHarness from "./helpers/opencode-real-host-harness.js"
 
 import {
   canExecuteWindowsCmdShimRegression,
@@ -34,6 +35,88 @@ const PROVIDERS_LOGIN_GITHUB_COPILOT_ARGS = [
   "--method",
   "Manage GitHub Copilot accounts",
 ]
+
+// Real-host PTY tests contend on the same external TUI/runtime surface.
+// Serializing them avoids false failures from overlapping interactive sessions.
+const runExclusiveRealHostPtyTest = (() => {
+  let queue = Promise.resolve()
+  return async (work) => {
+    const run = queue.then(work, work)
+    queue = run.catch(() => {})
+    return run
+  }
+})()
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function readScreenText(session, readScreenImpl) {
+  const screenText = await (readScreenImpl ? readScreenImpl(session) : session.screenText)
+  if (typeof screenText === "string") {
+    session.screenText = screenText
+  }
+  return session.screenText
+}
+
+async function waitForScreenChange(session, previousScreenText, {
+  timeoutMs = 2_000,
+  pollIntervalMs = 25,
+  readScreenImpl,
+} = {}) {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const currentScreenText = await readScreenText(session, readScreenImpl)
+    if (currentScreenText !== previousScreenText) {
+      return currentScreenText
+    }
+
+    if (session.exited) {
+      break
+    }
+
+    await delay(pollIntervalMs)
+  }
+
+  return previousScreenText
+}
+
+async function openProviderSelectionFromCommandPalette(session, {
+  readScreenImpl,
+  sendInputImpl,
+  paletteTimeoutMs = 15_000,
+  filterChangeTimeoutMs = 2_000,
+  filterPollIntervalMs = 25,
+  providerTimeoutMs = 15_000,
+} = {}) {
+  const paletteScreen = await waitForScreenText(session, /Connect provider/i, {
+    timeoutMs: paletteTimeoutMs,
+    readScreenImpl,
+  })
+
+  // This upstream palette exposes a Search field, but after stripping ANSI the
+  // currently selected row is no longer recoverable from text alone. Filter to
+  // the command that opens provider/model selection before pressing Enter.
+  await sendKeys(session, ["Switch model"], { sendInputImpl })
+  const filteredScreen = await waitForScreenChange(session, paletteScreen, {
+    timeoutMs: filterChangeTimeoutMs,
+    pollIntervalMs: filterPollIntervalMs,
+    readScreenImpl,
+  })
+
+  await sendKeys(session, ["ENTER"], { sendInputImpl })
+  const providerScreen = await waitForScreenText(session, /Select model/i, {
+    timeoutMs: providerTimeoutMs,
+    readScreenImpl,
+  })
+
+  return {
+    paletteScreen,
+    filteredScreen,
+    providerScreen,
+  }
+}
 
 async function ensureBuiltPluginPackageRoot() {
   const distEntryPath = path.join(REPO_ROOT, "dist", "index.js")
@@ -803,6 +886,7 @@ test("real host PTY helper: resolveRealHostPluginInlineConfigContent merges plug
 })
 
 test("real host PTY smoke: starts real opencode in isolated host and observes help screen text", { timeout: 120_000 }, async () => {
+  await runExclusiveRealHostPtyTest(async () => {
   const host = await createRealOpencodeHostRoot({
     repoRoot: REPO_ROOT,
   })
@@ -828,9 +912,11 @@ test("real host PTY smoke: starts real opencode in isolated host and observes he
     await stopRealOpencodePty(session, { gracefulInputs: ["\u001b"] })
     await host.cleanup()
   }
+  })
 })
 
 test("real host PTY supplemental input: ctrl+p then enter reaches provider selection without MCP auth modal", { timeout: 120_000 }, async () => {
+  await runExclusiveRealHostPtyTest(async () => {
   const host = await createRealOpencodeHostRoot({
     repoRoot: REPO_ROOT,
   })
@@ -853,17 +939,174 @@ test("real host PTY supplemental input: ctrl+p then enter reaches provider selec
     assert.doesNotMatch(initialScreen, /MCP Authentication Required/i)
 
     await sendKeys(session, ["CTRL_P"])
-    const paletteScreen = await waitForScreenText(session, /Connect provider/, { timeoutMs: 15_000 })
-
+    const {
+      paletteScreen,
+      providerScreen,
+    } = await openProviderSelectionFromCommandPalette(session)
     assert.match(paletteScreen, /Switch model/i)
-
-    await sendKeys(session, ["ENTER"])
-    const providerScreen = await waitForScreenText(session, /Select model/, { timeoutMs: 15_000 })
 
     assert.match(providerScreen, /View all providers/i)
   } finally {
     await stopRealOpencodePty(session)
     await host.cleanup()
+  }
+  })
+})
+
+test("real host PTY helper: selectMenuItemOnScreen keeps moving until Connect provider is selected", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const sentInputs = []
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write(input) {
+      sentInputs.push(input)
+    },
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+
+  const session = await spawnRealOpencodePty({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "opencode",
+      runtimeArgs: [],
+      runtimeKind: "binary",
+    },
+    spawnPtyImpl: () => fakePty,
+  })
+
+  const paletteScreen = (selectedLabel) => [
+    "┌  Command palette",
+    selectedLabel === "Switch model" ? "│  ● Switch model" : "│  ○ Switch model",
+    selectedLabel === "Connect provider" ? "│  ● Connect provider" : "│  ○ Connect provider",
+    "│  ○ Ask opencode",
+    "└",
+  ].join("\n")
+
+  const selectedScreen = await realHostHarness.selectMenuItemOnScreen(session, /Connect provider/i, {
+    readScreenImpl: async () => {
+      const downCount = sentInputs.filter((input) => input === "\u001b[B").length
+      return paletteScreen(downCount === 0 ? "Switch model" : "Connect provider")
+    },
+    timeoutMs: 20,
+    inputChangeTimeoutMs: 5,
+    inputRetryAttempts: 0,
+    inputPollIntervalMs: 0,
+  })
+
+  try {
+    assert.match(selectedScreen, /● Connect provider/)
+    assert.equal(sentInputs.filter((input) => input === "\u001b[B").length, 1)
+  } finally {
+    await stopRealOpencodePty(session)
+  }
+})
+
+test("real host PTY helper: openProviderSelectionFromCommandPalette filters to Switch model before Enter", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const sentInputs = []
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write(input) {
+      sentInputs.push(input)
+    },
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+
+  const session = await spawnRealOpencodePty({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "opencode",
+      runtimeArgs: [],
+      runtimeKind: "binary",
+    },
+    spawnPtyImpl: () => fakePty,
+  })
+
+  const paletteScreen = [
+    "Commands",
+    "Search",
+    "Suggested",
+    "Switch model",
+    "Connect provider",
+  ].join("\n")
+  const filteredPaletteScreen = [
+    "Commands",
+    "Search Switch model",
+    "Suggested",
+    "Switch model",
+  ].join("\n")
+  const providerScreen = [
+    "Select model",
+    "View all providers",
+  ].join("\n")
+
+  const result = await openProviderSelectionFromCommandPalette(session, {
+    readScreenImpl: async () => {
+      const enterCount = sentInputs.filter((input) => input === "\r").length
+      const filterCount = sentInputs.filter((input) => input === "Switch model").length
+
+      if (enterCount >= 1) {
+        return providerScreen
+      }
+
+      if (filterCount >= 1) {
+        return filteredPaletteScreen
+      }
+
+      return paletteScreen
+    },
+    filterChangeTimeoutMs: 20,
+    filterPollIntervalMs: 0,
+    providerTimeoutMs: 20,
+  })
+
+  try {
+    assert.equal(result.paletteScreen, paletteScreen)
+    assert.equal(result.filteredScreen, filteredPaletteScreen)
+    assert.equal(result.providerScreen, providerScreen)
+    assert.deepEqual(sentInputs, ["Switch model", "\r"])
+  } finally {
+    await stopRealOpencodePty(session)
   }
 })
 
@@ -1001,6 +1244,100 @@ test("real host PTY helper: retries Enter when Add credential screen does not ad
   }
 })
 
+test("real host PTY helper: retries the full Add credential -> plugin menu open on a fresh PTY when the first session stalls", async () => {
+  const sentInputsByAttempt = []
+  const ptys = []
+  const pluginMenuScreen = "GitHub Copilot accounts\nGuided Loop Safety\nWeChat notifications\nProvider settings"
+
+  const createFakePty = (attempt) => {
+    const dataEmitter = new EventEmitter()
+    const exitEmitter = new EventEmitter()
+    const fakePty = {
+      pid: 1234 + attempt,
+      cols: 120,
+      rows: 30,
+      process: "opencode",
+      handleFlowControl: false,
+      onData(listener) {
+        dataEmitter.on("data", listener)
+        return { dispose: () => dataEmitter.off("data", listener) }
+      },
+      onExit(listener) {
+        exitEmitter.on("exit", listener)
+        return { dispose: () => exitEmitter.off("exit", listener) }
+      },
+      write(input) {
+        sentInputsByAttempt[attempt].push(input)
+
+        if (input === "\u0003") {
+          exitEmitter.emit("exit", { exitCode: 0 })
+        }
+      },
+      kill() {
+        exitEmitter.emit("exit", { exitCode: 0 })
+      },
+    }
+
+    ptys.push(fakePty)
+    return fakePty
+  }
+
+  let spawnCount = 0
+
+  const result = await openGitHubCopilotPluginMenuThroughRealOpencode({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "opencode",
+      runtimeArgs: [],
+      runtimeKind: "binary",
+    },
+    artifact: {
+      entryFilePath: "C:/repo/opencode-copilot-account-switcher/dist/index.js",
+    },
+    inlineConfigContent: JSON.stringify({ plugin: ["C:/repo/opencode-copilot-account-switcher/dist/index.js"] }),
+    spawnPtyImpl: () => {
+      const attempt = spawnCount
+      sentInputsByAttempt[attempt] = []
+      spawnCount += 1
+      return createFakePty(attempt)
+    },
+    readScreenImpl: async (session) => {
+      const attempt = ptys.indexOf(session.pty)
+      const enterCount = sentInputsByAttempt[attempt].filter((input) => input === "\r").length
+
+      if (enterCount === 0) {
+        return "T  Add credential"
+      }
+
+      if (attempt === 0) {
+        return "Loading provider settings"
+      }
+
+      return pluginMenuScreen
+    },
+    screenWaitTimeoutMs: 20,
+    inputChangeTimeoutMs: 5,
+    inputRetryAttempts: 0,
+    inputPollIntervalMs: 0,
+  })
+
+  try {
+    assert.equal(result.ok, true)
+    assert.equal(result.reachedPluginMenu, true)
+    assert.equal(result.pluginMenuScreen, pluginMenuScreen)
+    assert.equal(spawnCount, 2)
+    assert.deepEqual(sentInputsByAttempt[0], ["\r", "\u0003"])
+    assert.deepEqual(sentInputsByAttempt[1], ["\r"])
+  } finally {
+    await stopRealOpencodePty(result.session)
+  }
+})
+
 test("real host PTY helper: retries Enter when Add credential redraws but still remains active", async () => {
   const dataEmitter = new EventEmitter()
   const exitEmitter = new EventEmitter()
@@ -1115,6 +1452,7 @@ test("real host PTY helper: openGitHubCopilotPluginMenuThroughRealOpencode stops
       inlineConfigContent: JSON.stringify({ plugin: ["C:/repo/opencode-copilot-account-switcher/dist/index.js"] }),
       spawnPtyImpl: () => fakePty,
       readScreenImpl: async () => "Still booting",
+      pluginMenuOpenAttempts: 1,
       screenWaitTimeoutMs: 10,
     }),
     /menu buffer did not match/,
@@ -1303,6 +1641,205 @@ test("real host PTY helper: retries a swallowed DOWN and still reaches 微信通
   }
 })
 
+test("real host PTY helper: 微信通知子菜单首帧只出现绑定项时会等待完整稳定帧", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const sentInputs = []
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write(input) {
+      sentInputs.push(input)
+    },
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+
+  const pluginMenuScreen = (selectedIndex) => {
+    const selectedLabel = selectedIndex === 12 ? "WeChat notifications" : `Menu item ${selectedIndex}`
+    return [
+      "GitHub Copilot accounts",
+      `Selected: ${selectedLabel}`,
+      "Guided Loop Safety",
+      selectedIndex === 12 ? "● WeChat notifications" : "○ WeChat notifications",
+      "Provider settings",
+    ].join("\n")
+  }
+  const partialSubmenuScreen = [
+    "WeChat notifications",
+    "○ Back",
+    "● Bind / Rebind WeChat",
+  ].join("\n")
+  const fullSubmenuScreen = [
+    "WeChat notifications",
+    "○ Back",
+    "● Bind / Rebind WeChat",
+    "○ WeChat notifications: On",
+    "○ Question notifications: On",
+    "○ Permission notifications: On",
+    "○ Session error notifications: On",
+  ].join("\n")
+  let submenuReadCount = 0
+
+  const result = await openWechatNotificationsSubmenuThroughRealOpencode({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "opencode",
+      runtimeArgs: [],
+      runtimeKind: "binary",
+    },
+    artifact: {
+      entryFilePath: "C:/repo/opencode-copilot-account-switcher/dist/index.js",
+    },
+    inlineConfigContent: JSON.stringify({ plugin: ["C:/repo/opencode-copilot-account-switcher/dist/index.js"] }),
+    spawnPtyImpl: () => fakePty,
+    readScreenImpl: async () => {
+      const enterCount = sentInputs.filter((input) => input === "\r").length
+      const downCount = sentInputs.filter((input) => input === "\u001b[B").length
+
+      if (enterCount === 0) {
+        return "T  Add credential"
+      }
+
+      if (enterCount === 1) {
+        return pluginMenuScreen(Math.min(downCount, 12))
+      }
+
+      if (enterCount === 2) {
+        if (downCount < 12) {
+          return pluginMenuScreen(downCount)
+        }
+
+        submenuReadCount += 1
+        return submenuReadCount === 1 ? partialSubmenuScreen : fullSubmenuScreen
+      }
+
+      return fullSubmenuScreen
+    },
+    inputChangeTimeoutMs: 10,
+    inputRetryAttempts: 0,
+    inputPollIntervalMs: 0,
+  })
+
+  try {
+    assert.equal(result.ok, true)
+    assert.equal(result.stage, "wechat-submenu-visible")
+    assert.equal(result.wechatSubmenuScreen, fullSubmenuScreen)
+  } finally {
+    await stopRealOpencodePty(result.session)
+  }
+})
+
+test("real host PTY helper: waits for 微信通知 to be selected before pressing Enter into submenu", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const sentInputs = []
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write(input) {
+      sentInputs.push(input)
+    },
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+
+  const pluginMenuScreen = (selectedIndex) => {
+    const selectedLabel = selectedIndex === 12 ? "WeChat notifications" : `Menu item ${selectedIndex}`
+    return [
+      "GitHub Copilot accounts",
+      `Selected: ${selectedLabel}`,
+      "Guided Loop Safety",
+      selectedIndex === 12 ? "● WeChat notifications" : "○ WeChat notifications",
+      "Provider settings",
+    ].join("\n")
+  }
+  const submenuScreen = [
+    "WeChat notifications",
+    "Bind / Rebind WeChat",
+    "WeChat notifications: On",
+    "Question notifications: On",
+  ].join("\n")
+
+  const result = await openWechatNotificationsSubmenuThroughRealOpencode({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "opencode",
+      runtimeArgs: [],
+      runtimeKind: "binary",
+    },
+    artifact: {
+      entryFilePath: "C:/repo/opencode-copilot-account-switcher/dist/index.js",
+    },
+    inlineConfigContent: JSON.stringify({ plugin: ["C:/repo/opencode-copilot-account-switcher/dist/index.js"] }),
+    spawnPtyImpl: () => fakePty,
+    menuOpenAttempts: 1,
+    readScreenImpl: async () => {
+      const enterCount = sentInputs.filter((input) => input === "\r").length
+      const downCount = sentInputs.filter((input) => input === "\u001b[B").length
+
+      if (enterCount === 0) {
+        return "T  Add credential"
+      }
+
+      if (enterCount >= 2 && downCount >= 13) {
+        return submenuScreen
+      }
+
+      return pluginMenuScreen(Math.max(0, Math.min(downCount - 1, 12)))
+    },
+    screenWaitTimeoutMs: 40,
+    menuNavigationDelayMs: 0,
+    inputChangeTimeoutMs: 5,
+    inputRetryAttempts: 0,
+    inputPollIntervalMs: 0,
+  })
+
+  try {
+    assert.equal(result.ok, true)
+    assert.equal(result.reachedWechatSubmenu, true)
+    assert.match(result.wechatSubmenuScreen, /Bind \/ Rebind WeChat/)
+    assert.equal(sentInputs.filter((input) => input === "\u001b[B").length, 13)
+    assert.equal(sentInputs.at(-1), "\r")
+  } finally {
+    await stopRealOpencodePty(result.session)
+  }
+})
+
 test("real host PTY helper: openWechatNotificationsSubmenuThroughRealOpencode stops PTY on submenu failure", async () => {
   const dataEmitter = new EventEmitter()
   const exitEmitter = new EventEmitter()
@@ -1353,13 +1890,14 @@ test("real host PTY helper: openWechatNotificationsSubmenuThroughRealOpencode st
       inlineConfigContent: JSON.stringify({ plugin: ["C:/repo/opencode-copilot-account-switcher/dist/index.js"] }),
       spawnPtyImpl: () => fakePty,
       readScreenImpl: async () => screens[Math.min(readCount++, screens.length - 1)],
+      menuOpenAttempts: 2,
       screenWaitTimeoutMs: 10,
       menuNavigationDelayMs: 0,
     }),
     /menu buffer did not match/,
   )
 
-  assert.equal(killCount, 1)
+  assert.equal(killCount, 2)
 })
 
 test("real host PTY helper: 微信通知子菜单后会 DOWN + ENTER 真正执行绑定并按最终结果分类", async () => {
@@ -1491,6 +2029,138 @@ test("real host PTY helper: 微信通知子菜单后会 DOWN + ENTER 真正执�
   }
 })
 
+test("real host PTY helper: bind 执行前会先把子菜单焦点移回 绑定 / 重绑微信", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const sentInputs = []
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write(input) {
+      sentInputs.push(input)
+    },
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+  const pluginMenuScreen = (selectedIndex) => {
+    const selectedLabel = selectedIndex === 12 ? "WeChat notifications" : `Menu item ${selectedIndex}`
+    return [
+      "GitHub Copilot accounts",
+      `Selected: ${selectedLabel}`,
+      "Guided Loop Safety",
+      selectedIndex === 12 ? "● WeChat notifications" : "○ WeChat notifications",
+      "Provider settings",
+    ].join("\n")
+  }
+  const submenuToggleSelectedScreen = [
+    "WeChat notifications",
+    "○ Back",
+    "○ Bind / Rebind WeChat",
+    "● WeChat notifications: On",
+    "○ Question notifications: On",
+  ].join("\n")
+  const submenuBindSelectedScreen = [
+    "WeChat notifications",
+    "○ Back",
+    "● Bind / Rebind WeChat",
+    "○ WeChat notifications: On",
+    "○ Question notifications: On",
+  ].join("\n")
+  const bindDispatchScreen = [
+    "WeChat notifications",
+    "○ Back",
+    "● Bind / Rebind WeChat",
+    "Dispatching bind...",
+  ].join("\n")
+  const wrongActionScreen = [
+    "WeChat notifications",
+    "○ Back",
+    "○ Bind / Rebind WeChat",
+    "● Question notifications: On",
+  ].join("\n")
+
+  const result = await runRealWechatBindAndClassify({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "opencode",
+      runtimeArgs: [],
+      runtimeKind: "binary",
+    },
+    artifact: {
+      entryFilePath: "C:/repo/opencode-copilot-account-switcher/dist/index.js",
+    },
+    inlineConfigContent: JSON.stringify({ plugin: ["C:/repo/opencode-copilot-account-switcher/dist/index.js"] }),
+    spawnPtyImpl: () => fakePty,
+    readScreenImpl: async () => {
+      const enterCount = sentInputs.filter((input) => input === "\r").length
+      const downCount = sentInputs.filter((input) => input === "\u001b[B").length
+      const upCount = sentInputs.filter((input) => input === "\u001b[A").length
+
+      if (enterCount === 0) {
+        return "T  Add credential"
+      }
+
+      if (enterCount === 1) {
+        return pluginMenuScreen(Math.min(downCount, 12))
+      }
+
+      if (enterCount === 2) {
+        if (upCount >= 1) {
+          return submenuBindSelectedScreen
+        }
+
+        return downCount >= 12 ? submenuToggleSelectedScreen : pluginMenuScreen(downCount)
+      }
+
+      return upCount >= 1 ? bindDispatchScreen : wrongActionScreen
+    },
+    readRealHostLogTextImpl: async () => {
+      const enterCount = sentInputs.filter((input) => input === "\r").length
+      const upCount = sentInputs.filter((input) => input === "\u001b[A").length
+
+      if (enterCount >= 3 && upCount >= 1) {
+        return "QR URL fallback: https://host-gate.invalid/qr"
+      }
+
+      return ""
+    },
+    screenWaitTimeoutMs: 10,
+    menuNavigationDelayMs: 0,
+    bindOutcomeTimeoutMs: 10,
+    bindOutcomePollIntervalMs: 0,
+    inputChangeTimeoutMs: 10,
+    inputRetryAttempts: 0,
+    inputPollIntervalMs: 0,
+  })
+
+  try {
+    assert.equal(result.ok, false)
+    assert.equal(result.stage, "qr-wait-reached")
+    assert.equal(result.bindActionScreen, bindDispatchScreen)
+    assert.equal(sentInputs.at(-2), "\u001b[A")
+    assert.equal(sentInputs.at(-1), "\r")
+  } finally {
+    await stopRealOpencodePty(result.session)
+  }
+})
+
 test("real host PTY helper: 旧二维码日志不会把尚未产出新二维码结果的本次 bind 误判成 qr-wait", async () => {
   const dataEmitter = new EventEmitter()
   const exitEmitter = new EventEmitter()
@@ -1528,8 +2198,8 @@ test("real host PTY helper: 旧二维码日志不会把尚未产出新二维码�
   }
   const submenuScreen = [
     "WeChat notifications",
-    "● Back",
-    "○ Bind / Rebind WeChat",
+    "○ Back",
+    "● Bind / Rebind WeChat",
     "WeChat notifications: On",
   ].join("\n")
   const submenuBindSelectedScreen = [
@@ -1643,8 +2313,8 @@ test("real host PTY helper: 最后一跳被吞且没有新屏新日志时不会�
   }
   const submenuScreen = [
     "WeChat notifications",
-    "● Back",
-    "○ Bind / Rebind WeChat",
+    "○ Back",
+    "● Bind / Rebind WeChat",
     "WeChat notifications: On",
   ].join("\n")
 
@@ -1702,6 +2372,7 @@ test("real host PTY helper: 最后一跳被吞且没有新屏新日志时不会�
 })
 
 test("real host PTY supplemental plugin menu: providers login waits for Add credential, sends Enter, then reaches dist entry plugin menu", { timeout: 180_000 }, async () => {
+  await runExclusiveRealHostPtyTest(async () => {
   const pluginPackageRoot = await ensureBuiltPluginPackageRoot()
   const host = await createRealOpencodeHostRoot({
     repoRoot: REPO_ROOT,
@@ -1747,9 +2418,11 @@ test("real host PTY supplemental plugin menu: providers login waits for Add cred
     await stopRealOpencodePty(result.session, { gracefulInputs: ["\u001b"] })
     await host.cleanup()
   }
+  })
 })
 
 test("real host wechat submenu: providers login reaches 微信通知 -> 绑定 / 重绑微信", { timeout: 180_000 }, async () => {
+  await runExclusiveRealHostPtyTest(async () => {
   const pluginPackageRoot = await ensureBuiltPluginPackageRoot()
   const host = await createRealOpencodeHostRoot({
     repoRoot: REPO_ROOT,
@@ -1791,9 +2464,11 @@ test("real host wechat submenu: providers login reaches 微信通知 -> 绑定 /
     await stopRealOpencodePty(result.session, { gracefulInputs: ["\u001b"] })
     await host.cleanup()
   }
+  })
 })
 
 test("real host wechat bind: providers login 真正执行 绑定 / 重绑微信 并返回最终分类", { timeout: 240_000 }, async () => {
+  await runExclusiveRealHostPtyTest(async () => {
   const pluginPackageRoot = await ensureBuiltPluginPackageRoot()
   const host = await createRealOpencodeHostRoot({
     repoRoot: REPO_ROOT,
@@ -1837,12 +2512,13 @@ test("real host wechat bind: providers login 真正执行 绑定 / 重绑微信 
     }
 
     if (result.stage === "qr-wait-reached") {
-      assert.match(result.error, /QR URL fallback:|sessionKey|qr login/i)
+      assert.match(result.error, /QR URL fallback:|sessionKey|qr login|[█▄▀]{20,}/i)
     }
   } finally {
     await stopRealOpencodePty(result.session, { gracefulInputs: ["\u001b"] })
     await host.cleanup()
   }
+  })
 })
 
 test("real host helper menu chain: drives 微信通知 -> 绑定 / 重绑微信 through PTY screen polling helpers", async () => {
@@ -1919,6 +2595,32 @@ test("real host classification: qr wait is not reported as generic success", () 
   assert.equal(result.ok, false)
   assert.equal(result.stage, "qr-wait-reached")
   assert.match(result.error, /host-gate\.invalid\/qr/i)
+})
+
+test("real host classification: terminal qr block canvas is treated as qr wait", () => {
+  const qrCanvas = [
+    "▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄",
+    "█ ▄▄▄▄▄ █▀▀ ███  ▀█▀▄▄▀▄ █▀▀ ▄█ ▄▄▄▄▄ █",
+    "█ █   █ █▄▀██▀█▄▀ ▄█▀▄██ ▀▀ ▄██ █   █ █",
+    "█ █▄▄▄█ █ ▄ █ ▀█  ▀▀▀▀█ ▄▄▄▄ ▀█ █▄▄▄█ █",
+    "█▄▄▄▄▄▄▄█ █ ▀▄█ ▀ ▀▄▀ ▀ ▀▄█ ▀ █▄▄▄▄▄▄▄█",
+    "█▄▄█▄██▄ ▀██   ▀▄▀▀██▄ █▄█▄▄█▀▀ ▄▄▀ ▄▀█",
+    "█▄ ▄█ █▄█▀▄   ▀▄▀▀▄█▄▄ ▀█▀ ▄█ ▀██ ▀▄▀ █",
+    "██ ▀▀  ▄▀▀▄▀ █▀▄██  ▀█ ▄█ █▀▄ ▄ ▀████ █",
+  ].join("\n")
+
+  const result = classifyRealOpencodeWechatBindResult({
+    transcript: [
+      "┌  微信通知",
+      "│  ● 绑定 / 重绑微信",
+      qrCanvas,
+    ].join("\n"),
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.stage, "qr-wait-reached")
+  assert.match(result.error, /[█▄▀]/)
+  assert.doesNotMatch(result.error, /QR URL fallback:|sessionKey|qr login|wechat bind failed:/i)
 })
 
 test("real host classification: keeps non-import wechat bind failures as runtime failures", () => {

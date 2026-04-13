@@ -4,6 +4,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { setupIsolatedWechatStateRoot } from "./helpers/wechat-state-root.js"
 
 const DIST_BRIDGE_MODULE = "../dist/wechat/bridge.js"
 const DIST_BROKER_CLIENT_MODULE = "../dist/wechat/broker-client.js"
@@ -70,16 +71,16 @@ async function createOpenRequest(requestStore, input) {
 }
 
 test("两个实例出现相同 question/permission/session 标识时不会互相覆盖", async () => {
-  const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-notification-cross-instance-"))
-  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
-  process.env.XDG_CONFIG_HOME = sandboxConfigHome
+  const isolatedStateRoot = await setupIsolatedWechatStateRoot("wechat-notification-cross-instance-")
+  const sandboxStateRoot = isolatedStateRoot.stateRoot
+
+  assert.equal(process.env.WECHAT_STATE_ROOT_OVERRIDE, sandboxStateRoot)
 
   const bridgeModule = await import(`${DIST_BRIDGE_MODULE}?reload=${Date.now()}`)
   const brokerClient = await import(`${DIST_BROKER_CLIENT_MODULE}?reload=${Date.now()}`)
   const brokerServer = await import(`${DIST_BROKER_SERVER_MODULE}?reload=${Date.now()}`)
   const notificationStore = await import(`${DIST_NOTIFICATION_STORE_MODULE}?reload=${Date.now()}`)
   const operatorStore = await import(`${DIST_OPERATOR_STORE_MODULE}?reload=${Date.now()}`)
-  const statePaths = await import(`${DIST_STATE_PATHS_MODULE}?reload=${Date.now()}`)
 
   await operatorStore.rebindOperator({
     wechatAccountId: "wx-test",
@@ -137,12 +138,7 @@ test("两个实例出现相同 question/permission/session 标识时不会互相
       await clientB.close().catch(() => {})
     }
     await server.close().catch(() => {})
-    await rm(statePaths.wechatStateRoot(), { recursive: true, force: true }).catch(() => {})
-    if (previousXdgConfigHome === undefined) {
-      delete process.env.XDG_CONFIG_HOME
-    } else {
-      process.env.XDG_CONFIG_HOME = previousXdgConfigHome
-    }
+    await isolatedStateRoot.restore()
   }
 })
 
@@ -1276,35 +1272,59 @@ test("通知分发：并发 drain 竞争下，已 sent 记录不会被失败分�
     })
 
     let sendCalls = 0
-    let readyCount = 0
-    let releaseBarrier
-    const barrier = new Promise((resolve) => {
-      releaseBarrier = resolve
+    let releaseFirstSend
+    const firstSendReleased = new Promise((resolve) => {
+      releaseFirstSend = resolve
+    })
+    let markFirstSendStarted
+    const firstSendStarted = new Promise((resolve) => {
+      markFirstSendStarted = resolve
+    })
+    let listPendingCalls = 0
+    let releaseSecondPendingList
+    const secondPendingListReleased = new Promise((resolve) => {
+      releaseSecondPendingList = resolve
+    })
+    let markSecondPendingListObserved
+    const secondPendingListObserved = new Promise((resolve) => {
+      markSecondPendingListObserved = resolve
     })
 
     const dispatcher = notificationDispatcher.createWechatNotificationDispatcher({
       sendMessage: async () => {
-        const callIndex = sendCalls + 1
-        sendCalls = callIndex
-        readyCount += 1
-        if (readyCount === 2) {
-          releaseBarrier()
+        sendCalls += 1
+        if (sendCalls === 1) {
+          markFirstSendStarted()
+          await firstSendReleased
+          return
         }
-        await barrier
 
-        if (callIndex === 2) {
-          await new Promise((resolve) => setTimeout(resolve, 30))
-          throw new Error("second-send-failed")
-        }
+        throw new Error("duplicate-send-should-not-happen")
+      },
+      notificationStateOps: {
+        listPendingNotifications: async () => {
+          listPendingCalls += 1
+          const pending = await notificationStore.listPendingNotifications()
+          if (listPendingCalls === 2) {
+            markSecondPendingListObserved()
+            await secondPendingListReleased
+          }
+          return pending
+        },
       },
     })
 
-    await Promise.all([
-      dispatcher.drainOutboundMessages(),
-      dispatcher.drainOutboundMessages(),
-    ])
+    const firstDrain = dispatcher.drainOutboundMessages()
+    await firstSendStarted
+    const secondDrain = dispatcher.drainOutboundMessages()
+    await secondPendingListObserved
+    releaseSecondPendingList()
+    await assert.doesNotReject(() => secondDrain)
+    releaseFirstSend()
+    await assert.doesNotReject(() => firstDrain)
 
     const record = JSON.parse(await readFile(statePaths.notificationStatePath("task6-race-no-downgrade-question"), "utf8"))
+    assert.equal(sendCalls, 1)
     assert.equal(record.status, "sent")
     assert.equal(record.failureReason, undefined)
   } finally {

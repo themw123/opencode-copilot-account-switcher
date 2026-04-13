@@ -13,7 +13,7 @@ import {
   type CodexStoreFile,
 } from "../codex-store.js"
 import { recoverInvalidCodexAccount } from "../codex-invalid-account.js"
-import type { ProviderMenuAdapter } from "../menu-runtime.js"
+import type { ProviderActionResult, ProviderMenuAdapter } from "../menu-runtime.js"
 import { readAuth, type AccountEntry } from "../store.js"
 import {
   readCommonSettingsStore,
@@ -40,6 +40,9 @@ type AuthClient = {
         accountId?: string
       }
     }) => Promise<unknown>
+  }
+  tui?: {
+    showToast?: (options: { body: { message: string; variant: "success" | "warning" } }) => Promise<unknown>
   }
 }
 
@@ -126,6 +129,44 @@ function toOAuth(entry: CodexAccountEntry) {
     access: entry.access,
     expires: entry.expires,
     accountId: entry.accountId,
+  }
+}
+
+function getWechatDebugBundleMode(payload: unknown): "sanitized" | "full" | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined
+  }
+  const mode = (payload as { mode?: unknown }).mode
+  return mode === "sanitized" || mode === "full" ? mode : undefined
+}
+
+function getWechatDebugBundleFlowInput(payload: unknown) {
+  const mode = getWechatDebugBundleMode(payload)
+  if (!mode) {
+    return undefined
+  }
+
+  const candidate = payload && typeof payload === "object" ? payload as {
+    cwd?: unknown
+    gitHead?: unknown
+    nodeVersion?: unknown
+    now?: unknown
+    outputRootDir?: unknown
+    platform?: unknown
+    pluginVersion?: unknown
+    stateRoot?: unknown
+  } : {}
+
+  return {
+    mode,
+    ...(typeof candidate.cwd === "string" ? { cwd: candidate.cwd } : {}),
+    ...(typeof candidate.gitHead === "string" || candidate.gitHead === null ? { gitHead: candidate.gitHead } : {}),
+    ...(typeof candidate.nodeVersion === "string" ? { nodeVersion: candidate.nodeVersion } : {}),
+    ...(candidate.now instanceof Date ? { now: candidate.now } : {}),
+    ...(typeof candidate.outputRootDir === "string" ? { outputRootDir: candidate.outputRootDir } : {}),
+    ...(typeof candidate.platform === "string" ? { platform: candidate.platform } : {}),
+    ...(typeof candidate.pluginVersion === "string" ? { pluginVersion: candidate.pluginVersion } : {}),
+    ...(typeof candidate.stateRoot === "string" ? { stateRoot: candidate.stateRoot } : {}),
   }
 }
 
@@ -515,6 +556,40 @@ export function createCodexMenuAdapter(inputDeps: AdapterDependencies): Provider
           writeCommonSettings,
         })
         return false
+      }
+      if (action.name === "wechat-export-debug-bundle") {
+        const flowInput = getWechatDebugBundleFlowInput(action.payload)
+        if (!flowInput) return false
+        const {
+          runWechatDebugBundleFlow,
+          toWechatDebugBundleFailureResult,
+        } = await import("../wechat/debug-bundle-flow.js")
+        try {
+          const result = await runWechatDebugBundleFlow(flowInput)
+          await inputDeps.client.tui?.showToast?.({
+            body: {
+              message: result.message,
+              variant: "success",
+            },
+          }).catch(() => {})
+          const handled: ProviderActionResult = {
+            handled: true,
+            result,
+          }
+          return handled
+        } catch (error) {
+          const result = toWechatDebugBundleFailureResult(error, { mode: flowInput.mode })
+          await inputDeps.client.tui?.showToast?.({
+            body: {
+              message: result.message,
+              variant: "warning",
+            },
+          }).catch(() => {})
+          return {
+            handled: true,
+            result,
+          }
+        }
       }
       return false
     },

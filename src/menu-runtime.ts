@@ -4,6 +4,18 @@ type WriteMeta = {
   actionType?: string
 }
 
+export type ProviderActionResult = boolean | {
+  handled: boolean
+  persistHandled?: boolean
+  result?: unknown
+}
+
+export type ProviderActionOutput = {
+  name: string
+  payload?: unknown
+  result: unknown
+}
+
 export type MenuAccountInfo = {
   id?: string
   name: string
@@ -48,7 +60,7 @@ export type MenuAction =
   | { type: "provider"; name: string; payload?: unknown }
 
 function isNonPersistentProviderAction(name: string) {
-  return name === "wechat-bind"
+  return name === "wechat-bind" || name === "wechat-export-debug-bundle"
 }
 
 export type ProviderMenuAdapter<TStore, TEntry> = {
@@ -66,12 +78,13 @@ export type ProviderMenuAdapter<TStore, TEntry> = {
   removeAccount?: (store: TStore, name: string) => Promise<SharedActionResult> | SharedActionResult
   removeAllAccounts?: (store: TStore) => Promise<SharedActionResult> | SharedActionResult
   switchAccount: (store: TStore, name: string, entry: TEntry) => Promise<{ persistHandled?: boolean } | void>
-  applyAction?: (store: TStore, action: Extract<MenuAction, { type: "provider" }>) => Promise<boolean>
+  applyAction?: (store: TStore, action: Extract<MenuAction, { type: "provider" }>) => Promise<ProviderActionResult>
 }
 
 export async function runProviderMenu<TStore, TEntry>(input: {
   adapter: ProviderMenuAdapter<TStore, TEntry>
   showMenu: (accounts: MenuAccountInfo[], store: TStore) => Promise<MenuAction>
+  onProviderActionResult?: (output: ProviderActionOutput) => Promise<void> | void
   now?: () => number
 }): Promise<TEntry | undefined> {
   const now = input.now ?? Date.now
@@ -164,12 +177,37 @@ export async function runProviderMenu<TStore, TEntry>(input: {
     }
 
     if (!input.adapter.applyAction) continue
-    if (!await input.adapter.applyAction(store, action)) continue
+    const providerActionResult = parseProviderActionResult(await input.adapter.applyAction(store, action))
+    if (!providerActionResult.handled) continue
+    if (providerActionResult.result !== undefined) {
+      await input.onProviderActionResult?.({
+        name: action.name,
+        payload: action.payload,
+        result: providerActionResult.result,
+      })
+    }
     if (isNonPersistentProviderAction(action.name)) continue
+    if (providerActionResult.persistHandled) continue
     await input.adapter.writeStore(store, {
       reason: providerActionReason(action.name),
       source: "menu-runtime",
       actionType: action.name,
     })
+  }
+}
+
+function parseProviderActionResult(result: ProviderActionResult | undefined) {
+  if (typeof result === "object" && result) {
+    return {
+      handled: result.handled === true,
+      persistHandled: result.persistHandled === true,
+      result: result.result,
+    }
+  }
+
+  return {
+    handled: result === true,
+    persistHandled: false,
+    result: undefined,
   }
 }

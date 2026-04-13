@@ -1,11 +1,14 @@
 import path from "node:path"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { WECHAT_FILE_MODE, ensureWechatStateLayout, tokenStatePath } from "./state-paths.js"
 
 export type TokenSource = "question" | "permission" | "message"
 
 export const NOTIFICATION_DELIVERY_FAILED_STALE_REASON = "notification-delivery-failed"
 const SYNTHETIC_STALE_TOKEN_SOURCE_REF_PREFIX = "synthetic-stale"
+const TOKEN_REPLACE_MAX_ATTEMPTS = 5
+const TOKEN_REPLACE_RETRY_DELAY_MS = 10
 
 export type TokenState = {
   contextToken: string
@@ -59,6 +62,36 @@ function isTokenSource(value: unknown): value is TokenSource {
   return value === "question" || value === "permission" || value === "message"
 }
 
+function isRetryableTokenReplaceError(error: unknown): boolean {
+  const issue = error as NodeJS.ErrnoException
+  return issue?.code === "EPERM" || issue?.code === "EBUSY"
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function replaceTokenStateFile(tempPath: string, filePath: string) {
+  let lastError: unknown = undefined
+
+  for (let attempt = 0; attempt < TOKEN_REPLACE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await rename(tempPath, filePath)
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt === TOKEN_REPLACE_MAX_ATTEMPTS - 1 || !isRetryableTokenReplaceError(error)) {
+        throw error
+      }
+
+      await delay(TOKEN_REPLACE_RETRY_DELAY_MS)
+    }
+  }
+
+  if (lastError) throw lastError
+}
+
 function createSyntheticStaleTokenState(input: TokenKey & { staleReason: string }): TokenState {
   return {
     contextToken: `stale-placeholder:${input.wechatAccountId}:${input.userId}`,
@@ -94,8 +127,20 @@ async function writeTokenState(key: TokenKey, state: TokenState) {
   const safeKey = toTokenKey(key)
   await ensureWechatStateLayout()
   const filePath = tokenStatePath(safeKey.wechatAccountId, safeKey.userId)
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, JSON.stringify(normalizeTokenState(state), null, 2), { mode: WECHAT_FILE_MODE })
+  const dirPath = path.dirname(filePath)
+  const tempPath = path.join(dirPath, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`)
+  const serializedState = JSON.stringify(normalizeTokenState(state), null, 2)
+
+  await mkdir(dirPath, { recursive: true })
+
+  try {
+    await writeFile(tempPath, serializedState, { mode: WECHAT_FILE_MODE })
+    await replaceTokenStateFile(tempPath, filePath)
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => {})
+    throw error
+  }
+
   return normalizeTokenState(state)
 }
 

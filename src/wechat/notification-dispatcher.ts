@@ -161,6 +161,7 @@ export function createWechatNotificationDispatcher(
     purgeTerminalNotificationsBefore,
     ...input.notificationStateOps,
   }
+  const inFlightNotificationIds = new Set<string>()
 
   return {
     drainOutboundMessages: async () => {
@@ -188,89 +189,98 @@ export function createWechatNotificationDispatcher(
 
       const pending = await notificationStateOps.listPendingNotifications()
       for (const record of pending) {
-        if (await shouldSuppressPendingNotification(record)) {
+        if (inFlightNotificationIds.has(record.idempotencyKey)) {
+          continue
+        }
+        inFlightNotificationIds.add(record.idempotencyKey)
+
+        try {
+          if (await shouldSuppressPendingNotification(record)) {
+            try {
+              await notificationStateOps.markNotificationResolved({
+                idempotencyKey: record.idempotencyKey,
+                resolvedAt: Date.now(),
+                suppressed: true,
+              })
+            } catch (error) {
+              if (!isNotSuppressibleStateError(error)) {
+                throw error
+              }
+            }
+            continue
+          }
+
+          if (!shouldSendKind(record.kind, notifications)) {
+            continue
+          }
+          if (record.userId !== targetUserId || record.wechatAccountId !== targetAccountId) {
+            continue
+          }
+
+          const tokenState = await readTokenState(record.wechatAccountId, record.userId).catch(() => undefined)
+          if (tokenState && !isLiveTokenState(tokenState)) {
+            continue
+          }
+
           try {
-            await notificationStateOps.markNotificationResolved({
-              idempotencyKey: record.idempotencyKey,
-              resolvedAt: Date.now(),
-              suppressed: true,
+            await input.sendMessage({
+              to: targetUserId,
+              text: formatWechatNotificationText(record),
+              ...(isLiveTokenState(tokenState) ? { contextToken: tokenState.contextToken } : {}),
             })
           } catch (error) {
-            if (!isNotSuppressibleStateError(error)) {
-              throw error
-            }
-          }
-          continue
-        }
-
-        if (!shouldSendKind(record.kind, notifications)) {
-          continue
-        }
-        if (record.userId !== targetUserId || record.wechatAccountId !== targetAccountId) {
-          continue
-        }
-
-        const tokenState = await readTokenState(record.wechatAccountId, record.userId).catch(() => undefined)
-        if (tokenState && !isLiveTokenState(tokenState)) {
-          continue
-        }
-
-        try {
-          await input.sendMessage({
-            to: targetUserId,
-            text: formatWechatNotificationText(record),
-            ...(isLiveTokenState(tokenState) ? { contextToken: tokenState.contextToken } : {}),
-          })
-        } catch (error) {
-          let markFailedError: unknown
-          let persistedFailed = false
-          try {
-            await notificationStateOps.markNotificationFailed({
-              idempotencyKey: record.idempotencyKey,
-              failedAt: Date.now(),
-              reason: toErrorMessage(error),
-            })
-            persistedFailed = true
-          } catch (markError) {
-            if (!isNotFailWritableStateError(markError)) {
-              markFailedError = markError
-            }
-          }
-          if (persistedFailed) {
-            await input.onDeliveryFailed?.({
-              kind: record.kind,
-              routeKey: record.routeKey,
-              scopeKey: record.scopeKey,
-              wechatAccountId: record.wechatAccountId,
-              userId: record.userId,
-              registrationEpoch: record.registrationEpoch,
-            })
-          }
-          if (markFailedError) {
-            throw markFailedError
-          }
-          continue
-        }
-
-        try {
-          await notificationStateOps.markNotificationSent({
-            idempotencyKey: record.idempotencyKey,
-            sentAt: Date.now(),
-          })
-        } catch (error) {
-          if (!isNotPendingStateError(error)) {
+            let markFailedError: unknown
+            let persistedFailed = false
             try {
               await notificationStateOps.markNotificationFailed({
                 idempotencyKey: record.idempotencyKey,
                 failedAt: Date.now(),
-                reason: `notification delivered but sent persistence failed: ${toErrorMessage(error)}`,
+                reason: toErrorMessage(error),
               })
-            } catch (markFailedError) {
-              if (!isNotFailWritableStateError(markFailedError)) {
-                throw markFailedError
+              persistedFailed = true
+            } catch (markError) {
+              if (!isNotFailWritableStateError(markError)) {
+                markFailedError = markError
+              }
+            }
+            if (persistedFailed) {
+              await input.onDeliveryFailed?.({
+                kind: record.kind,
+                routeKey: record.routeKey,
+                scopeKey: record.scopeKey,
+                wechatAccountId: record.wechatAccountId,
+                userId: record.userId,
+                registrationEpoch: record.registrationEpoch,
+              })
+            }
+            if (markFailedError) {
+              throw markFailedError
+            }
+            continue
+          }
+
+          try {
+            await notificationStateOps.markNotificationSent({
+              idempotencyKey: record.idempotencyKey,
+              sentAt: Date.now(),
+            })
+          } catch (error) {
+            if (!isNotPendingStateError(error)) {
+              try {
+                await notificationStateOps.markNotificationFailed({
+                  idempotencyKey: record.idempotencyKey,
+                  failedAt: Date.now(),
+                  reason: `notification delivered but sent persistence failed: ${toErrorMessage(error)}`,
+                })
+              } catch (markFailedError) {
+                if (!isNotFailWritableStateError(markFailedError)) {
+                  throw markFailedError
+                }
               }
             }
           }
+        } finally {
+          inFlightNotificationIds.delete(record.idempotencyKey)
         }
       }
     },

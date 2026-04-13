@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import net from "node:net"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { setupIsolatedWechatStateRoot } from "./helpers/wechat-state-root.js"
 
 const DIST_BROKER_SERVER_MODULE = "../dist/wechat/broker-server.js"
 const DIST_BROKER_CLIENT_MODULE = "../dist/wechat/broker-client.js"
@@ -2122,102 +2123,110 @@ test("wechat status runtime: 收到响应即推进 get_updates_buf，失败重�
 })
 
 test("wechat status runtime: 仅 accepted slash 会持久化 context_token 并清理 stale，non-slash 不会", async () => {
+  const isolatedStateRoot = await setupIsolatedWechatStateRoot("wechat-status-flow-runtime-token-")
+  const sandboxWechatStateRoot = isolatedStateRoot.stateRoot
+
+  assert.equal(process.env.WECHAT_STATE_ROOT_OVERRIDE, sandboxWechatStateRoot)
+
   const runtimeModule = await import(`../dist/wechat/wechat-status-runtime.js?reload=${Date.now()}`)
   const tokenStore = await import(`../dist/wechat/token-store.js?reload=${Date.now()}`)
 
   const accountId = `wx-runtime-token-${Date.now()}`
   const sendCalls = []
   let pollCount = 0
-
-  await tokenStore.upsertInboundToken({
-    wechatAccountId: accountId,
-    userId: "user-slash",
-    contextToken: "ctx-old",
-    updatedAt: 1_700_300_000_000,
-    source: "question",
-    sourceRef: "legacy-request",
-  })
-  await tokenStore.markTokenStale({
-    wechatAccountId: accountId,
-    userId: "user-slash",
-    staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
-  })
-  await tokenStore.upsertInboundToken({
-    wechatAccountId: accountId,
-    userId: "user-text",
-    contextToken: "ctx-text-old",
-    updatedAt: 1_700_300_000_010,
-    source: "message",
-    sourceRef: "hello-before",
-  })
-  await tokenStore.markTokenStale({
-    wechatAccountId: accountId,
-    userId: "user-text",
-    staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
-  })
-
-  const runtime = runtimeModule.createWechatStatusRuntime({
-    retryDelayMs: 0,
-    loadPublicHelpers: async () => ({
-      latestAccountState: {
-        accountId,
-        token: "token-runtime-live",
-        baseUrl: "https://wx.example.com",
-        getUpdatesBuf: "buf-runtime-token",
-      },
-      getUpdates: async () => {
-        pollCount += 1
-        if (pollCount === 1) {
-          return {
-            get_updates_buf: "buf-runtime-token-1",
-            msgs: [
-              {
-                from_user_id: "user-slash",
-                context_token: "ctx-status-refresh",
-                item_list: [{ type: 1, text_item: { text: " /status " } }],
-              },
-              {
-                from_user_id: "user-text",
-                context_token: "ctx-text-refresh",
-                item_list: [{ type: 1, text_item: { text: "hello runtime" } }],
-              },
-            ],
-          }
-        }
-        return new Promise(() => {})
-      },
-      sendMessageWeixin: async (input) => {
-        sendCalls.push(input)
-        return { messageId: `m-${sendCalls.length}` }
-      },
-    }),
-    onSlashCommand: async () => "runtime token refreshed",
-  })
-
-  await runtime.start()
   try {
-    await waitForAsync(async () => {
-      const slashState = await tokenStore.readTokenState(accountId, "user-slash")
-      const textState = await tokenStore.readTokenState(accountId, "user-text")
-      return sendCalls.length === 2
-        && slashState?.contextToken === "ctx-status-refresh"
-        && slashState?.staleReason === undefined
-        && textState?.contextToken === "ctx-text-old"
-        && textState?.staleReason === tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON
+    await tokenStore.upsertInboundToken({
+      wechatAccountId: accountId,
+      userId: "user-slash",
+      contextToken: "ctx-old",
+      updatedAt: 1_700_300_000_000,
+      source: "question",
+      sourceRef: "legacy-request",
     })
+    await tokenStore.markTokenStale({
+      wechatAccountId: accountId,
+      userId: "user-slash",
+      staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+    })
+    await tokenStore.upsertInboundToken({
+      wechatAccountId: accountId,
+      userId: "user-text",
+      contextToken: "ctx-text-old",
+      updatedAt: 1_700_300_000_010,
+      source: "message",
+      sourceRef: "hello-before",
+    })
+    await tokenStore.markTokenStale({
+      wechatAccountId: accountId,
+      userId: "user-text",
+      staleReason: tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON,
+    })
+
+    const runtime = runtimeModule.createWechatStatusRuntime({
+      retryDelayMs: 0,
+      loadPublicHelpers: async () => ({
+        latestAccountState: {
+          accountId,
+          token: "token-runtime-live",
+          baseUrl: "https://wx.example.com",
+          getUpdatesBuf: "buf-runtime-token",
+        },
+        getUpdates: async () => {
+          pollCount += 1
+          if (pollCount === 1) {
+            return {
+              get_updates_buf: "buf-runtime-token-1",
+              msgs: [
+                {
+                  from_user_id: "user-slash",
+                  context_token: "ctx-status-refresh",
+                  item_list: [{ type: 1, text_item: { text: " /status " } }],
+                },
+                {
+                  from_user_id: "user-text",
+                  context_token: "ctx-text-refresh",
+                  item_list: [{ type: 1, text_item: { text: "hello runtime" } }],
+                },
+              ],
+            }
+          }
+          return new Promise(() => {})
+        },
+        sendMessageWeixin: async (input) => {
+          sendCalls.push(input)
+          return { messageId: `m-${sendCalls.length}` }
+        },
+      }),
+      onSlashCommand: async () => "runtime token refreshed",
+    })
+
+    await runtime.start()
+    try {
+      await waitForAsync(async () => {
+        const slashState = await tokenStore.readTokenState(accountId, "user-slash")
+        const textState = await tokenStore.readTokenState(accountId, "user-text")
+        return sendCalls.length === 2
+          && slashState?.contextToken === "ctx-status-refresh"
+          && slashState?.staleReason === undefined
+          && textState?.contextToken === "ctx-text-old"
+          && textState?.staleReason === tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON
+      })
+    } finally {
+      await runtime.close()
+    }
+
+    const slashState = await tokenStore.readTokenState(accountId, "user-slash")
+    const textState = await tokenStore.readTokenState(accountId, "user-text")
+
+    assert.equal(slashState?.contextToken, "ctx-status-refresh")
+    assert.equal(slashState?.staleReason, undefined)
+    assert.equal(textState?.contextToken, "ctx-text-old")
+    assert.equal(textState?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
+    assert.equal(sendCalls[0]?.opts?.contextToken, "ctx-status-refresh")
+    assert.equal(sendCalls[1]?.opts?.contextToken, "ctx-text-refresh")
   } finally {
-    await runtime.close()
+    await isolatedStateRoot.restore()
   }
-
-  const slashState = await tokenStore.readTokenState(accountId, "user-slash")
-  const textState = await tokenStore.readTokenState(accountId, "user-text")
-
-  assert.equal(slashState?.contextToken, "ctx-status-refresh")
-  assert.equal(slashState?.staleReason, undefined)
-  assert.equal(textState?.contextToken, "ctx-text-old")
-  assert.equal(textState?.staleReason, tokenStore.NOTIFICATION_DELIVERY_FAILED_STALE_REASON)
-  assert.equal(sendCalls[0]?.opts?.contextToken, "ctx-status-refresh")
-  assert.equal(sendCalls[1]?.opts?.contextToken, "ctx-text-refresh")
 })
 
 test("wechat status runtime: get_updates_buf 推进后会持久化回写，重启可从最新 buf 继续", async () => {
