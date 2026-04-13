@@ -48,23 +48,28 @@
 把下面这段话丢给任意 LLM（OpenCode / Claude Code / Cursor 等）：
 
 ```
-请按以下说明安装 opencode-copilot-account-switcher 插件：https://raw.githubusercontent.com/jiwangyihao/opencode-copilot-account-switcher/master/README.md
+请先查看 opencode-copilot-account-switcher 最新 GitHub Release 正文里的“升级方式”，然后严格执行其中带明确版本号的安装/升级命令；不要手动编辑 OpenCode 配置，也不要使用裸包名或 latest。参考说明：https://raw.githubusercontent.com/jiwangyihao/opencode-copilot-account-switcher/master/README.md
 ```
 
 **选项 B：手动安装**
 
-1. **在配置文件中添加插件** `~/.config/opencode/opencode.json`：
+1. **先查看最新 GitHub Release** 的 `## 升级方式` 小节。
 
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-copilot-account-switcher"]
-   }
+2. **执行其中带明确版本号的命令**。例如当前版本是：
+
+   ```bash
+   opencode plugin opencode-copilot-account-switcher@0.14.39 --force
    ```
 
-2. **重启 OpenCode**（会自动从 npm 下载插件）。
+3. **如果是在升级且看起来没有更新**，先清理 OpenCode 插件缓存，再重新执行上面的带版本号命令。
 
-3. **登录 GitHub Copilot**：
+   ```bash
+   rm -rf ~/.cache/opencode/packages/opencode-copilot-account-switcher@*
+   ```
+
+4. **如果 OpenCode 已在运行，重启后再验证**。
+
+5. **登录 GitHub Copilot**：
 
    ```bash
    opencode auth login --provider github-copilot
@@ -77,26 +82,31 @@
 
 ### 步骤指引
 
-1. 打开 OpenCode 配置文件 `~/.config/opencode/opencode.json`
+1. 先读取本仓库**最新 GitHub Release 正文**，提取其中 `## 升级方式` 给出的**带明确版本号**命令。
 
-   > **说明**：该路径在所有平台通用；Windows 上 `~` 会解析为用户目录（例如 `C:\Users\YourName`）。
+2. 直接执行那条命令，例如当前版本：
 
-2. 在 `plugin` 数组中添加插件：
-
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-copilot-account-switcher"]
-   }
+   ```bash
+   opencode plugin opencode-copilot-account-switcher@0.14.39 --force
    ```
 
-3. 重启 OpenCode，使其自动拉取 npm 包。
+3. 不要手动编辑 OpenCode 配置来安装或升级这个插件，也不要使用裸包名或 `latest`。
+
+4. 如果执行后版本看起来仍然没更新，先清理 OpenCode 插件缓存，再重新执行同一条带版本号命令：
+
+   ```bash
+   rm -rf ~/.cache/opencode/packages/opencode-copilot-account-switcher@*
+   ```
+
+5. 如果 OpenCode 已在运行，重启后再验证。
 
 ### 验证
 
 ```bash
 opencode auth login --provider github-copilot
 ```
+
+> **说明**：最新 OpenCode 当前不会主动刷新已缓存的 npm 插件。升级时优先以最新 GitHub Release 正文里的 `## 升级方式` 为准。
 
 </details>
 
@@ -269,23 +279,28 @@ Default behavior and optional switches:
 Paste this into any LLM agent (OpenCode, Claude Code, Cursor, etc.):
 
 ```
-Install the opencode-copilot-account-switcher plugin by following: https://raw.githubusercontent.com/jiwangyihao/opencode-copilot-account-switcher/master/README.md
+First read the latest GitHub Release for opencode-copilot-account-switcher and execute the exact versioned install/upgrade command from its "Upgrade" section. Do not manually edit the OpenCode config, and do not use a bare package name or latest. Reference: https://raw.githubusercontent.com/jiwangyihao/opencode-copilot-account-switcher/master/README.md
 ```
 
 **Option B: Manual setup**
 
-1. **Add the plugin** to `~/.config/opencode/opencode.json`:
+1. **Read the latest GitHub Release** and look for the `## Upgrade` section.
 
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-copilot-account-switcher"]
-   }
+2. **Run the exact versioned command** from that section. For the current version, the command is:
+
+   ```bash
+   opencode plugin opencode-copilot-account-switcher@0.14.39 --force
    ```
 
-2. **Restart OpenCode** (it will auto-download the plugin from npm).
+3. **If an upgrade still looks stale**, clear the OpenCode plugin cache and rerun the same versioned command:
 
-3. **Login** to GitHub Copilot:
+   ```bash
+   rm -rf ~/.cache/opencode/packages/opencode-copilot-account-switcher@*
+   ```
+
+4. **If OpenCode is already running, restart it before verification**.
+
+5. **Login** to GitHub Copilot:
 
    ```bash
    opencode auth login --provider github-copilot
@@ -298,26 +313,31 @@ Install the opencode-copilot-account-switcher plugin by following: https://raw.g
 
 ### Step-by-Step Instructions
 
-1. Edit the OpenCode configuration file at `~/.config/opencode/opencode.json`
+1. Read the **latest GitHub Release body** for this repository and extract the exact versioned command from `## Upgrade`.
 
-   > **Note**: This path works on all platforms. On Windows, `~` resolves to your user home directory (e.g., `C:\Users\YourName`).
+2. Execute that command directly. For the current version, the command is:
 
-2. Add the plugin to the `plugin` array:
-
-   ```json
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-copilot-account-switcher"]
-   }
+   ```bash
+   opencode plugin opencode-copilot-account-switcher@0.14.39 --force
    ```
 
-3. Restart OpenCode so it fetches the plugin automatically from npm.
+3. Do not install or upgrade this plugin by hand-editing the OpenCode config, and do not use a bare package name or `latest`.
+
+4. If the installed version still does not change, clear the OpenCode plugin cache and rerun the same versioned command:
+
+   ```bash
+   rm -rf ~/.cache/opencode/packages/opencode-copilot-account-switcher@*
+   ```
+
+5. If OpenCode is already running, restart it before verification.
 
 ### Verification
 
 ```bash
 opencode auth login --provider github-copilot
 ```
+
+> **Note**: Current OpenCode does not reliably refresh cached npm plugins automatically. Prefer the exact versioned command from the latest GitHub Release.
 
 </details>
 
