@@ -1,5 +1,5 @@
 {
-  "name": "opencode-copilot-account-switcher",
+  "name": "@themw123/opencode-copilot-account-switcher",
   "version": "0.14.39",
   "description": "GitHub Copilot account switcher plugin for OpenCode",
   "main": "./dist/index.js",
