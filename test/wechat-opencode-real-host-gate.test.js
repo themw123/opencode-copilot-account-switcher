@@ -23,6 +23,7 @@ import {
   sendKeys,
   spawnRealOpencodePty,
   stopRealOpencodePty,
+  waitForAskAnythingScreen,
   waitForScreenText,
 } from "./helpers/opencode-real-host-harness.js"
 
@@ -806,6 +807,61 @@ test("real host PTY helper: blank redraw frame does not erase last visible menu 
   }
 })
 
+test("real host PTY helper: waitForAskAnythingScreen tolerates slow interactive startup", async () => {
+  const dataEmitter = new EventEmitter()
+  const exitEmitter = new EventEmitter()
+  const fakePty = {
+    pid: 1234,
+    cols: 120,
+    rows: 30,
+    process: "opencode",
+    handleFlowControl: false,
+    onData(listener) {
+      dataEmitter.on("data", listener)
+      return { dispose: () => dataEmitter.off("data", listener) }
+    },
+    onExit(listener) {
+      exitEmitter.on("exit", listener)
+      return { dispose: () => exitEmitter.off("exit", listener) }
+    },
+    write() {},
+    kill() {
+      exitEmitter.emit("exit", { exitCode: 0 })
+    },
+  }
+
+  const session = await spawnRealOpencodePty({
+    host: {
+      hostRoot: "C:/tmp/opencode-host",
+      cacheRoot: "C:/tmp/opencode-host/cache",
+      configRoot: "C:/tmp/opencode-host/config",
+      dataRoot: "C:/tmp/opencode-host/data",
+      logRoot: "C:/tmp/opencode-host/logs",
+      tmpRoot: "C:/tmp/opencode-host/tmp",
+      runtimeCommand: "cmd.exe",
+      runtimeArgs: ["/d", "/s", "/c", "call", "C:/Tools/opencode.cmd"],
+      runtimeKind: "cmd-shim",
+    },
+    spawnPtyImpl: () => fakePty,
+  })
+
+  try {
+    setTimeout(() => {
+      dataEmitter.emit("data", "\u001b[2JAsk anything...\nctrl+p commands")
+    }, 40)
+
+    const screenText = await waitForAskAnythingScreen(session, {
+      timeoutMs: 100,
+      pollIntervalMs: 0,
+    })
+
+    assert.match(screenText, /Ask anything\.\.\./)
+    assert.match(screenText, /ctrl\+p commands/i)
+  } finally {
+    await stopRealOpencodePty(session)
+  }
+})
+
 test("real host PTY helper: stopRealOpencodePty tolerates UNKNOWN kill errors when session exits anyway", async () => {
   const dataEmitter = new EventEmitter()
   const exitEmitter = new EventEmitter()
@@ -933,7 +989,7 @@ test("real host PTY supplemental input: ctrl+p then enter reaches provider selec
   })
 
   try {
-    const initialScreen = await waitForScreenText(session, /Ask anything\.\.\./, { timeoutMs: 30_000 })
+    const initialScreen = await waitForAskAnythingScreen(session)
 
     assert.match(initialScreen, /ctrl\+p commands/i)
     assert.doesNotMatch(initialScreen, /MCP Authentication Required/i)

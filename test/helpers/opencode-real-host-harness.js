@@ -1165,6 +1165,20 @@ export async function waitForScreenText(session, matcher, {
   throw new Error(`menu buffer did not match ${matcher} within ${timeoutMs}ms`)
 }
 
+export async function waitForAskAnythingScreen(session, {
+  timeoutMs = 60_000,
+  pollIntervalMs = 50,
+  readScreenImpl,
+} = {}) {
+  // Real-host interactive startup can land close to 30s on Windows, so use a
+  // dedicated first-paint budget instead of the shorter generic menu wait.
+  return waitForScreenText(session, /Ask anything\.\.\./, {
+    timeoutMs,
+    pollIntervalMs,
+    readScreenImpl,
+  })
+}
+
 function resettableMatcher(matcher) {
   if (!(matcher instanceof RegExp)) {
     return matcher
