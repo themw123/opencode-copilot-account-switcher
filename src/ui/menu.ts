@@ -47,6 +47,8 @@ export type MenuAction =
   | { type: "wechat-menu" }
   | { type: "wechat-bind" }
   | { type: "wechat-rebind" }
+  | { type: "wechat-export-debug-bundle-menu" }
+  | { type: "wechat-export-debug-bundle"; mode: "sanitized" | "full" }
   | { type: "toggle-wechat-notifications" }
   | { type: "toggle-wechat-question-notify" }
   | { type: "toggle-wechat-permission-notify" }
@@ -181,11 +183,15 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
         syntheticInitiatorOn: "Send synthetic messages as agent: On",
         syntheticInitiatorOff: "Send synthetic messages as agent: Off",
         syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
-        wechatNotificationsHeading: "WeChat notifications",
-        wechatBind: "Bind / Rebind WeChat",
-        wechatNotificationsOn: "WeChat notifications: On",
-        wechatNotificationsOff: "WeChat notifications: Off",
-        wechatQuestionNotifyOn: "Question notifications: On",
+         wechatNotificationsHeading: "WeChat notifications",
+         wechatBind: "Bind / Rebind WeChat",
+         wechatExportDebugBundle: "Export WeChat debug bundle",
+         wechatDebugBundleModeTitle: "Choose debug bundle type",
+         wechatDebugBundleSanitized: "Sanitized bundle",
+         wechatDebugBundleFull: "Full bundle",
+         wechatNotificationsOn: "WeChat notifications: On",
+         wechatNotificationsOff: "WeChat notifications: Off",
+         wechatQuestionNotifyOn: "Question notifications: On",
         wechatQuestionNotifyOff: "Question notifications: Off",
         wechatPermissionNotifyOn: "Permission notifications: On",
         wechatPermissionNotifyOff: "Permission notifications: Off",
@@ -229,11 +235,15 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
       syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
       syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
-      wechatNotificationsHeading: "微信通知",
-      wechatBind: "绑定 / 重绑微信",
-      wechatNotificationsOn: "微信通知总开关：已开启",
-      wechatNotificationsOff: "微信通知总开关：已关闭",
-      wechatQuestionNotifyOn: "问题通知：已开启",
+       wechatNotificationsHeading: "微信通知",
+       wechatBind: "绑定 / 重绑微信",
+       wechatExportDebugBundle: "导出微信调试包",
+       wechatDebugBundleModeTitle: "选择调试包类型",
+       wechatDebugBundleSanitized: "脱敏包",
+       wechatDebugBundleFull: "完整包",
+       wechatNotificationsOn: "微信通知总开关：已开启",
+       wechatNotificationsOff: "微信通知总开关：已关闭",
+       wechatQuestionNotifyOn: "问题通知：已开启",
       wechatQuestionNotifyOff: "问题通知：已关闭",
       wechatPermissionNotifyOn: "权限通知：已开启",
       wechatPermissionNotifyOff: "权限通知：已关闭",
@@ -280,11 +290,15 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       syntheticInitiatorOn: "Send synthetic messages as agent: On",
       syntheticInitiatorOff: "Send synthetic messages as agent: Off",
       syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
-      wechatNotificationsHeading: "WeChat notifications",
-      wechatBind: "Bind / Rebind WeChat",
-      wechatNotificationsOn: "WeChat notifications: On",
-      wechatNotificationsOff: "WeChat notifications: Off",
-      wechatQuestionNotifyOn: "Question notifications: On",
+       wechatNotificationsHeading: "WeChat notifications",
+       wechatBind: "Bind / Rebind WeChat",
+       wechatExportDebugBundle: "Export WeChat debug bundle",
+       wechatDebugBundleModeTitle: "Choose debug bundle type",
+       wechatDebugBundleSanitized: "Sanitized bundle",
+       wechatDebugBundleFull: "Full bundle",
+       wechatNotificationsOn: "WeChat notifications: On",
+       wechatNotificationsOff: "WeChat notifications: Off",
+       wechatQuestionNotifyOn: "Question notifications: On",
       wechatQuestionNotifyOff: "Question notifications: Off",
       wechatPermissionNotifyOn: "Permission notifications: On",
       wechatPermissionNotifyOff: "Permission notifications: Off",
@@ -330,11 +344,15 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
     syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
     syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
     syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
-    wechatNotificationsHeading: "微信通知",
-    wechatBind: "绑定 / 重绑微信",
-    wechatNotificationsOn: "微信通知总开关：已开启",
-    wechatNotificationsOff: "微信通知总开关：已关闭",
-    wechatQuestionNotifyOn: "问题通知：已开启",
+     wechatNotificationsHeading: "微信通知",
+     wechatBind: "绑定 / 重绑微信",
+     wechatExportDebugBundle: "导出微信调试包",
+     wechatDebugBundleModeTitle: "选择调试包类型",
+     wechatDebugBundleSanitized: "脱敏包",
+     wechatDebugBundleFull: "完整包",
+     wechatNotificationsOn: "微信通知总开关：已开启",
+     wechatNotificationsOff: "微信通知总开关：已关闭",
+     wechatQuestionNotifyOn: "问题通知：已开启",
     wechatQuestionNotifyOff: "问题通知：已关闭",
     wechatPermissionNotifyOn: "权限通知：已开启",
     wechatPermissionNotifyOff: "权限通知：已关闭",
@@ -615,6 +633,12 @@ function buildWechatSubmenuItems(copy: ReturnType<typeof getMenuCopy>, input: {
       disabled: !input.capabilities.wechatNotificationsMenu,
     },
     {
+      label: copy.wechatExportDebugBundle,
+      value: { type: "wechat-export-debug-bundle-menu" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+    {
       label: input.wechatNotificationsEnabled ? copy.wechatNotificationsOn : copy.wechatNotificationsOff,
       value: { type: "toggle-wechat-notifications" },
       color: "cyan",
@@ -635,6 +659,29 @@ function buildWechatSubmenuItems(copy: ReturnType<typeof getMenuCopy>, input: {
     {
       label: input.wechatSessionErrorNotifyEnabled ? copy.wechatSessionErrorNotifyOn : copy.wechatSessionErrorNotifyOff,
       value: { type: "toggle-wechat-session-error-notify" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+  ]
+}
+
+function buildWechatDebugBundleModeItems(copy: ReturnType<typeof getMenuCopy>, input: {
+  language: MenuLanguage
+  capabilities: MenuCapabilities
+}): MenuItem<MenuAction>[] {
+  const backLabel = input.language === "en" ? "Back" : "返回上级"
+  return [
+    { label: backLabel, value: { type: "cancel" } },
+    { label: "", value: { type: "cancel" }, separator: true },
+    {
+      label: copy.wechatDebugBundleSanitized,
+      value: { type: "wechat-export-debug-bundle", mode: "sanitized" },
+      color: "cyan",
+      disabled: !input.capabilities.wechatNotificationsMenu,
+    },
+    {
+      label: copy.wechatDebugBundleFull,
+      value: { type: "wechat-export-debug-bundle", mode: "full" },
       color: "cyan",
       disabled: !input.capabilities.wechatNotificationsMenu,
     },
@@ -725,28 +772,47 @@ export async function showMenuWithDeps(
           : (deps.readOperatorBinding ?? readOperatorBinding)().catch(() => undefined),
       ])
 
-      const wechatItems = buildWechatSubmenuItems(copy, {
-        wechatNotificationsEnabled: input.wechatNotificationsEnabled !== false,
-        wechatQuestionNotifyEnabled: input.wechatQuestionNotifyEnabled !== false,
-        wechatPermissionNotifyEnabled: input.wechatPermissionNotifyEnabled !== false,
-        wechatSessionErrorNotifyEnabled: input.wechatSessionErrorNotifyEnabled !== false,
-        wechatPrimaryBinding: input.wechatPrimaryBinding ?? pickPrimaryBindingFromSettings(commonSettings),
-        wechatOperatorBinding: input.wechatOperatorBinding ?? pickOperatorBinding(operatorBinding),
-        capabilities: {
-          ...defaultMenuCapabilities(provider),
-          ...input.capabilities,
-        },
-        language: currentLanguage,
-      })
-      const wechatResult = await selectMenu(wechatItems, {
-        message: copy.wechatNotificationsHeading,
-        subtitle: copy.menuSubtitle,
-        clearScreen: true,
-      })
-      if (!wechatResult || wechatResult.type === "cancel") {
-        continue
+      const capabilities = {
+        ...defaultMenuCapabilities(provider),
+        ...input.capabilities,
       }
-      return wechatResult
+
+      while (true) {
+        const wechatItems = buildWechatSubmenuItems(copy, {
+          wechatNotificationsEnabled: input.wechatNotificationsEnabled !== false,
+          wechatQuestionNotifyEnabled: input.wechatQuestionNotifyEnabled !== false,
+          wechatPermissionNotifyEnabled: input.wechatPermissionNotifyEnabled !== false,
+          wechatSessionErrorNotifyEnabled: input.wechatSessionErrorNotifyEnabled !== false,
+          wechatPrimaryBinding: input.wechatPrimaryBinding ?? pickPrimaryBindingFromSettings(commonSettings),
+          wechatOperatorBinding: input.wechatOperatorBinding ?? pickOperatorBinding(operatorBinding),
+          capabilities,
+          language: currentLanguage,
+        })
+        const wechatResult = await selectMenu(wechatItems, {
+          message: copy.wechatNotificationsHeading,
+          subtitle: copy.menuSubtitle,
+          clearScreen: true,
+        })
+        if (!wechatResult || wechatResult.type === "cancel") {
+          break
+        }
+        if (wechatResult.type === "wechat-export-debug-bundle-menu") {
+          const debugBundleMode = await selectMenu(buildWechatDebugBundleModeItems(copy, {
+            language: currentLanguage,
+            capabilities,
+          }), {
+            message: copy.wechatExportDebugBundle,
+            subtitle: copy.wechatDebugBundleModeTitle,
+            clearScreen: true,
+          })
+          if (!debugBundleMode || debugBundleMode.type === "cancel") {
+            continue
+          }
+          return debugBundleMode
+        }
+        return wechatResult
+      }
+      continue
     }
     if (result.type === "toggle-language") {
       currentLanguage = currentLanguage === "zh" ? "en" : "zh"

@@ -6,7 +6,11 @@ import {
   listKnownCopilotModels,
   rewriteModelAccountAssignments,
 } from "./model-account-map.js"
-import { runProviderMenu, type MenuAction as RuntimeMenuAction } from "./menu-runtime.js"
+import {
+  runProviderMenu,
+  type MenuAction as RuntimeMenuAction,
+  type ProviderActionOutput,
+} from "./menu-runtime.js"
 import { persistAccountSwitch } from "./plugin-actions.js"
 import { buildPluginHooks } from "./plugin-hooks.js"
 import {
@@ -88,7 +92,82 @@ function toSharedRuntimeAction(action: UiMenuAction): RuntimeMenuAction | undefi
   if (action.type === "toggle-wechat-session-error-notify") return { type: "provider", name: "toggle-wechat-session-error-notify" }
   if (action.type === "wechat-bind") return { type: "provider", name: "wechat-bind" }
   if (action.type === "wechat-rebind") return { type: "provider", name: "wechat-rebind" }
+  if (action.type === "wechat-export-debug-bundle") return { type: "provider", name: "wechat-export-debug-bundle", payload: { mode: action.mode } }
   return undefined
+}
+
+type WechatDebugBundleProviderSuccessResult = {
+  mode: "sanitized" | "full"
+  bundlePath: string
+  message: string
+}
+
+type WechatDebugBundleProviderFailureResult = {
+  ok: false
+  mode: "sanitized" | "full"
+  code: string
+  message: string
+  archivePath?: string
+  details?: Record<string, unknown>
+}
+
+function isWechatDebugBundleProviderSuccessResult(value: unknown): value is WechatDebugBundleProviderSuccessResult {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  const candidate = value as {
+    mode?: unknown
+    bundlePath?: unknown
+    message?: unknown
+  }
+  return (candidate.mode === "sanitized" || candidate.mode === "full")
+    && typeof candidate.bundlePath === "string"
+    && typeof candidate.message === "string"
+}
+
+function isWechatDebugBundleProviderFailureResult(value: unknown): value is WechatDebugBundleProviderFailureResult {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  const candidate = value as {
+    ok?: unknown
+    mode?: unknown
+    code?: unknown
+    message?: unknown
+    archivePath?: unknown
+    details?: unknown
+  }
+  return candidate.ok === false
+    && (candidate.mode === "sanitized" || candidate.mode === "full")
+    && typeof candidate.code === "string"
+    && typeof candidate.message === "string"
+    && (candidate.archivePath === undefined || typeof candidate.archivePath === "string")
+    && (candidate.details === undefined || typeof candidate.details === "object")
+}
+
+function handleProviderActionResult(output: ProviderActionOutput) {
+  if (output.name !== "wechat-export-debug-bundle") return
+  const result = output.result
+  if (isWechatDebugBundleProviderSuccessResult(result)) {
+    console.log(JSON.stringify({
+      type: "wechat-export-debug-bundle",
+      ok: true,
+      mode: result.mode,
+      bundlePath: result.bundlePath,
+      message: result.message,
+    }))
+    return
+  }
+  if (!isWechatDebugBundleProviderFailureResult(result)) return
+  console.log(JSON.stringify({
+    type: "wechat-export-debug-bundle",
+    ok: false,
+    mode: result.mode,
+    code: result.code,
+    message: result.message,
+    ...(typeof result.archivePath === "string" ? { archivePath: result.archivePath } : {}),
+    ...(result.details && typeof result.details === "object" ? { details: result.details } : {}),
+  }))
 }
 export async function configureDefaultAccountGroup(
   store: StoreFile,
@@ -447,6 +526,7 @@ async function createAccountSwitcherPlugin(
     return runProviderMenu({
       adapter,
       showMenu: toRuntimeAction,
+      onProviderActionResult: handleProviderActionResult,
       now,
     })
   }
@@ -494,6 +574,7 @@ async function createAccountSwitcherPlugin(
     return runProviderMenu({
       adapter,
       showMenu: toRuntimeAction,
+      onProviderActionResult: handleProviderActionResult,
       now,
     })
   }

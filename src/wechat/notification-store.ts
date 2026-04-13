@@ -286,13 +286,15 @@ export async function markNotificationSent(input: { idempotencyKey: string; sent
   }
   assertValidIdempotencyKey(input.idempotencyKey)
   const current = await readNotification(input.idempotencyKey)
-  if (current.status !== "pending") {
+  if (current.status !== "pending" && current.status !== "failed") {
     throw new Error("notification is not pending")
   }
   return writeNotification({
     ...current,
     status: "sent",
     sentAt: input.sentAt,
+    failedAt: undefined,
+    failureReason: undefined,
   })
 }
 

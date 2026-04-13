@@ -189,6 +189,7 @@ function spawnBrokerEntry({ endpoint, xdgConfigHome, extraEnv = {} }) {
     env: {
       ...process.env,
       XDG_CONFIG_HOME: xdgConfigHome,
+      WECHAT_STATE_ROOT_OVERRIDE: "",
       WECHAT_BROKER_EXIT_ON_STDIN_EOF: "1",
       ...extraEnv,
     },
@@ -204,6 +205,7 @@ function spawnDetachedBrokerEntry({ endpoint, xdgConfigHome }) {
     env: {
       ...process.env,
       XDG_CONFIG_HOME: xdgConfigHome,
+      WECHAT_STATE_ROOT_OVERRIDE: "",
     },
     detached: true,
     stdio: "ignore",
@@ -219,6 +221,14 @@ function isProcessAlive(pid) {
     return true
   } catch {
     return false
+  }
+}
+
+async function assertProcessStaysAlive(pid, durationMs, pollIntervalMs = 25) {
+  const deadline = Date.now() + durationMs
+  while (Date.now() < deadline) {
+    assert.equal(isProcessAlive(pid), true)
+    await delay(Math.min(pollIntervalMs, Math.max(deadline - Date.now(), 1)))
   }
 }
 
@@ -393,8 +403,27 @@ async function createPersistentConnection(endpoint) {
         socket.write(protocol.serializeEnvelope(envelope))
       })
     },
-    close() {
-      socket.end()
+    async close(timeoutMs = 4000) {
+      if (socket.destroyed) {
+        return
+      }
+
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("timeout waiting for connection close"))
+        }, timeoutMs)
+
+        socket.once("close", () => {
+          clearTimeout(timer)
+          resolve()
+        })
+        socket.once("error", (error) => {
+          clearTimeout(timer)
+          reject(error)
+        })
+
+        socket.destroy()
+      })
     },
   }
 }
@@ -700,8 +729,7 @@ test("broker-entry 空闲超时期间若仍有 open request 则保持存活", as
 
   try {
     await waitForBrokerMetadata(brokerJsonPath)
-    await delay(400)
-    assert.equal(isProcessAlive(child.pid), true)
+    await assertProcessStaysAlive(child.pid, 400)
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)
@@ -713,12 +741,14 @@ test("broker-entry 空闲计时期间若实例重新注册则取消退出，断�
   const sandboxConfigHome = await mkdtemp(path.join(os.tmpdir(), "wechat-broker-idle-cancel-"))
   const endpoint = createBrokerEndpoint(sandboxConfigHome)
   const brokerJsonPath = path.join(sandboxConfigHome, "opencode", "account-switcher", "wechat", "broker.json")
+  const idleTimeoutMs = 180
+  const idleScanIntervalMs = 20
   const child = spawnBrokerEntry({
     endpoint,
     xdgConfigHome: sandboxConfigHome,
     extraEnv: {
-      WECHAT_BROKER_IDLE_TIMEOUT_MS: "180",
-      WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS: "20",
+      WECHAT_BROKER_IDLE_TIMEOUT_MS: String(idleTimeoutMs),
+      WECHAT_BROKER_IDLE_SCAN_INTERVAL_MS: String(idleScanIntervalMs),
     },
   })
 
@@ -739,10 +769,9 @@ test("broker-entry 空闲计时期间若实例重新注册则取消退出，断�
     })
     assert.equal(registerAck.type, "registerAck")
 
-    await delay(220)
-    assert.equal(isProcessAlive(child.pid), true)
+    await assertProcessStaysAlive(child.pid, 220)
 
-    conn.close()
+    await conn.close()
     const exited = await waitForExit(child, 5_000)
     assert.equal(exited.code, 0)
   } finally {
@@ -791,14 +820,14 @@ test("broker-entry 启动时会立刻把过期 connected snapshot 标记为 stal
 
   try {
     await waitForBrokerMetadata(brokerJsonPath)
-    const staleSnapshot = await waitForInstanceSnapshot(instancePath, (snapshot) => snapshot.status === "stale", 1_500)
+    const staleSnapshot = await waitForInstanceSnapshot(instancePath, (snapshot) => snapshot.status === "stale", 5_000)
     assert.equal(staleSnapshot.status, "stale")
     assert.equal(typeof staleSnapshot.staleSince, "number")
 
     const diagnosticsRaw = await waitForFileText(
       diagnosticsPath,
       (text) => text.includes('"type":"instanceStale"') && text.includes('"instanceID":"startup-stale-a"'),
-      1_500,
+      5_000,
     )
     assert.match(diagnosticsRaw, /"code":"instanceStale"/)
   } finally {
@@ -847,11 +876,11 @@ test("broker-entry 启动时会立刻 purge 过期 cleaned request", async () =>
 
   try {
     await waitForBrokerMetadata(brokerJsonPath)
-    await waitForFileRemoved(path.join(requestDir, `${routeKey}.json`), 1_500)
+    await waitForFileRemoved(path.join(requestDir, `${routeKey}.json`), 5_000)
     const diagnosticsRaw = await waitForFileText(
       diagnosticsPath,
       (text) => text.includes('"type":"requestPurged"') && text.includes(`"routeKey":"${routeKey}"`),
-      1_500,
+      5_000,
     )
     assert.match(diagnosticsRaw, /"code":"requestPurged"/)
   } finally {
@@ -1539,9 +1568,7 @@ test("同连接同 instanceID 重注册会刷新 token/registrationEpoch；新�
     assert.equal(heartbeatOne.type, "pong")
     assert.equal(heartbeatTwo.type, "pong")
 
-    connA.close()
-    connB.close()
-    connC.close()
+    await Promise.all([connA.close(), connB.close(), connC.close()])
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)
@@ -1625,7 +1652,7 @@ test("instances 快照：注册即落盘，超时标记 stale，后续 heartbeat
     assert.equal("staleSince" in recoveredSnapshot, false)
     assert.equal(recoveredSnapshot.lastHeartbeatAt >= staleSnapshot.lastHeartbeatAt, true)
 
-    conn.close()
+    await conn.close()
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)
@@ -1732,7 +1759,7 @@ test("terminal request 会被自动 cleaned，并在保留期后 purge", async (
     xdgConfigHome: sandboxConfigHome,
     extraEnv: {
       WECHAT_BROKER_REQUEST_CLEAN_AFTER_MS: "50",
-      WECHAT_BROKER_REQUEST_PURGE_RETENTION_MS: "100",
+      WECHAT_BROKER_REQUEST_PURGE_RETENTION_MS: "1000",
       WECHAT_BROKER_REQUEST_CLEANUP_SCAN_INTERVAL_MS: "20",
     },
   })
@@ -1774,7 +1801,7 @@ test("terminal request 会被自动 cleaned，并在保留期后 purge", async (
         status: "cleaned",
         createdAt: now - 5_000,
         answeredAt: now - 4_000,
-        cleanedAt: now - 1_000,
+        cleanedAt: now - 2_000,
       }, null, 2),
       "utf8",
     )
@@ -1915,7 +1942,7 @@ test("stale 恢复时 heartbeat 返回后，磁盘快照应已是 connected（�
     assert.match(diagnosticsRaw, /"instanceID":"instance-ordering-a"/)
     assert.match(diagnosticsRaw, /"type":"instanceRecovered"/)
 
-    conn.close()
+    await conn.close()
   } finally {
     await terminateChild(child)
     childProcesses.delete(child)

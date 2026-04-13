@@ -315,3 +315,122 @@ test("wechat bind action does not trigger provider store persistence", async () 
   assert.equal(writes.some((meta) => meta?.actionType === "wechat-bind"), false)
   assert.equal(writes.some((meta) => String(meta?.reason ?? "").includes("wechat-bind")), false)
 })
+
+test("wechat debug bundle menu prompts for mode and returns explicit action", async () => {
+  const { showMenuWithDeps } = await loadMenuModuleOrFail()
+  const menuCalls = []
+
+  const result = await showMenuWithDeps([], {
+    provider: "copilot",
+    loopSafetyEnabled: true,
+    networkRetryEnabled: false,
+    wechatNotificationsEnabled: true,
+    wechatQuestionNotifyEnabled: true,
+    wechatPermissionNotifyEnabled: true,
+    wechatSessionErrorNotifyEnabled: true,
+    language: "zh",
+  }, {
+    select: async (items) => {
+      menuCalls.push(items.map((item) => item.label))
+      if (menuCalls.length === 1) return { type: "wechat-menu" }
+      if (menuCalls.length === 2) return { type: "wechat-export-debug-bundle-menu" }
+      if (menuCalls.length === 3) return { type: "wechat-export-debug-bundle", mode: "sanitized" }
+      return { type: "cancel" }
+    },
+    confirm: async () => true,
+    showAccountActions: async () => "back",
+  })
+
+  assert.equal(menuCalls.length, 3)
+  assert.equal(menuCalls[1].includes("导出微信调试包"), true)
+  assert.equal(menuCalls[2].includes("脱敏包"), true)
+  assert.equal(menuCalls[2].includes("完整包"), true)
+  assert.deepEqual(result, { type: "wechat-export-debug-bundle", mode: "sanitized" })
+})
+
+test("wechat-export-debug-bundle action stays non-persistent in menu runtime", async () => {
+  const { runProviderMenu } = await loadMenuRuntimeOrFail()
+  const writes = []
+  const called = []
+  const adapter = {
+    key: "test",
+    loadStore: async () => ({ active: "alpha", autoRefresh: false, refreshMinutes: 15, accounts: { alpha: { name: "alpha" } } }),
+    writeStore: async (_store, meta) => {
+      writes.push(meta)
+    },
+    bootstrapAuthImport: async () => false,
+    authorizeNewAccount: async () => undefined,
+    refreshSnapshots: async () => {},
+    toMenuInfo: async () => [{ name: "alpha", index: 0, isCurrent: true }],
+    getCurrentEntry: (store) => store.accounts[store.active],
+    getRefreshConfig: () => ({ enabled: false, minutes: 15 }),
+    getAccountByName: () => undefined,
+    switchAccount: async () => {},
+    applyAction: async (_store, action) => {
+      called.push(action)
+      return action.name === "wechat-export-debug-bundle"
+    },
+  }
+
+  const actions = [
+    { type: "provider", name: "wechat-export-debug-bundle", payload: { mode: "sanitized" } },
+    { type: "cancel" },
+  ]
+  await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+  })
+
+  assert.deepEqual(called, [{ type: "provider", name: "wechat-export-debug-bundle", payload: { mode: "sanitized" } }])
+  assert.equal(writes.some((meta) => meta?.actionType === "wechat-export-debug-bundle"), false)
+  assert.equal(writes.some((meta) => String(meta?.reason ?? "").includes("wechat-export-debug-bundle")), false)
+})
+
+test("wechat-export-debug-bundle action preserves structured result in menu runtime", async () => {
+  const { runProviderMenu } = await loadMenuRuntimeOrFail()
+  const outputs = []
+  const adapter = {
+    key: "test",
+    loadStore: async () => ({ active: "alpha", autoRefresh: false, refreshMinutes: 15, accounts: { alpha: { name: "alpha" } } }),
+    writeStore: async () => {},
+    bootstrapAuthImport: async () => false,
+    authorizeNewAccount: async () => undefined,
+    refreshSnapshots: async () => {},
+    toMenuInfo: async () => [{ name: "alpha", index: 0, isCurrent: true }],
+    getCurrentEntry: (store) => store.accounts[store.active],
+    getRefreshConfig: () => ({ enabled: false, minutes: 15 }),
+    getAccountByName: () => undefined,
+    switchAccount: async () => {},
+    applyAction: async () => ({
+      handled: true,
+      result: {
+        mode: "sanitized",
+        bundlePath: "C:/temp/wechat-debug-bundle-sanitized.zip",
+        message: "微信调试包已生成：C:/temp/wechat-debug-bundle-sanitized.zip",
+      },
+    }),
+  }
+
+  const actions = [
+    { type: "provider", name: "wechat-export-debug-bundle", payload: { mode: "sanitized" } },
+    { type: "cancel" },
+  ]
+  const current = await runProviderMenu({
+    adapter,
+    showMenu: async () => actions.shift() ?? { type: "cancel" },
+    onProviderActionResult: async (output) => {
+      outputs.push(output)
+    },
+  })
+
+  assert.deepEqual(outputs, [{
+    name: "wechat-export-debug-bundle",
+    payload: { mode: "sanitized" },
+    result: {
+      mode: "sanitized",
+      bundlePath: "C:/temp/wechat-debug-bundle-sanitized.zip",
+      message: "微信调试包已生成：C:/temp/wechat-debug-bundle-sanitized.zip",
+    },
+  }])
+  assert.deepEqual(current, { name: "alpha" })
+})

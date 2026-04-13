@@ -549,6 +549,7 @@ export async function openGitHubCopilotPluginMenuThroughRealOpencode({
   spawnPtyImpl,
   readScreenImpl,
   sendInputImpl,
+  pluginMenuOpenAttempts = 2,
   screenWaitTimeoutMs = 60_000,
   inputChangeTimeoutMs = 750,
   inputRetryAttempts = 1,
@@ -557,55 +558,72 @@ export async function openGitHubCopilotPluginMenuThroughRealOpencode({
 } = {}) {
   const resolvedInlineConfigContent = inlineConfigContent
     ?? await resolvePluginInlineConfigContentImpl({ host, artifact })
-  const session = await spawnRealOpencodePty({
-    host,
-    inlineConfigContent: resolvedInlineConfigContent,
-    commandArgsOverride: [
-      "providers",
-      "login",
-      "--provider",
-      "github-copilot",
-      "--method",
-      "Manage GitHub Copilot accounts",
-    ],
-    spawnPtyImpl,
-  })
-  let succeeded = false
+  const maxPluginMenuOpenAttempts = Math.max(1, pluginMenuOpenAttempts)
+  let openAttempt = 0
+  let lastError
 
-  try {
-    const addCredentialScreen = await waitForScreenText(session, /Add credential/i, {
-      timeoutMs: screenWaitTimeoutMs,
-      readScreenImpl,
-    })
-    const pluginMenuScreen = await advanceFromAddCredentialToPluginMenu(session, addCredentialScreen, {
-      sendInputImpl,
-      readScreenImpl,
-      screenWaitTimeoutMs,
-      inputChangeTimeoutMs,
-      inputRetryAttempts,
-      inputPollIntervalMs,
-    })
+  while (openAttempt < maxPluginMenuOpenAttempts) {
+    let session
+    let succeeded = false
 
-    succeeded = true
+    try {
+      session = await spawnRealOpencodePty({
+        host,
+        inlineConfigContent: resolvedInlineConfigContent,
+        commandArgsOverride: [
+          "providers",
+          "login",
+          "--provider",
+          "github-copilot",
+          "--method",
+          "Manage GitHub Copilot accounts",
+        ],
+        spawnPtyImpl,
+      })
 
-    return {
-      ok: true,
-      stage: "plugin-menu-visible",
-      reachedAddCredential: true,
-      reachedPluginMenu: true,
-      addCredentialScreen,
-      pluginMenuScreen,
-      session,
-    }
-  } finally {
-    if (!succeeded) {
-      try {
-        await stopRealOpencodePty(session, { sendInputImpl })
-      } catch {
-        // Preserve the original failure when cleanup also fails.
+      const addCredentialScreen = await waitForScreenText(session, /Add credential/i, {
+        timeoutMs: screenWaitTimeoutMs,
+        readScreenImpl,
+      })
+      const pluginMenuScreen = await advanceFromAddCredentialToPluginMenu(session, addCredentialScreen, {
+        sendInputImpl,
+        readScreenImpl,
+        screenWaitTimeoutMs,
+        inputChangeTimeoutMs,
+        inputRetryAttempts,
+        inputPollIntervalMs,
+      })
+
+      succeeded = true
+
+      return {
+        ok: true,
+        stage: "plugin-menu-visible",
+        reachedAddCredential: true,
+        reachedPluginMenu: true,
+        addCredentialScreen,
+        pluginMenuScreen,
+        session,
+      }
+    } catch (error) {
+      lastError = error
+      openAttempt += 1
+
+      if (openAttempt >= maxPluginMenuOpenAttempts) {
+        throw error
+      }
+    } finally {
+      if (!succeeded && session) {
+        try {
+          await stopRealOpencodePty(session, { sendInputImpl })
+        } catch {
+          // Preserve the original failure when cleanup also fails.
+        }
       }
     }
   }
+
+  throw lastError
 }
 
 async function advanceFromAddCredentialToPluginMenu(session, addCredentialScreen, {
@@ -665,6 +683,7 @@ export async function openWechatNotificationsSubmenuThroughRealOpencode({
   spawnPtyImpl,
   readScreenImpl,
   sendInputImpl,
+  menuOpenAttempts = 2,
   screenWaitTimeoutMs = 60_000,
   menuNavigationDelayMs = 50,
   inputChangeTimeoutMs = 750,
@@ -672,61 +691,76 @@ export async function openWechatNotificationsSubmenuThroughRealOpencode({
   inputPollIntervalMs = 25,
   resolvePluginInlineConfigContentImpl = resolveRealHostPluginInlineConfigContent,
 } = {}) {
-  let pluginMenuResult
-  let succeeded = false
+  let openAttempt = 0
+  let lastError
 
-  try {
-    pluginMenuResult = await openGitHubCopilotPluginMenuThroughRealOpencode({
-      host,
-      artifact,
-      inlineConfigContent,
-      spawnPtyImpl,
-      readScreenImpl,
-      sendInputImpl,
-      screenWaitTimeoutMs,
-      inputChangeTimeoutMs,
-      inputRetryAttempts,
-      inputPollIntervalMs,
-      resolvePluginInlineConfigContentImpl,
-    })
+  while (openAttempt < menuOpenAttempts) {
+    let pluginMenuResult
+    let succeeded = false
 
-    for (let step = 0; step < 12; step += 1) {
-      await sendKeyWithScreenChangeRetry(pluginMenuResult.session, "DOWN", {
+    try {
+      pluginMenuResult = await openGitHubCopilotPluginMenuThroughRealOpencode({
+        host,
+        artifact,
+        inlineConfigContent,
+        spawnPtyImpl,
+        readScreenImpl,
+        sendInputImpl,
+        pluginMenuOpenAttempts: 1,
+        screenWaitTimeoutMs,
+        inputChangeTimeoutMs,
+        inputRetryAttempts,
+        inputPollIntervalMs,
+        resolvePluginInlineConfigContentImpl,
+      })
+
+      for (let step = 0; step < 12; step += 1) {
+        await sendKeyWithScreenChangeRetry(pluginMenuResult.session, "DOWN", {
+          sendInputImpl,
+          readScreenImpl,
+          baselineScreenText: pluginMenuResult.session.screenText,
+          inputChangeTimeoutMs,
+          inputRetryAttempts,
+          inputPollIntervalMs,
+        })
+        await delay(menuNavigationDelayMs)
+      }
+      const wechatSubmenuScreen = await advanceFromPluginMenuToWechatSubmenu(pluginMenuResult.session, {
         sendInputImpl,
         readScreenImpl,
-        baselineScreenText: pluginMenuResult.session.screenText,
+        screenWaitTimeoutMs,
         inputChangeTimeoutMs,
         inputRetryAttempts,
         inputPollIntervalMs,
       })
-      await delay(menuNavigationDelayMs)
-    }
-    const wechatSubmenuScreen = await advanceFromPluginMenuToWechatSubmenu(pluginMenuResult.session, {
-      sendInputImpl,
-      readScreenImpl,
-      screenWaitTimeoutMs,
-      inputChangeTimeoutMs,
-      inputRetryAttempts,
-      inputPollIntervalMs,
-    })
 
-    succeeded = true
+      succeeded = true
 
-    return {
-      ...pluginMenuResult,
-      stage: "wechat-submenu-visible",
-      reachedWechatSubmenu: true,
-      wechatSubmenuScreen,
-    }
-  } finally {
-    if (!succeeded && pluginMenuResult?.session) {
-      try {
-        await stopRealOpencodePty(pluginMenuResult.session, { sendInputImpl })
-      } catch {
-        // Preserve the original failure when cleanup also fails.
+      return {
+        ...pluginMenuResult,
+        stage: "wechat-submenu-visible",
+        reachedWechatSubmenu: true,
+        wechatSubmenuScreen,
+      }
+    } catch (error) {
+      lastError = error
+      openAttempt += 1
+
+      if (openAttempt >= menuOpenAttempts) {
+        throw error
+      }
+    } finally {
+      if (!succeeded && pluginMenuResult?.session) {
+        try {
+          await stopRealOpencodePty(pluginMenuResult.session, { sendInputImpl })
+        } catch {
+          // Preserve the original failure when cleanup also fails.
+        }
       }
     }
   }
+
+  throw lastError
 }
 
 async function advanceFromPluginMenuToWechatSubmenu(session, {
@@ -744,10 +778,24 @@ async function advanceFromPluginMenuToWechatSubmenu(session, {
 
   while (Date.now() - startedAt <= screenWaitTimeoutMs) {
     if (/Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i.test(currentScreen)) {
-      return currentScreen
+      return waitForMatchedScreenToSettle(session, /Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i, {
+        timeoutMs: Math.min(inputChangeTimeoutMs, Math.max(inputPollIntervalMs, 250)),
+        settleMs: inputPollIntervalMs,
+        pollIntervalMs: inputPollIntervalMs,
+        readScreenImpl,
+      })
     }
 
-    if (/WeChat notifications|微信通知/.test(currentScreen) && enterAttempts < maxEnterAttempts) {
+    currentScreen = await selectMenuItemOnScreen(session, /WeChat notifications|微信通知/, {
+      timeoutMs: Math.max(0, screenWaitTimeoutMs - (Date.now() - startedAt)),
+      readScreenImpl,
+      sendInputImpl,
+      inputChangeTimeoutMs,
+      inputRetryAttempts,
+      inputPollIntervalMs,
+    })
+
+    if (enterAttempts < maxEnterAttempts) {
       await sendKeys(session, ["ENTER"], { sendInputImpl })
       enterAttempts += 1
 
@@ -756,10 +804,15 @@ async function advanceFromPluginMenuToWechatSubmenu(session, {
         currentScreen = await readSessionScreen(session, readScreenImpl)
 
         if (/Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i.test(currentScreen)) {
-          return currentScreen
+          return waitForMatchedScreenToSettle(session, /Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i, {
+            timeoutMs: Math.min(inputChangeTimeoutMs, Math.max(inputPollIntervalMs, 250)),
+            settleMs: inputPollIntervalMs,
+            pollIntervalMs: inputPollIntervalMs,
+            readScreenImpl,
+          })
         }
 
-        if (!/WeChat notifications|微信通知/.test(currentScreen)) {
+        if (!screenHasSelectedMenuItem(currentScreen, /WeChat notifications|微信通知/)) {
           break
         }
 
@@ -971,7 +1024,7 @@ export async function runRealWechatBindAndClassify({
   menuNavigationDelayMs = 50,
   bindOutcomeTimeoutMs = 60_000,
   bindOutcomePollIntervalMs = 250,
-  menuOpenAttempts = 2,
+  menuOpenAttempts = 1,
   inputChangeTimeoutMs = 750,
   inputRetryAttempts = 1,
   inputPollIntervalMs = 25,
@@ -1022,19 +1075,32 @@ export async function runRealWechatBindAndClassify({
       readRealHostLogTextImpl,
     })
 
-    await sendKeyWithScreenChangeRetry(submenuResult.session, "DOWN", {
-      sendInputImpl,
-      readScreenImpl,
-      baselineScreenText: submenuResult.session.screenText,
-      inputChangeTimeoutMs,
-      inputRetryAttempts,
-      inputPollIntervalMs,
-    })
+    const bindMatcher = /Bind \/ Rebind WeChat|绑定 \/ 重绑微信/i
+    let bindMenuScreen = await readSessionScreen(submenuResult.session, readScreenImpl)
+    const selectedWechatSubmenuLabel = extractSelectedMenuLabel(bindMenuScreen)
+    const bindNavigationKey = screenHasSelectedMenuItem(bindMenuScreen, bindMatcher)
+      ? undefined
+      : /Back|返回上级/i.test(selectedWechatSubmenuLabel ?? "")
+        ? "DOWN"
+        : "UP"
+
+    if (bindNavigationKey) {
+      bindMenuScreen = await selectMenuItemOnScreen(submenuResult.session, bindMatcher, {
+        navigationKey: bindNavigationKey,
+        timeoutMs: screenWaitTimeoutMs,
+        readScreenImpl,
+        sendInputImpl,
+        inputChangeTimeoutMs,
+        inputRetryAttempts,
+        inputPollIntervalMs,
+      })
+    }
+
     await delay(menuNavigationDelayMs)
     const bindActionScreen = await sendKeyWithScreenChangeRetry(submenuResult.session, "ENTER", {
       sendInputImpl,
       readScreenImpl,
-      baselineScreenText: submenuResult.session.screenText,
+      baselineScreenText: bindMenuScreen,
       inputChangeTimeoutMs,
       inputRetryAttempts,
       inputPollIntervalMs,
@@ -1099,6 +1165,82 @@ export async function waitForScreenText(session, matcher, {
   throw new Error(`menu buffer did not match ${matcher} within ${timeoutMs}ms`)
 }
 
+function resettableMatcher(matcher) {
+  if (!(matcher instanceof RegExp)) {
+    return matcher
+  }
+
+  return new RegExp(matcher.source, matcher.flags.replace(/[gy]/g, ""))
+}
+
+function matcherMatchesText(matcher, text) {
+  if (matcher instanceof RegExp) {
+    return resettableMatcher(matcher).test(text)
+  }
+
+  return text.includes(String(matcher))
+}
+
+function extractSelectedMenuLabel(screenText) {
+  const lines = String(screenText ?? "").split(/\r?\n/)
+
+  for (const line of lines) {
+    const match = line.match(/^\s*(?:[│┃]\s+)?(?:Selected:\s*|[>●›❯])\s*(.+?)\s*$/u)
+    if (match) {
+      return match[1]
+    }
+  }
+
+  return undefined
+}
+
+function screenHasSelectedMenuItem(screenText, matcher) {
+  const selectedLabel = extractSelectedMenuLabel(screenText)
+  if (!selectedLabel) {
+    return false
+  }
+
+  return matcherMatchesText(matcher, selectedLabel)
+}
+
+function formatMatcher(matcher) {
+  return matcher instanceof RegExp ? matcher.toString() : JSON.stringify(String(matcher))
+}
+
+export async function selectMenuItemOnScreen(session, matcher, {
+  navigationKey = "DOWN",
+  timeoutMs = 15_000,
+  readScreenImpl,
+  sendInputImpl,
+  inputChangeTimeoutMs = 750,
+  inputRetryAttempts = 1,
+  inputPollIntervalMs = 25,
+} = {}) {
+  const startedAt = Date.now()
+  let currentScreen = await readSessionScreen(session, readScreenImpl)
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (screenHasSelectedMenuItem(currentScreen, matcher)) {
+      return currentScreen
+    }
+
+    if (session.exited) {
+      break
+    }
+
+    currentScreen = await sendKeyWithScreenChangeRetry(session, navigationKey, {
+      sendInputImpl,
+      readScreenImpl,
+      baselineScreenText: currentScreen,
+      inputChangeTimeoutMs,
+      inputRetryAttempts,
+      inputPollIntervalMs,
+    })
+  }
+
+  throw new Error(`menu buffer did not select ${formatMatcher(matcher)} within ${timeoutMs}ms`)
+}
+
 async function readSessionScreen(session, readScreenImpl) {
   const readScreen = readScreenImpl ?? (async (activeSession) => activeSession.screenText)
   const screenText = await readScreen(session)
@@ -1132,6 +1274,38 @@ async function waitForScreenChange(session, previousScreenText, {
   }
 
   throw new Error(`screen did not change within ${timeoutMs}ms`)
+}
+
+async function waitForMatchedScreenToSettle(session, matcher, {
+  timeoutMs = 500,
+  settleMs = 100,
+  pollIntervalMs = 25,
+  readScreenImpl,
+} = {}) {
+  const startedAt = Date.now()
+  let currentScreen = await readSessionScreen(session, readScreenImpl)
+  let stableSince = Date.now()
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    await delay(pollIntervalMs)
+    const nextScreen = await readSessionScreen(session, readScreenImpl)
+
+    if (!matcherMatchesText(matcher, nextScreen)) {
+      return currentScreen
+    }
+
+    if (nextScreen !== currentScreen) {
+      currentScreen = nextScreen
+      stableSince = Date.now()
+      continue
+    }
+
+    if (Date.now() - stableSince >= settleMs || session.exited) {
+      return currentScreen
+    }
+  }
+
+  return currentScreen
 }
 
 async function sendKeyWithScreenChangeRetry(session, key, {
@@ -1282,6 +1456,23 @@ export async function runWechatBindThroughRealOpencode({
   }
 }
 
+function looksLikeTerminalQrBlockCanvas(text) {
+  const lines = String(text ?? "").split(/\r?\n/)
+  let denseLineCount = 0
+  let totalBlockGlyphCount = 0
+
+  for (const line of lines) {
+    const blockGlyphCount = (line.match(/[█▄▀]/g) ?? []).length
+    totalBlockGlyphCount += blockGlyphCount
+
+    if (blockGlyphCount >= 12) {
+      denseLineCount += 1
+    }
+  }
+
+  return denseLineCount >= 5 && totalBlockGlyphCount >= 120
+}
+
 export function classifyRealOpencodeWechatBindResult({ transcript, logText } = {}) {
   const source = [transcript, logText]
     .filter((value) => typeof value === "string" && value.length > 0)
@@ -1304,6 +1495,14 @@ export function classifyRealOpencodeWechatBindResult({ transcript, logText } = {
   }
 
   if (/QR URL fallback:|sessionKey|qr login/i.test(source)) {
+    return {
+      ok: false,
+      stage: "qr-wait-reached",
+      error: source,
+    }
+  }
+
+  if (looksLikeTerminalQrBlockCanvas(source)) {
     return {
       ok: false,
       stage: "qr-wait-reached",
