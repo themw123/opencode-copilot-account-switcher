@@ -24,6 +24,30 @@ type JitiNamespace = {
   "module.exports"?: unknown
 }
 
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value)
+}
+
+function joinPortablePath(basePath: string, ...segments: string[]): string {
+  return isWindowsAbsolutePath(basePath)
+    ? path.win32.join(basePath, ...segments)
+    : path.join(basePath, ...segments)
+}
+
+function dirnamePortable(filePath: string): string {
+  return isWindowsAbsolutePath(filePath)
+    ? path.win32.dirname(filePath)
+    : path.dirname(filePath)
+}
+
+function pathToPortableFileUrl(filePath: string): string {
+  if (!isWindowsAbsolutePath(filePath)) {
+    return pathToFileURL(filePath).href
+  }
+
+  return pathToFileURL(`/${filePath.replace(/\\/g, "/")}`).href
+}
+
 function isCreateJiti(value: unknown): value is CreateJiti {
   return typeof value === "function"
 }
@@ -70,12 +94,12 @@ export function resolveCreateJiti(namespace: JitiNamespace): CreateJiti {
 
 export function resolveJitiEsmEntry(resolveImpl: JitiResolve = createRequire(import.meta.url).resolve): string {
   const packageJsonPath = resolveImpl("jiti/package.json")
-  return pathToFileURL(path.join(path.dirname(packageJsonPath), "lib", "jiti.cjs")).href
+  return pathToPortableFileUrl(joinPortablePath(dirnamePortable(packageJsonPath), "lib", "jiti.cjs"))
 }
 
 export function resolveJitiCjsEntry(resolveImpl: JitiResolve = createRequire(import.meta.url).resolve): string {
   const packageJsonPath = resolveImpl("jiti/package.json")
-  return path.join(path.dirname(packageJsonPath), "lib", "jiti.cjs")
+  return joinPortablePath(dirnamePortable(packageJsonPath), "lib", "jiti.cjs")
 }
 
 function onJitiError(error: unknown): never {
@@ -155,7 +179,7 @@ export async function loadModuleWithTsFallback(
     jitiOptions?: Record<string, unknown>
   } = {},
 ): Promise<unknown> {
-  const moduleUrl = pathToFileURL(modulePath).href
+  const moduleUrl = pathToPortableFileUrl(modulePath)
   const importImpl = options.importImpl ?? nativeImport
 
   // Even under Bun, TS entrypoints inside node_modules can transitively hit ESM/CJS

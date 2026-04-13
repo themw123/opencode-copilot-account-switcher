@@ -85,9 +85,7 @@ function renderAccountGrid(cells: Array<{ name: string; quota: string }>) {
 }
 
 function buildSuccessMessage(store: StoreFile, _name: string) {
-  const defaultNames = Array.isArray(store.activeAccountNames) && store.activeAccountNames.length > 0
-    ? store.activeAccountNames
-    : []
+  const defaultNames = store.active ? [store.active] : []
   const modelIDs = Object.keys(store.modelAccountAssignments ?? {}).sort((a, b) => a.localeCompare(b))
   const lines: string[] = []
 
@@ -103,7 +101,7 @@ function buildSuccessMessage(store: StoreFile, _name: string) {
 
   let hasModelRouteGroup = false
   for (const modelID of modelIDs) {
-    const names = store.modelAccountAssignments?.[modelID] ?? []
+    const names = store.modelAccountAssignments?.[modelID]?.slice(0, 1) ?? []
     if (names.length === 0) continue
     hasModelRouteGroup = true
     lines.push(`[${modelID}]`)
@@ -122,7 +120,7 @@ function buildSuccessMessage(store: StoreFile, _name: string) {
 }
 
 function buildMissingActiveMessage() {
-  return "No default-group refreshable account available for Copilot status."
+  return "No active refreshable account available for Copilot status."
 }
 
 function buildRefreshFailedMessage(result: { error: string; previousQuota?: StoreFile["accounts"][string]["quota"] }) {

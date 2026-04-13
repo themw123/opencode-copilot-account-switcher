@@ -57,12 +57,11 @@ test("listAssignableAccountsForModel returns accounts exposing the target model"
   assert.deepEqual(accounts.map((item) => item.name), ["alt", "main"])
 })
 
-test("resolveCopilotModelAccounts prefers mapped account group and falls back to activeAccountNames", () => {
+test("resolveCopilotModelAccounts prefers mapped account and otherwise uses active account", () => {
   const store = {
     active: "main",
-    activeAccountNames: ["main", "fallback"],
     modelAccountAssignments: {
-      "gpt-5": ["alt", "org"],
+      "gpt-5": ["alt"],
     },
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
@@ -72,14 +71,13 @@ test("resolveCopilotModelAccounts prefers mapped account group and falls back to
     },
   }
 
-  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["alt", "org"])
-  assert.deepEqual(resolveCopilotModelAccounts(store, "o3").map((item) => item.name), ["main", "fallback"])
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["alt"])
+  assert.deepEqual(resolveCopilotModelAccounts(store, "o3").map((item) => item.name), ["main"])
 })
 
-test("resolveCopilotModelAccounts keeps unknown model metadata candidates but excludes explicitly disabled ones", () => {
+test("resolveCopilotModelAccounts uses only active account when it can serve the model", () => {
   const store = {
     active: "main",
-    activeAccountNames: ["main", "unknown", "disabled"],
     accounts: {
       main: {
         name: "main",
@@ -99,13 +97,12 @@ test("resolveCopilotModelAccounts keeps unknown model metadata candidates but ex
     },
   }
 
-  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "unknown"])
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main"])
 })
 
 test("resolveCopilotModelAccounts excludes accounts whose available list is present but does not include the model", () => {
   const store = {
     active: "main",
-    activeAccountNames: ["main", "other-model"],
     accounts: {
       main: {
         name: "main",
@@ -127,12 +124,11 @@ test("resolveCopilotModelAccounts excludes accounts whose available list is pres
   assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main"])
 })
 
-test("resolveCopilotModelAccounts falls back to activeAccountNames when mapped accounts are unusable", () => {
+test("resolveCopilotModelAccounts returns no candidates when mapped account is unusable", () => {
   const store = {
     active: "main",
-    activeAccountNames: ["main", "fallback"],
     modelAccountAssignments: {
-      "gpt-5": ["missing", "disabled"],
+      "gpt-5": ["missing"],
     },
     accounts: {
       main: {
@@ -158,13 +154,12 @@ test("resolveCopilotModelAccounts falls back to activeAccountNames when mapped a
     },
   }
 
-  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "fallback"])
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), [])
 })
 
-test("resolveCopilotModelAccounts falls back to activeAccountNames when model mapping is empty", () => {
+test("resolveCopilotModelAccounts returns no candidates when explicit model mapping is empty", () => {
   const store = {
     active: "main",
-    activeAccountNames: ["main", "fallback"],
     modelAccountAssignments: {
       "gpt-5": [],
     },
@@ -174,10 +169,10 @@ test("resolveCopilotModelAccounts falls back to activeAccountNames when model ma
     },
   }
 
-  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main", "fallback"])
+  assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), [])
 })
 
-test("resolveCopilotModelAccounts falls back to active when activeAccountNames candidates are all unusable", () => {
+test("resolveCopilotModelAccounts uses active even when legacy activeAccountNames would disagree", () => {
   const store = {
     active: "main",
     activeAccountNames: ["disabled", "other-model"],
@@ -212,9 +207,8 @@ test("resolveCopilotModelAccounts falls back to active when activeAccountNames c
 test("resolveCopilotModelAccount returns the first candidate from group resolution", () => {
   const store = {
     active: "main",
-    activeAccountNames: ["main", "fallback"],
     modelAccountAssignments: {
-      "gpt-5": ["alt", "org"],
+      "gpt-5": ["alt"],
     },
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },

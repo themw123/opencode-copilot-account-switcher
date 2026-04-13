@@ -917,6 +917,19 @@ async function tightenEndpointPermission(endpoint: string) {
     return
   }
 
+  // Unix socket paths can appear a tick after listen() resolves on some hosts.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await stat(endpoint)
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT" || attempt === 19) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+
   await chmod(endpoint, WECHAT_FILE_MODE)
   const info = await stat(endpoint)
   if ((info.mode & 0o777) !== WECHAT_FILE_MODE) {

@@ -140,7 +140,7 @@ test("parseStore leaves lastAccountSwitchAt undefined by default", () => {
   assert.equal(store.accounts.secondary.name, "secondary")
 })
 
-test("parseStore migrates legacy active into activeAccountNames while preserving active", () => {
+test("parseStore preserves active and drops legacy activeAccountNames runtime state", () => {
   const store = parseStore(
     JSON.stringify({
       active: "main",
@@ -151,10 +151,10 @@ test("parseStore migrates legacy active into activeAccountNames while preserving
   )
 
   assert.equal(store.active, "main")
-  assert.deepEqual(store.activeAccountNames, ["main"])
+  assert.equal(store.activeAccountNames, undefined)
 })
 
-test("parseStore normalizes array model assignments and drops missing accounts", () => {
+test("parseStore keeps only the first valid model assignment and ignores legacy activeAccountNames", () => {
   const store = parseStore(
     JSON.stringify({
       active: "main",
@@ -169,8 +169,8 @@ test("parseStore normalizes array model assignments and drops missing accounts",
     }),
   )
 
-  assert.deepEqual(store.activeAccountNames, ["alt", "main"])
-  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["main", "alt"] })
+  assert.equal(store.activeAccountNames, undefined)
+  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["main"] })
 })
 
 test("parseStore migrates legacy string model assignment into single-element array", () => {

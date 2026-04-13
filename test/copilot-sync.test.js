@@ -215,7 +215,7 @@ async function createFakeGhCommand(prefix, contents, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), prefix))
   const commandPath = join(dir, platform === "win32" ? "gh.cmd" : "gh")
   await writeFile(commandPath, contents, "utf8")
-  if (platform !== "win32") {
+  if (process.platform !== "win32") {
     await chmodImpl(commandPath, 0o755)
   }
   return { dir, commandPath }
@@ -615,7 +615,9 @@ test("check mode: Windows 平台回退 gh 自定义命令路径也能解析真�
   })
   const fakeGh = await createFakeGhCommand(
     "copilot-sync-gh-win-",
-    `@echo off\r\nif "%1"=="api" if "%2"=="repos/anomalyco/opencode/branches/dev" (\r\n  echo {"commit":{"sha":"${repositorySnapshot.upstreamCommit}"}}\r\n  exit /b 0\r\n)\r\necho unexpected gh args 1>&2\r\nexit /b 1\r\n`,
+    process.platform === "win32"
+      ? `@echo off\r\nif "%1"=="api" if "%2"=="repos/anomalyco/opencode/branches/dev" (\r\n  echo {"commit":{"sha":"${repositorySnapshot.upstreamCommit}"}}\r\n  exit /b 0\r\n)\r\necho unexpected gh args 1>&2\r\nexit /b 1\r\n`
+      : `#!/bin/sh\nif [ "$1" = "api" ] && [ "$2" = "repos/anomalyco/opencode/branches/dev" ]; then\n  printf '{"commit":{"sha":"${repositorySnapshot.upstreamCommit}"}}\\n'\n  exit 0\nfi\nprintf 'unexpected gh args\\n' >&2\nexit 1\n`,
     { platform: "win32" },
   )
 

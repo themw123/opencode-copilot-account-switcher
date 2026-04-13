@@ -1219,11 +1219,10 @@ function createPluginHooksTestHarness(input = {}) {
 
 function createSessionBindingHarness(input = {}) {
   const outgoing = []
-  let loadCall = 0
   const routingStateDirectory = input.routingStateDirectory ?? createTempRoutingStateDirectory()
   const store = {
     active: "main",
-    activeAccountNames: ["main", "alt"],
+    activeAccountNames: ["main"],
     accounts: {
       main: {
         name: "main",
@@ -1249,20 +1248,14 @@ function createSessionBindingHarness(input = {}) {
       methods: [],
     },
     loadStore: async () => store,
-    loadCandidateAccountLoads: async (ctx) => {
-      if (typeof input.loadCandidateAccountLoads !== "function") return undefined
-      return input.loadCandidateAccountLoads({ ...ctx, call: loadCall++ })
-    },
     appendSessionTouchEventImpl: input.appendSessionTouchEventImpl,
     appendRoutingEventImpl: input.appendRoutingEventImpl,
     appendRouteDecisionEventImpl: input.appendRouteDecisionEventImpl,
-    readRoutingStateImpl: input.readRoutingStateImpl,
     triggerBillingCompensation: input.triggerBillingCompensation,
     routingStateDirectory,
     touchWriteCacheIdleTtlMs: input.touchWriteCacheIdleTtlMs,
     touchWriteCacheMaxEntries: input.touchWriteCacheMaxEntries,
     now: input.now,
-    random: input.random ?? (() => 0),
     client: input.client,
     loadOfficialConfig: async ({ getAuth }) => ({
       apiKey: "",
@@ -3137,13 +3130,8 @@ test("plugin auth loader uses mapped account for matching Copilot model requests
   assert.match(String(calls[1]?.url), /api\.githubcopilot\.com/)
 })
 
-test("plugin auth loader binds the first real request of a child session to a selected account from candidates", async () => {
-  const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async () => ({
-      main: 4,
-      alt: 1,
-    }),
-  })
+test("plugin auth loader uses the active account for child-session requests by default", async () => {
+  const harness = createSessionBindingHarness()
 
   await harness.sendRequest({
     sessionID: "child-1",
@@ -3152,17 +3140,11 @@ test("plugin auth loader binds the first real request of a child session to a se
   })
 
   assert.equal(harness.outgoing.length, 1)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
-test("plugin auth loader reuses the bound account for non-user-turn follow-up requests", async () => {
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 0, alt: 10 },
-  ]
-  const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
-  })
+test("plugin auth loader keeps using the active account across follow-up requests", async () => {
+  const harness = createSessionBindingHarness()
 
   await harness.sendRequest({
     sessionID: "child-2",
@@ -3176,18 +3158,12 @@ test("plugin auth loader reuses the bound account for non-user-turn follow-up re
   })
 
   assert.equal(harness.outgoing.length, 2)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
-  assert.equal(harness.outgoing[1]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
-test("plugin auth loader reselects on a new user turn when current account load exceeds min by 3 or more", async () => {
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
-  const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
-  })
+test("plugin auth loader keeps using the active account on new user turns", async () => {
+  const harness = createSessionBindingHarness()
 
   await harness.sendRequest({
     sessionID: "child-3",
@@ -3201,18 +3177,13 @@ test("plugin auth loader reselects on a new user turn when current account load 
   })
 
   assert.equal(harness.outgoing.length, 2)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
-test("plugin auth loader keeps bound account for main-agent follow-up when upstream initiator remains agent", async () => {
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
+test("plugin auth loader keeps using the active account for repeated main-agent follow-up requests", async () => {
   const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
-   client: {
+    client: {
       session: {
         message: async () => ({ data: { parts: [] } }),
         get: async () => ({ data: {} }),
@@ -3232,17 +3203,12 @@ test("plugin auth loader keeps bound account for main-agent follow-up when upstr
   })
 
   assert.equal(harness.outgoing.length, 2)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
-  assert.equal(harness.outgoing[1]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
+  assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
-test("plugin auth loader reselects when final initiator header is user even if request body looks like agent follow-up", async () => {
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
+test("plugin auth loader keeps using the active account when final initiator header is user", async () => {
   const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
     client: {
       session: {
         message: async () => ({ data: { parts: [] } }),
@@ -3281,17 +3247,12 @@ test("plugin auth loader reselects when final initiator header is user even if r
   })
 
   assert.equal(harness.outgoing.length, 2)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
-test("plugin auth loader reselects for Request completions when final initiator header is user", async () => {
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
+test("plugin auth loader keeps using the active account for Request completions when final initiator header is user", async () => {
   const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
     client: {
       session: {
         message: async () => ({ data: { parts: [] } }),
@@ -3330,19 +3291,13 @@ test("plugin auth loader reselects for Request completions when final initiator 
   }))
 
   assert.equal(harness.outgoing.length, 2)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
 })
 
-test("plugin auth loader reselect uses x-initiator after chat.headers processing", async () => {
+test("plugin auth loader uses x-initiator after chat.headers processing without changing the active account", async () => {
   const outgoing = []
   const processedHeaders = []
-  const loadsSeen = []
-  let loadCall = 0
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
   const officialInitiators = ["agent", "user"]
   const plugin = buildPluginHooks({
     auth: {
@@ -3351,7 +3306,7 @@ test("plugin auth loader reselect uses x-initiator after chat.headers processing
     },
     loadStore: async () => ({
       active: "main",
-      activeAccountNames: ["main", "alt"],
+      activeAccountNames: ["main"],
       accounts: {
         main: {
           name: "main",
@@ -3369,12 +3324,6 @@ test("plugin auth loader reselect uses x-initiator after chat.headers processing
       loopSafetyEnabled: false,
       networkRetryEnabled: false,
     }),
-    loadCandidateAccountLoads: async () => {
-      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
-      loadCall += 1
-      loadsSeen.push(loads)
-      return loads
-    },
     loadOfficialChatHeaders: async () => async (_hookInput, output) => {
       output.headers["x-initiator"] = officialInitiators.shift() ?? "agent"
     },
@@ -3436,23 +3385,13 @@ test("plugin auth loader reselect uses x-initiator after chat.headers processing
 
   assert.equal(outgoing.length, 2)
   assert.equal(processedHeaders[0]?.["x-initiator"], "agent")
-  assert.equal(outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(outgoing[0]?.auth?.refresh, "main-refresh")
   assert.equal(processedHeaders[1]?.["x-initiator"], "user")
   assert.equal(outgoing[1]?.auth?.refresh, "main-refresh")
-  assert.deepEqual(loadsSeen, [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ])
 })
 
-test("plugin auth loader should reuse the bound account when official finalized headers mark follow-up as agent", async () => {
+test("plugin auth loader keeps the active account when official finalized headers mark follow-up as agent", async () => {
   const officialNetworkHeaders = []
-  const loadsSeen = []
-  let loadCall = 0
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
   const plugin = buildPluginHooks({
     auth: {
       provider: "github-copilot",
@@ -3460,7 +3399,7 @@ test("plugin auth loader should reuse the bound account when official finalized 
     },
     loadStore: async () => ({
       active: "main",
-      activeAccountNames: ["main", "alt"],
+      activeAccountNames: ["main"],
       accounts: {
         main: {
           name: "main",
@@ -3478,12 +3417,6 @@ test("plugin auth loader should reuse the bound account when official finalized 
       loopSafetyEnabled: false,
       networkRetryEnabled: false,
     }),
-    loadCandidateAccountLoads: async () => {
-      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
-      loadCall += 1
-      loadsSeen.push(loads)
-      return loads
-    },
     finalizeRequestForSelection: async ({ request, init }) => ({
       request,
       init: {
@@ -3570,12 +3503,8 @@ test("plugin auth loader should reuse the bound account when official finalized 
   assert.equal(officialNetworkHeaders.length, 2)
   assert.equal(officialNetworkHeaders[0]?.["x-initiator"], "agent")
   assert.equal(officialNetworkHeaders[1]?.["x-initiator"], "agent")
-  assert.equal(officialNetworkHeaders[0]?.Authorization, "Bearer alt-refresh")
-  assert.equal(officialNetworkHeaders[1]?.Authorization, "Bearer alt-refresh")
-  assert.deepEqual(loadsSeen, [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ])
+  assert.equal(officialNetworkHeaders[0]?.Authorization, "Bearer main-refresh")
+  assert.equal(officialNetworkHeaders[1]?.Authorization, "Bearer main-refresh")
 })
 
 test("plugin auth loader preserves session client this binding when finalized initiator becomes agent", async () => {
@@ -3915,7 +3844,7 @@ test("plugin auth loader does not treat bare 429 responses as rate-limit hits wi
   assert.equal(decisions[2]?.switched, false)
 })
 
-test("records route decision evidence for regular request with successful touch write", async () => {
+test("records route decision evidence for request with successful touch write", async () => {
   const decisions = []
   const harness = createSessionBindingHarness({
     client: {
@@ -3943,8 +3872,8 @@ test("records route decision evidence for regular request with successful touch 
   assert.equal(decisions[0]?.sessionID, "decision-regular")
   assert.equal(decisions[0]?.sessionIDPresent, true)
   assert.equal(decisions[0]?.groupSource, "active")
-  assert.deepEqual(decisions[0]?.candidateNames, ["main", "alt"])
-  assert.deepEqual(decisions[0]?.loads, { main: 0, alt: 0 })
+  assert.deepEqual(decisions[0]?.candidateNames, ["main"])
+  assert.deepEqual(decisions[0]?.loads, { main: 0 })
   assert.equal(decisions[0]?.chosenAccount, "main")
   assert.equal(decisions[0]?.reason, "subagent")
   assert.equal(decisions[0]?.switched, false)
@@ -4134,7 +4063,7 @@ test("records route decision reason as compaction for upstream compaction reques
   assert.equal(decisions[0]?.reason, "compaction")
 })
 
-test("records unbound-fallback for root agent request without existing session binding", async () => {
+test("records regular reason for root agent request without existing session binding", async () => {
   const decisions = []
   const harness = createSessionBindingHarness({
     client: {
@@ -4156,12 +4085,12 @@ test("records unbound-fallback for root agent request without existing session b
 
   assert.equal(response?.status, 200)
   assert.equal(decisions.length, 1)
-  assert.equal(decisions[0]?.reason, "unbound-fallback")
+  assert.equal(decisions[0]?.reason, "regular")
   assert.equal(harness.outgoing.length, 1)
-  assert.equal(Object.hasOwn(harness.outgoing[0]?.headers ?? {}, "x-initiator"), false)
+  assert.equal(harness.outgoing[0]?.headers["x-initiator"], undefined)
 })
 
-test("writes unbound-fallback route decision as JSON line end-to-end", async () => {
+test("writes regular route decision as JSON line end-to-end for root agent requests", async () => {
   const harness = createSessionBindingHarness({
     client: {
       session: {
@@ -4189,36 +4118,18 @@ test("writes unbound-fallback route decision as JSON line end-to-end", async () 
 
   const event = JSON.parse(lines[0])
   assert.equal(event.type, "route-decision")
-  assert.equal(event.reason, "unbound-fallback")
+  assert.equal(event.reason, "regular")
   assert.equal(event.sessionID, "decision-log-unbound-fallback")
 })
 
-test("unbound-fallback keeps decision reason while sending aligns with user-reselect first entry and not regular reuse", async () => {
+test("root agent and user first entry both keep the active account without fallback switching", async () => {
   const decisions = []
-  let regularContrastCall = 0
   const harness = createSessionBindingHarness({
     client: {
       session: {
         message: async () => ({ data: { parts: [] } }),
         get: async () => ({ data: {} }),
       },
-    },
-    loadCandidateAccountLoads: async ({ sessionID }) => {
-      if (sessionID === "regular-reuse-contrast") {
-        const call = regularContrastCall
-        regularContrastCall += 1
-        return call === 0 ? { main: 5, alt: 0 } : { main: 0, alt: 5 }
-      }
-
-      if (sessionID === "unbound-fallback-sending") {
-        return { main: 0, alt: 5 }
-      }
-
-      if (sessionID === "user-first-entry") {
-        return { main: 0, alt: 5 }
-      }
-
-      return { main: 0, alt: 0 }
     },
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
@@ -4248,18 +4159,18 @@ test("unbound-fallback keeps decision reason while sending aligns with user-rese
 
   assert.equal(decisions.length, 4)
   const regularFollowupDecision = decisions[1]
-  const unboundFallbackDecision = decisions[2]
+  const rootAgentDecision = decisions[2]
   const userFirstEntryDecision = decisions[3]
 
   assert.equal(regularFollowupDecision?.reason, "regular")
-  assert.equal(unboundFallbackDecision?.reason, "unbound-fallback")
+  assert.equal(rootAgentDecision?.reason, "regular")
   assert.equal(userFirstEntryDecision?.reason, "user-reselect")
 
-  assert.equal(unboundFallbackDecision?.chosenAccount, userFirstEntryDecision?.chosenAccount)
-  assert.notEqual(unboundFallbackDecision?.chosenAccount, regularFollowupDecision?.chosenAccount)
+  assert.equal(rootAgentDecision?.chosenAccount, userFirstEntryDecision?.chosenAccount)
+  assert.equal(rootAgentDecision?.chosenAccount, regularFollowupDecision?.chosenAccount)
 
   assert.equal(harness.outgoing.length, 4)
-  assert.equal(Object.hasOwn(harness.outgoing[2]?.headers ?? {}, "x-initiator"), false)
+  assert.equal(harness.outgoing[2]?.headers["x-initiator"], "agent")
 })
 
 test("agent pass-through without resolved candidate does not trigger session ancestry lookup", async () => {
@@ -4353,7 +4264,7 @@ test("session lookup unavailable does not classify as unbound-fallback", async (
   assert.equal(harness.outgoing[1]?.headers["x-initiator"], "agent")
 })
 
-test("unbound-fallback emits dedicated warning toast with required key phrases", async () => {
+test("root agent requests do not emit a dedicated unbound-fallback toast", async () => {
   const toasts = []
   const harness = createSessionBindingHarness({
     client: {
@@ -4376,10 +4287,7 @@ test("unbound-fallback emits dedicated warning toast with required key phrases",
   })
 
   assert.equal(response?.status, 200)
-  assert.equal(toasts.length, 1)
-  assert.equal(toasts[0]?.body?.variant, "warning")
-  assert.match(String(toasts[0]?.body?.message ?? ""), /异常无绑定 agent 入口/)
-  assert.match(String(toasts[0]?.body?.message ?? ""), /已按用户回合处理/)
+  assert.equal(toasts.length, 0)
 })
 
 test("regular follow-up no longer emits ordinary consumption toast", async () => {
@@ -4481,12 +4389,7 @@ test("suppresses ordinary consumption toast for first compaction account selecti
 test("toasts actual consumption with user-reselect reason", async () => {
   const toasts = []
   const decisions = []
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
   const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
     },
@@ -4520,13 +4423,13 @@ test("toasts actual consumption with user-reselect reason", async () => {
   assert.equal(toasts[0]?.body?.variant, "info")
   assert.equal(toasts[0]?.body?.message, "已使用 main（用户回合重选）")
   assert.equal(decisions.length, 2)
-  assert.equal(decisions[0]?.chosenAccount, "alt")
-  assert.equal(decisions[0]?.reason, "unbound-fallback")
+  assert.equal(decisions[0]?.chosenAccount, "main")
+  assert.equal(decisions[0]?.reason, "regular")
   assert.equal(decisions[1]?.chosenAccount, "main")
   assert.equal(decisions[1]?.reason, "user-reselect")
 })
 
-test("rate-limit switch still overrides final reason after prior unbound-fallback and regular decisions", async () => {
+test("rate-limit evidence no longer switches accounts after prior regular decisions", async () => {
   let now = 11_000_000
   const decisions = []
   const harness = createSessionBindingHarness({
@@ -4540,16 +4443,6 @@ test("rate-limit switch still overrides final reason after prior unbound-fallbac
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
     },
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
-        alt: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
       ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
           status: 429,
@@ -4575,14 +4468,14 @@ test("rate-limit switch still overrides final reason after prior unbound-fallbac
     model: "gpt-5",
   })
 
-  assert.equal(thirdResponse?.status, 200)
+  assert.equal(thirdResponse?.status, 429)
   assert.equal(decisions.length, 3)
-  assert.equal(decisions[0]?.reason, "unbound-fallback")
+  assert.equal(decisions[0]?.reason, "regular")
   assert.equal(decisions[1]?.reason, "regular")
-  assert.equal(decisions[2]?.reason, "rate-limit-switch")
-  assert.equal(decisions[2]?.switched, true)
-  assert.equal(decisions[2]?.switchFrom, "main")
-  assert.equal(decisions[2]?.chosenAccount, "alt")
+  assert.equal(decisions[2]?.reason, "regular")
+  assert.equal(decisions[2]?.switched, false)
+  assert.equal(decisions[2]?.switchFrom, undefined)
+  assert.equal(decisions[2]?.chosenAccount, "main")
 })
 
 test("keeps request fail-open when route decision append fails", async () => {
@@ -4603,30 +4496,14 @@ test("keeps request fail-open when route decision append fails", async () => {
   assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
-test("records rate-limit switch decision evidence with switchFrom", async () => {
+test("records rate-limit evidence without switchFrom when switching is disabled", async () => {
   let now = 8_000_000
   const decisions = []
-  const selectionLoads = [
-    { main: 0, alt: 0 },
-    { main: 9, alt: 2 },
-    { main: 9, alt: 2 },
-  ]
   const harness = createSessionBindingHarness({
     now: () => now,
-    loadCandidateAccountLoads: async ({ call }) => selectionLoads[call] ?? selectionLoads.at(-1),
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
     },
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
-        alt: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
       ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
           status: 429,
@@ -4649,20 +4526,20 @@ test("records rate-limit switch decision evidence with switchFrom", async () => 
   now += 60_000
   const response = await harness.sendRequest({ sessionID: "decision-switch", initiator: "agent", model: "gpt-5" })
 
-  assert.equal(response?.status, 200)
+  assert.equal(response?.status, 429)
   assert.equal(decisions.length, 3)
   const event = decisions[2]
-  assert.equal(event?.reason, "rate-limit-switch")
-  assert.equal(event?.switched, true)
-  assert.equal(event?.switchFrom, "main")
+  assert.equal(event?.reason, "regular")
+  assert.equal(event?.switched, false)
+  assert.equal(event?.switchFrom, undefined)
   assert.equal(event?.switchBlockedBy, undefined)
-  assert.equal(event?.chosenAccount, "alt")
-  assert.deepEqual(event?.loads, { main: 1, alt: 1 })
+  assert.equal(event?.chosenAccount, "main")
+  assert.deepEqual(event?.loads, { main: 0 })
   assert.equal(event?.rateLimitMatched, true)
   assert.equal(event?.retryAfterMs, 5_000)
 })
 
-test("records route decision evidence when switch is blocked by routing-state read failure", async () => {
+test("records route decision evidence without switch blockage when switching is disabled", async () => {
   let now = 9_000_000
   const decisions = []
   const harness = createSessionBindingHarness({
@@ -4675,9 +4552,6 @@ test("records route decision evidence when switch is blocked by routing-state re
     },
     appendRouteDecisionEventImpl: async (input) => {
       decisions.push(input.event)
-    },
-    readRoutingStateImpl: async () => {
-      throw new Error("routing-state-read-failed")
     },
     fetchImpl: async () => new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
       status: 429,
@@ -4699,7 +4573,7 @@ test("records route decision evidence when switch is blocked by routing-state re
   assert.equal(event?.reason, "subagent")
   assert.equal(event?.switched, false)
   assert.equal(event?.switchFrom, undefined)
-  assert.equal(event?.switchBlockedBy, "routing-state-read-failed")
+  assert.equal(event?.switchBlockedBy, undefined)
   assert.equal(event?.chosenAccount, "main")
   assert.equal(event?.rateLimitMatched, true)
 })
@@ -4789,20 +4663,10 @@ test("plugin auth loader uses response-observed time for rate-limit window and f
   assert.equal(events[0]?.at, currentNow)
 })
 
-test("switches accounts after rate limit when replacement load equals current load", async () => {
+test("does not switch accounts after rate limit when switching is disabled", async () => {
   let now = 1_000_000
   const harness = createSessionBindingHarness({
     now: () => now,
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
-        alt: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
       ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
           status: 429,
@@ -4820,143 +4684,16 @@ test("switches accounts after rate limit when replacement load equals current lo
   now += 60_000
   const response = await harness.sendRequest({ sessionID: "equal-load-switch", initiator: "agent", model: "gpt-5" })
 
-  assert.equal(response?.status, 200)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
+  assert.equal(response?.status, 429)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
 })
 
-test("rate-limit replacement breaks equal-load ties with injected random", async () => {
-  let now = 1_200_000
-  const harness = createSessionBindingHarness({
-    now: () => now,
-    random: () => 0.9,
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
-        alt: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-        org: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
-    store: {
-      active: "main",
-      activeAccountNames: ["main", "alt", "org"],
-      accounts: {
-        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
-        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
-        org: { name: "org", refresh: "org-refresh", access: "org-access", expires: 0 },
-      },
-    },
-    fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
-      ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
-          status: 429,
-          headers: { "content-type": "application/json" },
-        })
-      : new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-  })
-
-  await harness.sendRequest({ sessionID: "equal-load-random-switch", initiator: "agent", model: "gpt-5" })
-  now += 60_000
-  await harness.sendRequest({ sessionID: "equal-load-random-switch", initiator: "agent", model: "gpt-5" })
-  now += 60_000
-  const response = await harness.sendRequest({ sessionID: "equal-load-random-switch", initiator: "agent", model: "gpt-5" })
-
-  assert.equal(response?.status, 200)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "org-refresh")
-})
-
-test("rate-limit replacement tie selection tolerates invalid injected random", async () => {
-  let now = 1_250_000
-  let randomCalls = 0
-  const harness = createSessionBindingHarness({
-    now: () => now,
-    random: () => {
-      randomCalls += 1
-      return randomCalls <= 3 ? 0 : -1
-    },
-    loadCandidateAccountLoads: async () => ({
-      main: 0,
-      alt: 2,
-      org: 2,
-    }),
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: { touchBuckets: { [String(now - 60_000)]: 1 } },
-        alt: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-        org: {
-          touchBuckets: { [String(now - 60_000)]: 1 },
-          lastRateLimitedAt: now - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
-    store: {
-      active: "main",
-      activeAccountNames: ["main", "alt", "org"],
-      accounts: {
-        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
-        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
-        org: { name: "org", refresh: "org-refresh", access: "org-access", expires: 0 },
-      },
-    },
-    fetchImpl: async ({ auth }) => auth?.refresh === "main-refresh"
-      ? new Response(JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }), {
-          status: 429,
-          headers: { "content-type": "application/json" },
-        })
-      : new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-  })
-
-  await harness.sendRequest({ sessionID: "invalid-random-replacement", initiator: "agent", model: "gpt-5" })
-  now += 60_000
-  await harness.sendRequest({ sessionID: "invalid-random-replacement", initiator: "agent", model: "gpt-5" })
-  now += 60_000
-  const response = await harness.sendRequest({ sessionID: "invalid-random-replacement", initiator: "agent", model: "gpt-5" })
-
-  assert.equal(response?.status, 200)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
-})
-
-test("switches to a lower-load account whose lastRateLimitedAt is older than ten minutes", async () => {
+test("rate-limit responses do not trigger replacement-account toast or compensation", async () => {
   let currentNow = 1_000_000
   const toasts = []
   const compensationCalls = []
   const harness = createSessionBindingHarness({
     now: () => currentNow,
-    loadCandidateAccountLoads: async () => ({
-      main: 0,
-      alt: 2,
-    }),
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 3,
-          },
-        },
-        alt: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 1,
-          },
-          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     triggerBillingCompensation: async (input) => {
       compensationCalls.push(input)
     },
@@ -4994,21 +4731,15 @@ test("switches to a lower-load account whose lastRateLimitedAt is older than ten
   currentNow += 60_000
   const thirdResponse = await harness.sendRequest({ sessionID: "switch-1", initiator: "agent", model: "gpt-5" })
 
-  assert.equal(thirdResponse?.status, 200)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
-  assert.equal(compensationCalls.length, 1)
-  assert.equal(compensationCalls[0]?.toAccountName, "alt")
-  assert.match(String(toasts.at(-1)?.body?.message ?? ""), /切换到 alt/)
+  assert.equal(thirdResponse?.status, 429)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
+  assert.equal(compensationCalls.length, 0)
+  assert.equal(toasts.length, 0)
 })
 
-test("same-session user reselect switch triggers billing compensation", async () => {
+test("same-session user reselect without account change does not trigger billing compensation", async () => {
   const compensationCalls = []
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
   const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ call }) => loadsByCall[call] ?? loadsByCall.at(-1),
     triggerBillingCompensation: async (input) => {
       compensationCalls.push(input)
     },
@@ -5026,36 +4757,16 @@ test("same-session user reselect switch triggers billing compensation", async ()
   })
 
   assert.equal(harness.outgoing.length, 2)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
   assert.equal(harness.outgoing[1]?.auth?.refresh, "main-refresh")
-  assert.equal(compensationCalls.length, 1)
-  assert.equal(compensationCalls[0]?.fromAccountName, "alt")
-  assert.equal(compensationCalls[0]?.toAccountName, "main")
-  assert.equal(compensationCalls[0]?.sessionID, "user-reselect-compensation")
-  assert.equal(compensationCalls[0]?.modelID, "gpt-5")
+  assert.equal(compensationCalls.length, 0)
 })
 
-test("rate-limit switch emits exactly one warning toast without extra consumption toast", async () => {
+test("rate-limit evidence does not emit a switch toast when switching is disabled", async () => {
   let currentNow = 1_050_000
   const toasts = []
   const harness = createSessionBindingHarness({
     now: () => currentNow,
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 3,
-          },
-        },
-        alt: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 1,
-          },
-          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     client: {
       tui: {
         showToast: async (options) => {
@@ -5092,13 +4803,11 @@ test("rate-limit switch emits exactly one warning toast without extra consumptio
   currentNow += 60_000
   const thirdResponse = await harness.sendRequest({ sessionID: "toast-rate-switch", initiator: "agent", model: "gpt-5" })
 
-  assert.equal(thirdResponse?.status, 200)
-  assert.equal(toasts.length, 1)
-  assert.equal(toasts[0]?.body?.variant, "warning")
-  assert.equal(toasts[0]?.body?.message, "已切换到 alt（main 限流后切换）")
+  assert.equal(thirdResponse?.status, 429)
+  assert.equal(toasts.length, 0)
 })
 
-test("appends replacement account touch event after successful switch", async () => {
+test("does not append replacement account touch event when switching is disabled", async () => {
   let currentNow = 1_500_000
   const touches = []
   const harness = createSessionBindingHarness({
@@ -5111,22 +4820,6 @@ test("appends replacement account touch event after successful switch", async ()
       })
       return true
     },
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 3,
-          },
-        },
-        alt: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 1,
-          },
-          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     fetchImpl: async ({ auth }) => {
       if (auth?.refresh === "main-refresh") {
         return new Response(
@@ -5154,35 +4847,15 @@ test("appends replacement account touch event after successful switch", async ()
   currentNow += 60_000
   const thirdResponse = await harness.sendRequest({ sessionID: "switch-touch", initiator: "agent", model: "gpt-5" })
 
-  assert.equal(thirdResponse?.status, 200)
-  assert.equal(touches.some((item) => item.accountName === "alt" && item.sessionID === "switch-touch"), true)
+  assert.equal(thirdResponse?.status, 429)
+  assert.equal(touches.some((item) => item.accountName === "alt" && item.sessionID === "switch-touch"), false)
 })
 
-test("switch evaluation continues after threshold and can switch on fourth hit", async () => {
+test("rate-limit responses continue without switching on later hits", async () => {
   let currentNow = 2_500_000
   let routingReadCount = 0
   const harness = createSessionBindingHarness({
     now: () => currentNow,
-    readRoutingStateImpl: async () => {
-      routingReadCount += 1
-      const cooldownMinutes = routingReadCount >= 2 ? 11 : 9
-      return {
-        accounts: {
-          main: {
-            touchBuckets: {
-              [String(currentNow - 60_000)]: 3,
-            },
-          },
-          alt: {
-            touchBuckets: {
-              [String(currentNow - 60_000)]: 1,
-            },
-            lastRateLimitedAt: currentNow - cooldownMinutes * 60 * 1000,
-          },
-        },
-        appliedSegments: [],
-      }
-    },
     fetchImpl: async ({ auth }) => {
       if (auth?.refresh === "main-refresh") {
         return new Response(
@@ -5213,30 +4886,15 @@ test("switch evaluation continues after threshold and can switch on fourth hit",
   const fourthResponse = await harness.sendRequest({ sessionID: "switch-fourth", initiator: "agent", model: "gpt-5" })
 
   assert.equal(thirdResponse?.status, 429)
-  assert.equal(fourthResponse?.status, 200)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
+  assert.equal(fourthResponse?.status, 429)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
+  assert.equal(routingReadCount, 0)
 })
 
-test("replacement cleanup fails open when request body is already consumed", async () => {
+test("rate-limit responses stay fail-open when request body is already consumed", async () => {
   let currentNow = 3_000_000
   const harness = createSessionBindingHarness({
     now: () => currentNow,
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 3,
-          },
-        },
-        alt: {
-          touchBuckets: {
-            [String(currentNow - 60_000)]: 1,
-          },
-          lastRateLimitedAt: currentNow - 11 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
     fetchImpl: async ({ auth }) => {
       if (auth?.refresh === "main-refresh") {
         return new Response(
@@ -5275,8 +4933,8 @@ test("replacement cleanup fails open when request body is already consumed", asy
   await consumedRequest.text()
 
   const thirdResponse = await harness.sendRawRequest(consumedRequest)
-  assert.equal(thirdResponse?.status, 200)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "alt-refresh")
+  assert.equal(thirdResponse?.status, 429)
+  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
 })
 
 test("keeps current account when no better candidate exists", async () => {
@@ -5356,7 +5014,7 @@ test("fails open when routing-state read fails during candidate selection", asyn
   assert.equal(response?.status, 200)
 })
 
-test("surfaces a clear error when an explicit model group has no usable accounts", async () => {
+test("surfaces a clear error when an explicit model account has no usable account", async () => {
   const harness = createSessionBindingHarness({
     store: {
       active: "main",
@@ -5391,11 +5049,11 @@ test("surfaces a clear error when an explicit model group has no usable accounts
       initiator: "agent",
       model: "gpt-5",
     }),
-    /No usable account for model gpt-5/i,
+    /No usable account configured for model gpt-5/i,
   )
 })
 
-test("plugin auth loader selection path can consume routing-state-derived loads", async () => {
+test("plugin auth loader selection path ignores routing-state-derived loads when routing is strict", async () => {
   const now = 2_000_000
   const harness = createSessionBindingHarness({
     loadCandidateAccountLoads: async ({ candidates }) => buildCandidateAccountLoads({
@@ -5426,7 +5084,7 @@ test("plugin auth loader selection path can consume routing-state-derived loads"
   })
 
   assert.equal(harness.outgoing.length, 1)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
 test("plugin auth loader supports injected routing-state write path", async () => {
@@ -5487,14 +5145,8 @@ test("plugin auth loader prunes touch cache by ttl and max entries", async () =>
   assert.deepEqual(touched[4]?.cacheKeys, [])
 })
 
-test("plugin auth loader breaks equal-load ties with injected random", async () => {
-  const harness = createSessionBindingHarness({
-    random: () => 0.9,
-    loadCandidateAccountLoads: async () => ({
-      main: 2,
-      alt: 2,
-    }),
-  })
+test("plugin auth loader ignores injected random when routing is strict", async () => {
+  const harness = createSessionBindingHarness()
 
   await harness.sendRequest({
     sessionID: "child-tie",
@@ -5503,7 +5155,7 @@ test("plugin auth loader breaks equal-load ties with injected random", async () 
   })
 
   assert.equal(harness.outgoing.length, 1)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "alt-refresh")
+  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
 test("createSessionBindingHarness defaults routing-state to isolated temporary directory", async () => {
@@ -5719,16 +5371,15 @@ test("plugin auth loader evicts stale session bindings when binding cache grows 
 
   const firstCall = harness.outgoing[0]
   const lastCall = harness.outgoing.at(-1)
-  assert.equal(firstCall?.auth?.refresh, "alt-refresh")
+  assert.equal(firstCall?.auth?.refresh, "main-refresh")
   assert.equal(lastCall?.auth?.refresh, "main-refresh")
 })
 
-test("configureModelAccountAssignments stores multiple selected accounts", async () => {
+test("configureModelAccountAssignments stores only the first selected account", async () => {
   const { configureModelAccountAssignments } = await import("../dist/plugin.js")
 
   const store = {
     active: "main",
-    activeAccountNames: ["main"],
     accounts: {
       main: {
         name: "main",
@@ -5760,15 +5411,14 @@ test("configureModelAccountAssignments stores multiple selected accounts", async
   })
 
   assert.equal(changed, true)
-  assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt", "org"])
+  assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt"])
 })
 
-test("default account group can include multiple accounts", async () => {
+test("configureDefaultAccountGroup is no-op under strict account routing", async () => {
   const { configureDefaultAccountGroup } = await import("../dist/plugin.js")
 
   const store = {
     active: "main",
-    activeAccountNames: ["main"],
     accounts: {
       main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
       "student-2": { name: "student-2", refresh: "s2-refresh", access: "s2-access", expires: 0 },
@@ -5779,18 +5429,17 @@ test("default account group can include multiple accounts", async () => {
     selectAccounts: async () => ["main", "student-2"],
   })
 
-  assert.equal(changed, true)
-  assert.deepEqual(store.activeAccountNames, ["main", "student-2"])
+  assert.equal(changed, false)
+  assert.equal(store.activeAccountNames, undefined)
   assert.equal(store.active, "main")
 })
 
-test("configureModelAccountAssignments fallback hint uses default account group when available", async () => {
+test("configureModelAccountAssignments hint uses selected account wording", async () => {
   const { configureModelAccountAssignments } = await import("../dist/plugin.js")
 
   let capturedModelOptions = []
   const store = {
     active: "solo",
-    activeAccountNames: ["student-1", "student-2"],
     accounts: {
       solo: {
         name: "solo",
@@ -5824,15 +5473,14 @@ test("configureModelAccountAssignments fallback hint uses default account group 
   })
 
   assert.equal(changed, false)
-  assert.match(capturedModelOptions[0]?.hint ?? "", /fallbacks to student-1, student-2/)
+  assert.match(capturedModelOptions[0]?.hint ?? "", /uses selected account: solo/)
 })
 
-test("configureDefaultAccountGroup keeps active account unchanged when it is outside new default group", async () => {
+test("configureDefaultAccountGroup leaves active account unchanged when disabled", async () => {
   const { configureDefaultAccountGroup } = await import("../dist/plugin.js")
 
   const store = {
     active: "manual-current",
-    activeAccountNames: ["manual-current"],
     accounts: {
       "manual-current": { name: "manual-current", refresh: "mc-refresh", access: "mc-access", expires: 0 },
       "student-1": { name: "student-1", refresh: "s1-refresh", access: "s1-access", expires: 0 },
@@ -5844,12 +5492,12 @@ test("configureDefaultAccountGroup keeps active account unchanged when it is out
     selectAccounts: async () => ["student-1", "student-2"],
   })
 
-  assert.equal(changed, true)
+  assert.equal(changed, false)
   assert.equal(store.active, "manual-current")
-  assert.deepEqual(store.activeAccountNames, ["student-1", "student-2"])
+  assert.equal(store.activeAccountNames, undefined)
 })
 
-test("clearAllAccounts also clears activeAccountNames", async () => {
+test("clearAllAccounts clears active selection and model overrides", async () => {
   const { clearAllAccounts } = await import("../dist/plugin.js")
 
   const store = {
@@ -5877,7 +5525,6 @@ test("removeAccountFromStore chooses deterministic active fallback", async () =>
 
   const preferGroupStore = {
     active: "main",
-    activeAccountNames: ["alt"],
     accounts: {
       main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
       alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
@@ -5890,7 +5537,6 @@ test("removeAccountFromStore chooses deterministic active fallback", async () =>
 
   const fallbackStore = {
     active: "main",
-    activeAccountNames: ["missing"],
     accounts: {
       main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
       zeta: { name: "zeta", refresh: "zeta-refresh", access: "zeta-access", expires: 0 },
@@ -5907,13 +5553,12 @@ test("removeAccountFromStore immediately removes deleted account from modelAccou
 
   const store = {
     active: "main",
-    activeAccountNames: ["main", "alt"],
     accounts: {
       main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
       alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
     },
     modelAccountAssignments: {
-      "gpt-5": ["main", "alt"],
+      "gpt-5": ["main"],
       "claude-3.7": ["main"],
     },
   }
@@ -6668,7 +6313,7 @@ test("plugin menu common toggle path forwards debug reason for experimental slas
   ])
 })
 
-test("persistAccountSwitch keeps active in sync while preserving activeAccountNames and updates lastUsed", async () => {
+test("persistAccountSwitch updates active and clears legacy activeAccountNames", async () => {
   const { persistAccountSwitch } = await import("../dist/plugin-actions.js")
 
   assert.equal(typeof persistAccountSwitch, "function")
@@ -6700,13 +6345,13 @@ test("persistAccountSwitch keeps active in sync while preserving activeAccountNa
   })
 
   assert.equal(store.active, "new-account")
-  assert.deepEqual(store.activeAccountNames, ["old-account", "new-account"])
+  assert.equal(store.activeAccountNames, undefined)
   assert.equal(store.accounts["new-account"].lastUsed, at)
   assert.equal(store.lastAccountSwitchAt, at)
   assert.deepEqual(writes, [
     {
       active: "new-account",
-      activeAccountNames: ["old-account", "new-account"],
+      activeAccountNames: undefined,
       lastUsed: at,
       lastAccountSwitchAt: at,
     },
@@ -6727,7 +6372,7 @@ test("persistAccountSwitch keeps active in sync while preserving activeAccountNa
     writeStore: async () => {},
   })
 
-  assert.deepEqual(storeWithoutDefaultGroup.activeAccountNames, ["new-account"])
+  assert.equal(storeWithoutDefaultGroup.activeAccountNames, undefined)
 })
 
 test("activateAddedAccount records switch metadata only after switch succeeds", async () => {

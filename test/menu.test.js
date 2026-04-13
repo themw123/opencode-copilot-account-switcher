@@ -244,7 +244,7 @@ test("Copilot network retry toggle is placed after slash toggle in common settin
   assert.equal(retryIndex < commonSectionEnd, true)
 })
 
-test("assign models action is placed after default account group", () => {
+test("assign model action is placed after sync available models", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -255,11 +255,9 @@ test("assign models action is placed after default account group", () => {
 
   const labels = items.map((item) => item.label)
   const modelsIndex = labels.indexOf("Sync available models")
-  const defaultGroupIndex = labels.indexOf("Default account group")
-  const assignIndex = labels.indexOf("Assign account groups per model")
+  const assignIndex = labels.indexOf("Assign one account per model")
 
-  assert.equal(defaultGroupIndex, modelsIndex + 1)
-  assert.equal(assignIndex, defaultGroupIndex + 1)
+  assert.equal(assignIndex, modelsIndex + 1)
 })
 
 test("buildMenuItems uses the updated action copy for sync-oriented items", () => {
@@ -275,26 +273,10 @@ test("buildMenuItems uses the updated action copy for sync-oriented items", () =
   assert.ok(labels.includes("Refresh quota info"))
   assert.ok(labels.includes("Sync account identity"))
   assert.ok(labels.includes("Sync available models"))
-  assert.ok(labels.includes("Assign account groups per model"))
+  assert.ok(labels.includes("Assign one account per model"))
 })
 
-test("buildMenuItems shows default account group action with coherent hint", () => {
-  const items = buildMenuItems({
-    accounts: [],
-    refresh: { enabled: false, minutes: 15 },
-    lastQuotaRefresh: undefined,
-    loopSafetyEnabled: false,
-    networkRetryEnabled: false,
-    language: "en",
-    defaultAccountGroupCount: 2,
-  })
-
-  const action = items.find((item) => item.label === "Default account group")
-  assert.ok(action)
-  assert.equal(action?.hint, "2 selected")
-})
-
-test("buildMenuItems keeps model assignment hint coherent for account groups", () => {
+test("buildMenuItems keeps model assignment hint coherent for model overrides", () => {
   const items = buildMenuItems({
     accounts: [],
     refresh: { enabled: false, minutes: 15 },
@@ -305,9 +287,9 @@ test("buildMenuItems keeps model assignment hint coherent for account groups", (
     modelAccountAssignmentCount: 3,
   })
 
-  const action = items.find((item) => item.label === "Assign account groups per model")
+  const action = items.find((item) => item.label === "Assign one account per model")
   assert.ok(action)
-  assert.equal(action?.hint, "3 groups")
+  assert.equal(action?.hint, "3 models")
 })
 
 test("buildMenuItems shows synthetic initiator off state and risk hint when disabled", () => {

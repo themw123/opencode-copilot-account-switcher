@@ -29,7 +29,7 @@ function createBrokerEndpoint(tempDir) {
   if (process.platform === "win32") {
     return `\\\\.\\pipe\\wechat-broker-status-${process.pid}-${suffix}`
   }
-  return path.join(tempDir, `wechat-broker-status-${suffix}.sock`)
+  return path.join(tempDir, `wbs-${suffix}.sock`)
 }
 
 async function waitFor(predicate, timeoutMs = 2000, intervalMs = 20) {

@@ -28,9 +28,7 @@ export async function persistAccountSwitch(input: {
   }) => Promise<void>
 }) {
   input.store.active = input.name
-  if (!Array.isArray(input.store.activeAccountNames) || input.store.activeAccountNames.length === 0) {
-    input.store.activeAccountNames = [input.name]
-  }
+  delete input.store.activeAccountNames
   input.store.accounts[input.name].lastUsed = input.at
   input.store.lastAccountSwitchAt = input.at
   await input.writeStore(input.store, {

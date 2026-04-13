@@ -27,7 +27,7 @@ import { createProviderRegistry } from "./providers/registry.js"
 import { loadOfficialCodexAuthMethods } from "./upstream/codex-loader-adapter.js"
 import { isTTY } from "./ui/ansi.js"
 import { showMenu, type AccountInfo, type MenuAction as UiMenuAction } from "./ui/menu.js"
-import { select, selectMany } from "./ui/select.js"
+import { select } from "./ui/select.js"
 import { readAuth, readStore, writeStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "./store.js"
 
 function now() {
@@ -175,46 +175,9 @@ export async function configureDefaultAccountGroup(
     selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
   },
 ) {
-  const accountEntries = Object.entries(store.accounts)
-  if (accountEntries.length === 0) {
-    console.log("No accounts available yet.")
-    return false
-  }
-
-  const options = accountEntries
-    .map(([name, entry]) => ({
-      label: name,
-      value: name,
-      hint: entry.enterpriseUrl ? normalizeDomain(entry.enterpriseUrl) : "github.com",
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label))
-
-  const defaultSelectedNames = new Set(store.activeAccountNames ?? (store.active ? [store.active] : []))
-  const selected = selectors?.selectAccounts
-    ? await selectors.selectAccounts(options)
-    : await selectMany(
-        options.map((item) => ({ label: item.label, value: item.value, hint: item.hint })),
-        {
-          message: "Default account group",
-          subtitle: "Pick accounts for model fallback routing",
-          clearScreen: true,
-          autoSelectSingle: false,
-          minSelected: 1,
-          initialSelected: options
-            .map((item, index) => (defaultSelectedNames.has(item.value) ? index : -1))
-            .filter((index) => index >= 0),
-        },
-      )
-
-  if (!selected) return false
-
-  const next = [...new Set(selected)]
-    .filter((name) => Boolean(store.accounts[name]))
-    .sort((a, b) => a.localeCompare(b))
-  if (next.length === 0) return false
-
-  store.activeAccountNames = next
-  return true
+  void store
+  void selectors
+  return false
 }
 
 export function clearAllAccounts(store: StoreFile) {
@@ -227,21 +190,9 @@ export function clearAllAccounts(store: StoreFile) {
 export function removeAccountFromStore(store: StoreFile, name: string) {
   rewriteModelAccountAssignments(store, { [name]: undefined })
   delete store.accounts[name]
-
-  if (Array.isArray(store.activeAccountNames)) {
-    store.activeAccountNames = store.activeAccountNames.filter((item) => item !== name)
-    if (store.activeAccountNames.length === 0) {
-      delete store.activeAccountNames
-    }
-  }
+  delete store.activeAccountNames
 
   if (store.active !== name) return
-
-  const fromDefaultGroup = (store.activeAccountNames ?? []).find((accountName) => Boolean(store.accounts[accountName]))
-  if (fromDefaultGroup) {
-    store.active = fromDefaultGroup
-    return
-  }
 
   const remaining = Object.keys(store.accounts).sort((a, b) => a.localeCompare(b))
   store.active = remaining[0]
@@ -270,18 +221,13 @@ async function configureModelAccountAssignmentsWithSelection(
     return false
   }
 
-  const fallbackGroupNames = (store.activeAccountNames ?? [])
-    .map((name) => store.accounts[name]?.name ?? name)
-    .filter((name) => typeof name === "string" && name.length > 0)
-  const fallbackLabel = fallbackGroupNames.length > 0
-    ? fallbackGroupNames.join(", ")
-    : (store.active ? store.accounts[store.active]?.name ?? store.active : "none")
+  const fallbackLabel = store.active ? store.accounts[store.active]?.name ?? store.active : "none"
   const modelOptions = models.map((model) => ({
     label: model,
     value: model,
-    hint: store.modelAccountAssignments?.[model]?.length
-      ? `group: ${(store.modelAccountAssignments[model] ?? []).join(", ")}`
-      : `fallbacks to ${fallbackLabel}`,
+    hint: store.modelAccountAssignments?.[model]?.[0]
+      ? `uses ${store.modelAccountAssignments[model]?.[0]}`
+      : `uses selected account: ${fallbackLabel}`,
   }))
 
   const modelID = selectors?.selectModel
@@ -293,7 +239,7 @@ async function configureModelAccountAssignmentsWithSelection(
         ],
         {
           message: "Choose a Copilot model",
-          subtitle: "Select which model should use a dedicated account group",
+          subtitle: "Select which model should use a dedicated account override",
           clearScreen: true,
           autoSelectSingle: false,
         },
@@ -314,15 +260,18 @@ async function configureModelAccountAssignmentsWithSelection(
 
   const selected = selectors?.selectAccounts
     ? await selectors.selectAccounts(accountOptions)
-    : await selectMany(accountOptions, {
-        message: modelID,
-        subtitle: "Pick account group for this model (empty means fallback)",
-        clearScreen: true,
-        autoSelectSingle: false,
-        initialSelected: accountOptions
-          .map((item, index) => (store.modelAccountAssignments?.[modelID]?.includes(item.value) ? index : -1))
-          .filter((index) => index >= 0),
-      })
+    : await select(
+        [
+          { label: "Use selected account", value: "" },
+          ...accountOptions,
+        ],
+        {
+          message: modelID,
+          subtitle: "Pick one account override for this model",
+          clearScreen: true,
+          autoSelectSingle: false,
+        },
+      ).then((value) => value === null ? null : value ? [value] : [])
 
   if (selected === null) return false
 
@@ -334,14 +283,13 @@ async function configureModelAccountAssignmentsWithSelection(
     return true
   }
 
-  const assigned = [...new Set(selected)]
+  const assigned = selected
     .filter((name) => Boolean(store.accounts[name]))
-    .sort((a, b) => a.localeCompare(b))
   if (assigned.length === 0) return false
 
   store.modelAccountAssignments = {
     ...(store.modelAccountAssignments ?? {}),
-    [modelID]: assigned,
+    [modelID]: [assigned[0]!],
   }
   return true
 }
@@ -480,7 +428,6 @@ async function createAccountSwitcherPlugin(
       writeStore: persistStore,
       readAuth,
       now,
-      configureDefaultAccountGroup,
       configureModelAccountAssignments,
       clearAllAccounts,
       removeAccountFromStore,
@@ -501,7 +448,6 @@ async function createAccountSwitcherPlugin(
         refresh: { enabled: store.autoRefresh === true, minutes: store.refreshMinutes ?? 15 },
         lastQuotaRefresh: store.lastQuotaRefresh,
         modelAccountAssignmentCount: Object.keys(store.modelAccountAssignments ?? {}).length,
-        defaultAccountGroupCount: store.activeAccountNames?.length ?? (store.active ? 1 : 0),
         loopSafetyEnabled: common?.loopSafetyEnabled ?? store.loopSafetyEnabled === true,
         loopSafetyProviderScope: common?.loopSafetyProviderScope ?? store.loopSafetyProviderScope,
         experimentalSlashCommandsEnabled: common?.experimentalSlashCommandsEnabled ?? store.experimentalSlashCommandsEnabled,
@@ -517,7 +463,6 @@ async function createAccountSwitcherPlugin(
       if (action.type === "set-interval") return { type: "provider", name: "set-interval" }
       if (action.type === "quota") return { type: "provider", name: "quota-refresh" }
       if (action.type === "check-models") return { type: "provider", name: "check-models" }
-      if (action.type === "configure-default-group") return { type: "provider", name: "configure-default-group" }
       if (action.type === "assign-models") return { type: "provider", name: "assign-models" }
       if (action.type === "toggle-synthetic-agent-initiator") return { type: "provider", name: "toggle-synthetic-agent-initiator" }
       return { type: "cancel" }

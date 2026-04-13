@@ -67,6 +67,7 @@ export type AccountEntry = {
 
 export type StoreFile = {
   active?: string
+  // legacy read-only field; Copilot routing now uses only `active`
   activeAccountNames?: string[]
   accounts: Record<string, AccountEntry>
   modelAccountAssignments?: Record<string, string[]>
@@ -160,16 +161,10 @@ export function authPath(): string {
   return path.join(dataDir, "opencode", authFile)
 }
 
-function normalizeAccountNameList(names: unknown, accounts: Record<string, AccountEntry>) {
-  if (!Array.isArray(names)) return undefined
-  const seen = new Set<string>()
-  const normalized: string[] = []
-  for (const item of names) {
-    if (typeof item !== "string" || item.length === 0 || !accounts[item] || seen.has(item)) continue
-    seen.add(item)
-    normalized.push(item)
-  }
-  return normalized.length > 0 ? normalized : undefined
+function normalizeKnownAccountName(name: unknown, accounts: Record<string, AccountEntry>) {
+  if (typeof name !== "string" || name.length === 0) return undefined
+  if (!accounts[name]) return undefined
+  return name
 }
 
 function normalizeModelAccountAssignments(raw: unknown, accounts: Record<string, AccountEntry>) {
@@ -177,11 +172,13 @@ function normalizeModelAccountAssignments(raw: unknown, accounts: Record<string,
   const normalized: Record<string, string[]> = {}
   for (const [modelID, accountNames] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof modelID !== "string" || modelID.length === 0) continue
-    const next = typeof accountNames === "string"
-      ? normalizeAccountNameList([accountNames], accounts)
-      : normalizeAccountNameList(accountNames, accounts)
-    if (!next) continue
-    normalized[modelID] = next
+    const candidate = typeof accountNames === "string"
+      ? normalizeKnownAccountName(accountNames, accounts)
+      : Array.isArray(accountNames)
+      ? normalizeKnownAccountName(accountNames[0], accounts)
+      : undefined
+    if (!candidate) continue
+    normalized[modelID] = [candidate]
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined
 }
@@ -196,14 +193,7 @@ export function parseStore(raw: string): StoreFile {
     accounts,
   }
 
-  const normalizedActiveAccountNames = normalizeAccountNameList(parsed.activeAccountNames, accounts)
-  if (normalizedActiveAccountNames) store.activeAccountNames = normalizedActiveAccountNames
-  else if (typeof store.active === "string" && store.active.length > 0 && accounts[store.active]) {
-    store.activeAccountNames = [store.active]
-  } else {
-    delete store.activeAccountNames
-  }
-
+  delete store.activeAccountNames
   store.modelAccountAssignments = normalizeModelAccountAssignments(parsed.modelAccountAssignments, accounts)
   if (typeof store.lastAccountSwitchAt !== "number" || Number.isNaN(store.lastAccountSwitchAt)) {
     delete store.lastAccountSwitchAt

@@ -51,12 +51,8 @@ import {
   appendRoutingEvent,
   appendRouteDecisionEvent,
   appendSessionTouchEvent,
-  buildCandidateAccountLoads,
-  isAccountRateLimitCooledDown,
-  readRoutingState,
   type RouteDecisionEvent,
   routingStatePath,
-  type RoutingSnapshot,
   type RoutingEvent,
 } from "./routing-state.js"
 import {
@@ -100,7 +96,6 @@ type CompactCommandHandler = typeof handleCompactCommand
 type StopToolCommandHandler = typeof handleStopToolCommand
 type RefreshQuota = (store: StoreFile) => Promise<RefreshActiveAccountQuotaResult>
 
-type CandidateAccountLoads = Record<string, number> | Map<string, number>
 type SessionBinding = {
   accountName: string
   lastUsedAt: number
@@ -660,7 +655,7 @@ function stripInternalSessionHeader(request: Request | URL | string, init?: Requ
   })
 }
 
-function toLoadMap(value: CandidateAccountLoads | undefined) {
+function toLoadMap(value: Record<string, number> | Map<string, number> | undefined) {
   if (value instanceof Map) return value
 
   const loads = new Map<string, number>()
@@ -707,20 +702,7 @@ function buildConsumptionToast(input: {
   reason: RouteDecisionEvent["reason"]
   switchFrom?: string
 }) {
-  if (input.reason === "rate-limit-switch") {
-    return {
-      message: `已切换到 ${input.accountName}（${input.switchFrom ?? "原账号"} 限流后切换）`,
-      variant: "warning" as const,
-    }
-  }
-
-  if (input.reason === "unbound-fallback") {
-    return {
-      message: `已使用 ${input.accountName}（异常无绑定 agent 入口，已按用户回合处理）`,
-      variant: "warning" as const,
-    }
-  }
-
+  void input.switchFrom
   return {
     message: `已使用 ${input.accountName}（${toConsumptionReasonText(input.reason)}）`,
     variant: "info" as const,
@@ -735,61 +717,6 @@ function shouldShowConsumptionToast(input: {
   if (input.reason === "subagent") return input.isFirstUse
   if (input.reason === "compaction") return false
   return true
-}
-
-function chooseCandidateAccount(input: {
-  candidates: ResolvedModelAccountCandidate[]
-  sessionID: string
-  allowReselect: boolean
-  sessionBindings: Map<string, SessionBinding>
-  loads: Map<string, number>
-  random: () => number
-}) {
-  const lowest = pickLowestWithRandom(input.candidates, input.loads, input.random)
-  const boundName = input.sessionBindings.get(input.sessionID)?.accountName
-  const bound = typeof boundName === "string" ? input.candidates.find((item) => item.name === boundName) : undefined
-
-  if (!bound) return lowest
-  if (!input.allowReselect) return bound
-
-  const currentLoad = input.loads.get(bound.name) ?? 0
-  const minimumLoad = input.loads.get(lowest.name) ?? 0
-  if (currentLoad - minimumLoad >= 3) {
-    return lowest
-  }
-  return bound
-}
-
-function toSafeReplacementRandomUnit(random: () => number) {
-  const value = random()
-  if (!Number.isFinite(value)) return 0
-  if (value <= 0) return 0
-  if (value >= 1) return 1 - Number.EPSILON
-  return value
-}
-
-function pickLowestWithRandom(
-  candidates: ResolvedModelAccountCandidate[],
-  loads: Map<string, number>,
-  random: () => number,
-) {
-  const ranked = [...candidates].sort((a, b) => (loads.get(a.name) ?? 0) - (loads.get(b.name) ?? 0))
-  const minimum = loads.get(ranked[0].name) ?? 0
-  const tied = ranked.filter((item) => (loads.get(item.name) ?? 0) === minimum)
-  return tied[Math.min(tied.length - 1, Math.floor(random() * tied.length))]
-}
-
-function pickLowestReplacementWithHardenedRandom(
-  candidates: ResolvedModelAccountCandidate[],
-  loads: Map<string, number>,
-  random: () => number,
-) {
-  if (candidates.length === 0) return undefined
-  const ranked = [...candidates].sort((a, b) => (loads.get(a.name) ?? 0) - (loads.get(b.name) ?? 0))
-  const minimum = loads.get(ranked[0].name) ?? 0
-  const tied = ranked.filter((item) => (loads.get(item.name) ?? 0) === minimum)
-  const pickedIndex = Math.floor(toSafeReplacementRandomUnit(random) * tied.length)
-  return tied[pickedIndex] ?? tied[0]
 }
 
 function normalizeStoreForRouting(store: StoreFile) {
@@ -900,21 +827,13 @@ export function buildPluginHooks(input: {
   handleCodexStatusCommandImpl?: CodexStatusCommandHandler
   handleCompactCommandImpl?: CompactCommandHandler
   handleStopToolCommandImpl?: StopToolCommandHandler
-  loadCandidateAccountLoads?: (input: {
-    sessionID: string
-    modelID?: string
-    store: StoreFile
-    candidates: ResolvedModelAccountCandidate[]
-  }) => Promise<CandidateAccountLoads | undefined>
   routingStateDirectory?: string
   appendSessionTouchEventImpl?: (input: AppendSessionTouchEventInput) => Promise<boolean>
   appendRoutingEventImpl?: (input: { directory: string; event: RoutingEvent }) => Promise<void>
   appendRouteDecisionEventImpl?: (input: { directory: string; event: RouteDecisionEvent }) => Promise<void>
-  readRoutingStateImpl?: (directory: string) => Promise<RoutingSnapshot>
   triggerBillingCompensation?: (input: TriggerBillingCompensationInput) => Promise<void>
   touchWriteCacheIdleTtlMs?: number
   touchWriteCacheMaxEntries?: number
-  random?: () => number
   authLoaderMode?: "copilot" | "codex" | "none"
   enableModelRouting?: boolean
 }): CopilotPluginHooksWithChatHeaders {
@@ -977,7 +896,6 @@ export function buildPluginHooks(input: {
   const createRetryFetch = input.createRetryFetch
     ?? (enableCodexAuthLoader ? createCodexRetryingFetch : createCopilotRetryingFetch)
   const now = input.now ?? (() => Date.now())
-  const random = input.random ?? Math.random
   let injectArmed = false
   let policyScopeOverride: LoopSafetyProviderScope | undefined
   const modelAccountFirstUse = new Set<string>()
@@ -990,7 +908,6 @@ export function buildPluginHooks(input: {
   const appendSessionTouchEventImpl = input.appendSessionTouchEventImpl ?? appendSessionTouchEvent
   const appendRoutingEventImpl = input.appendRoutingEventImpl ?? appendRoutingEvent
   const appendRouteDecisionEventImpl = input.appendRouteDecisionEventImpl ?? appendRouteDecisionEvent
-  const readRoutingStateImpl = input.readRoutingStateImpl ?? readRoutingState
   const triggerBillingCompensation = input.triggerBillingCompensation ?? (async () => {})
   const ensureWechatBrokerStarted = input.ensureWechatBrokerStarted ?? (async () => connectOrSpawnBroker())
   const createWechatBridgeLifecycleImpl = input.createWechatBridgeLifecycleImpl ?? createWechatBridgeLifecycle
@@ -1047,17 +964,6 @@ export function buildPluginHooks(input: {
       },
     }).catch(() => {})
   }
-
-  const loadCandidateAccountLoads = input.loadCandidateAccountLoads ?? (async (ctx: {
-    candidates: ResolvedModelAccountCandidate[]
-  }) => {
-    const snapshot = await readRoutingStateImpl(routingDirectory)
-    return buildCandidateAccountLoads({
-      snapshot,
-      candidateAccountNames: ctx.candidates.map((item) => item.name),
-      now: now(),
-    })
-  })
 
   const getPolicyScope = (store: StoreFile | undefined) => getLoopSafetyProviderScope(store, policyScopeOverride)
 
@@ -1177,11 +1083,8 @@ export function buildPluginHooks(input: {
     }).catch(() => undefined)
     const canDetermineSessionAncestry = session !== undefined
     const isTrueChildSession = typeof session?.data?.parentID === "string" && session.data.parentID.length > 0
-    if (canDetermineSessionAncestry && !isTrueChildSession && requestInput.hasExistingBinding === false) {
-      return {
-        reason: "unbound-fallback",
-      }
-    }
+    void canDetermineSessionAncestry
+    void requestInput.hasExistingBinding
     return {
       reason: isTrueChildSession ? "subagent" : "regular",
     }
@@ -1294,8 +1197,30 @@ export function buildPluginHooks(input: {
       const initiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
       const candidates = latestStore ? resolveCopilotModelAccounts(latestStore, modelID) : []
       if (candidates.length === 0) {
-        const outbound = stripInternalSessionHeader(selectionRequest, selectionInit)
-        return config.fetch(outbound.request, outbound.init)
+        if (!latestStore?.active && !latestStore?.modelAccountAssignments) {
+          const outbound = stripInternalSessionHeader(selectionRequest, selectionInit)
+          return config.fetch(outbound.request, outbound.init)
+        }
+
+        if (latestStore && modelID) {
+          const hasExplicitModelAssignment = Boolean(
+            latestStore.modelAccountAssignments
+            && Object.prototype.hasOwnProperty.call(latestStore.modelAccountAssignments, modelID),
+          )
+          if (hasExplicitModelAssignment) {
+            throw new Error(`No usable account configured for model ${modelID}`)
+          }
+          if (latestStore.active) {
+            throw new Error(`Active account ${latestStore.active} cannot be used for model ${modelID}`)
+          }
+        }
+
+        if (!latestStore?.active) {
+          const outbound = stripInternalSessionHeader(selectionRequest, selectionInit)
+          return config.fetch(outbound.request, outbound.init)
+        }
+
+        throw new Error("No active Copilot account configured")
       }
 
       const hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)
@@ -1309,8 +1234,6 @@ export function buildPluginHooks(input: {
         : {
             reason: toReasonByInitiator(initiator),
           }
-      const selectionAllowReselect = classification.reason === "user-reselect"
-        || classification.reason === "unbound-fallback"
       const hasExplicitModelGroup = Boolean(
         latestStore
         && typeof modelID === "string"
@@ -1322,27 +1245,10 @@ export function buildPluginHooks(input: {
       if (hasExplicitModelGroup && !hasUsableExplicitModelCandidate) {
         throw new Error(`No usable account for model ${modelID}`)
       }
-      const loads = latestStore && candidates.length > 0
-        ? toLoadMap(await loadCandidateAccountLoads({
-          sessionID,
-          modelID,
-          store: latestStore,
-          candidates,
-        }).catch(() => undefined))
-        : new Map<string, number>()
-      const resolved = candidates.length > 0
-        ? chooseCandidateAccount({
-          candidates,
-          sessionID,
-          allowReselect: selectionAllowReselect,
-          sessionBindings: sessionAccountBindings,
-          loads,
-          random,
-        })
-        : undefined
+      const loads = new Map<string, number>()
+      const resolved = candidates[0]
       if (!resolved) {
-        const outbound = stripInternalSessionHeader(selectionRequest, selectionInit)
-        return config.fetch(outbound.request, outbound.init)
+        throw new Error("No usable Copilot account configured")
       }
 
       const candidateNames = candidates.map((item) => item.name)
@@ -1393,8 +1299,7 @@ export function buildPluginHooks(input: {
       let nextRequest = selectionRequest
       let nextInit = selectionInit
       const currentInitiator = getMergedRequestHeader(selectionRequest, selectionInit, "x-initiator")
-      const shouldStripAgentInitiator = classification.reason === "unbound-fallback"
-        || (isFirstUse && currentInitiator === "agent")
+      const shouldStripAgentInitiator = isFirstUse && currentInitiator === "agent"
       if (shouldStripAgentInitiator && currentInitiator === "agent") {
         const rewritten = mergeAndRewriteRequestHeaders(selectionRequest, selectionInit, (headers) => {
           headers.delete("x-initiator")
@@ -1456,22 +1361,17 @@ export function buildPluginHooks(input: {
       const response = await sendWithAccount(resolved, nextRequest, nextInit)
 
       const observedAt = now()
-      let rateLimitEvidence: { matched: boolean; retryAfterMs?: number } = { matched: false }
       try {
-        rateLimitEvidence = await detectRateLimitEvidence(response)
-      } catch {
-        rateLimitEvidence = { matched: false }
-      }
-      if (rateLimitEvidence.matched) {
-        decisionRateLimitMatched = true
+        const rateLimitEvidence = await detectRateLimitEvidence(response)
+        decisionRateLimitMatched = rateLimitEvidence.matched
         decisionRetryAfterMs = rateLimitEvidence.retryAfterMs
-        const existingQueue = rateLimitQueues.get(resolved.name) ?? []
-        const cutoff = observedAt - RATE_LIMIT_WINDOW_MS
-        const queue = existingQueue.filter((at) => at >= cutoff)
-        queue.push(observedAt)
-        rateLimitQueues.set(resolved.name, queue)
+        if (rateLimitEvidence.matched) {
+          const existingQueue = rateLimitQueues.get(resolved.name) ?? []
+          const cutoff = observedAt - RATE_LIMIT_WINDOW_MS
+          const queue = existingQueue.filter((at) => at >= cutoff)
+          queue.push(observedAt)
+          rateLimitQueues.set(resolved.name, queue)
 
-        if (queue.length >= RATE_LIMIT_HIT_THRESHOLD) {
           if (queue.length === RATE_LIMIT_HIT_THRESHOLD) {
             await appendRoutingEventImpl({
               directory: routingDirectory,
@@ -1483,154 +1383,10 @@ export function buildPluginHooks(input: {
               },
             }).catch(() => undefined)
           }
-
-          let routingSnapshot: RoutingSnapshot | undefined
-          try {
-            routingSnapshot = await readRoutingStateImpl(routingDirectory)
-          } catch {
-            routingSnapshot = undefined
-            decisionSwitchBlockedBy = "routing-state-read-failed"
-          }
-
-          if (routingSnapshot) {
-            const nextLoads = buildCandidateAccountLoads({
-              snapshot: routingSnapshot,
-              candidateAccountNames: candidates.map((item) => item.name),
-              now: observedAt,
-            })
-            decisionLoads = loadMapToRecord(nextLoads, candidateNames)
-            const currentLoad = nextLoads.get(resolved.name) ?? (loads.get(resolved.name) ?? 0)
-            const replacementCandidates = [...candidates].filter((item) => item.name !== resolved.name)
-            const cooledCandidates = replacementCandidates
-              .filter((item) => item.name !== resolved.name)
-              .filter((item) => isAccountRateLimitCooledDown({
-                snapshot: routingSnapshot!,
-                accountName: item.name,
-                now: observedAt,
-                cooldownMs: RATE_LIMIT_COOLDOWN_MS,
-              }))
-            const replacements = cooledCandidates.filter((item) => (nextLoads.get(item.name) ?? 0) <= currentLoad)
-            const replacement = pickLowestReplacementWithHardenedRandom(replacements, nextLoads, random)
-
-            if (!replacement) {
-              if (replacementCandidates.length === 0) {
-                decisionSwitchBlockedBy = "no-replacement-candidate"
-              } else if (cooledCandidates.length === 0) {
-                decisionSwitchBlockedBy = "no-cooled-down-candidate"
-              } else if (replacements.length === 0) {
-                decisionSwitchBlockedBy = "replacement-load-higher"
-              } else {
-                decisionSwitchBlockedBy = "no-replacement-candidate"
-              }
-            }
-
-              if (replacement) {
-              let retriedRequest = nextRequest
-              let retriedInit = nextInit
-              const rawPayload = await readRequestBody(nextRequest, nextInit)
-                if (typeof rawPayload === "string") {
-                try {
-                  const parsed = JSON.parse(rawPayload) as Record<string, unknown>
-                  const cleaned = await cleanupLongIdsForAccountSwitch({ payload: parsed })
-                  if (cleaned.changed) {
-                    const rewritten = mergeAndRewriteRequestHeaders(nextRequest, nextInit, (headers) => {
-                      if (!headers.has("content-type")) headers.set("content-type", "application/json")
-                    })
-                    retriedRequest = rewritten.request
-                    retriedInit = {
-                      ...(rewritten.init ?? {}),
-                      body: JSON.stringify(cleaned.payload),
-                    }
-                  }
-                } catch {
-                  // keep fail-open on payload parse failures
-                }
-                }
-
-                finalRequestHeaders = getFinalSentRequestHeadersRecord(retriedRequest, retriedInit)
-
-                if (sessionID.length > 0) {
-                sessionAccountBindings.set(sessionID, {
-                  accountName: replacement.name,
-                  lastUsedAt: observedAt,
-                })
-
-                try {
-                  const wrote = await appendSessionTouchEventImpl({
-                    directory: routingDirectory,
-                    accountName: replacement.name,
-                    sessionID,
-                    at: observedAt,
-                    lastTouchWrites,
-                  })
-                  decisionTouchWriteOutcome = wrote ? "written" : "throttled"
-                  decisionTouchWriteError = undefined
-                } catch (error) {
-                  decisionTouchWriteOutcome = "failed"
-                  decisionTouchWriteError = toErrorMessage(error)
-                }
-              }
-
-              decisionReason = "rate-limit-switch"
-              decisionSwitched = true
-              decisionSwitchFrom = resolved.name
-              decisionSwitchBlockedBy = undefined
-              finalChosenAccount = replacement.name
-              chosenAccountAuthFingerprint = toAuthFingerprint(replacement.entry.refresh)
-
-              modelAccountFirstUse.add(replacement.name)
-              const switchToast = buildConsumptionToast({
-                accountName: replacement.name,
-                reason: "rate-limit-switch",
-                switchFrom: resolved.name,
-              })
-              await showStatusToast({
-                client: input.client,
-                message: switchToast.message,
-                variant: switchToast.variant,
-                warn: (scope, error) => {
-                  console.warn(`[${scope}] failed to show toast`, error)
-                },
-              }).catch(() => undefined)
-
-              await sendBillingCompensationIfNeeded({
-                nextAccountName: replacement.name,
-                at: observedAt,
-                retryAfterMs: rateLimitEvidence.retryAfterMs,
-              })
-
-              await appendRouteDecisionEventImpl({
-                directory: routingDirectory,
-                event: {
-                  type: "route-decision",
-                  at: observedAt,
-                  modelID,
-                  sessionID: sessionID.length > 0 ? sessionID : undefined,
-                  sessionIDPresent: sessionID.length > 0,
-                  groupSource: resolved.source,
-                  candidateNames,
-                    loads: decisionLoads,
-                    chosenAccount: finalChosenAccount,
-                    chosenAccountAuthFingerprint,
-                    debugLinkId,
-                    networkRequestUsedInitHeaders,
-                    reason: decisionReason,
-                    switched: decisionSwitched,
-                  switchFrom: decisionSwitchFrom,
-                  switchBlockedBy: decisionSwitchBlockedBy,
-                    touchWriteOutcome: decisionTouchWriteOutcome,
-                    touchWriteError: decisionTouchWriteError,
-                    rateLimitMatched: decisionRateLimitMatched,
-                    retryAfterMs: decisionRetryAfterMs,
-                    finalRequestHeaders,
-                    networkRequestHeaders,
-                  },
-                }).catch(() => undefined)
-
-              return sendWithAccount(replacement, retriedRequest, retriedInit)
-            }
-          }
         }
+      } catch {
+        decisionRateLimitMatched = false
+        decisionRetryAfterMs = undefined
       }
 
       await sendBillingCompensationIfNeeded({

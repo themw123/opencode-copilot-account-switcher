@@ -182,7 +182,7 @@ test("status command without active account sends only one error toast", async (
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.body?.variant, "error")
   assert.doesNotMatch(calls[0]?.body?.message ?? "", /active account|当前账号/i)
-  assert.match(calls[0]?.body?.message ?? "", /default group|默认组|refreshable account|可刷新账号/i)
+  assert.match(calls[0]?.body?.message ?? "", /selected account|refreshable account|可刷新账号/i)
   assert.doesNotMatch(calls[0]?.body?.message ?? "", /StatusCommandHandledError|status-command-handled|handled/i)
 })
 
@@ -217,7 +217,7 @@ test("status command with stale active key sends one missing-active error toast"
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.body?.variant, "error")
   assert.doesNotMatch(calls[0]?.body?.message ?? "", /active account|当前账号/i)
-  assert.match(calls[0]?.body?.message ?? "", /default group|默认组|refreshable account|可刷新账号/i)
+  assert.match(calls[0]?.body?.message ?? "", /selected account|refreshable account|可刷新账号/i)
   assert.doesNotMatch(calls[0]?.body?.message ?? "", /StatusCommandHandledError|status-command-handled|handled/i)
 })
 
@@ -254,11 +254,11 @@ test("status command handles refreshQuota missing-active after loading toast", a
   assert.equal(calls[0]?.body?.variant, "info")
   assert.equal(calls[1]?.body?.variant, "error")
   assert.doesNotMatch(calls[1]?.body?.message ?? "", /active account|当前账号/i)
-  assert.match(calls[1]?.body?.message ?? "", /default group|默认组|refreshable account|可刷新账号/i)
+  assert.match(calls[1]?.body?.message ?? "", /selected account|refreshable account|可刷新账号/i)
   assert.equal(writes.length, 0)
 })
 
-test("status command success keeps default group account order from activeAccountNames", async () => {
+test("status command success shows the active account as default", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -271,7 +271,6 @@ test("status command success keeps default group account order from activeAccoun
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: ["charlie", "alice", "bob"],
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
           bob: { name: "bob", refresh: "ghu_y", access: "ghu_y", expires: 0 },
@@ -303,14 +302,12 @@ test("status command success keeps default group account order from activeAccoun
   const defaultIndex = lines.indexOf("[default]")
   const defaultRow = lines[defaultIndex + 1] ?? ""
   assert.equal(defaultIndex >= 0, true)
-  assert.match(defaultRow, /charlie 1\/9/)
   assert.match(defaultRow, /alice 2\/9/)
-  assert.match(defaultRow, /bob 3\/9/)
-  assert.equal(defaultRow.indexOf("charlie 1/9") < defaultRow.indexOf("alice 2/9"), true)
-  assert.equal(defaultRow.indexOf("alice 2/9") < defaultRow.indexOf("bob 3/9"), true)
+  assert.doesNotMatch(defaultRow, /charlie 1\/9/)
+  assert.doesNotMatch(defaultRow, /bob 3\/9/)
 })
 
-test("status command success sorts model groups by model key and keeps configured account order", async () => {
+test("status command success sorts model groups by model key and shows one configured account per model", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -323,10 +320,9 @@ test("status command success sorts model groups by model key and keeps configure
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: ["alice"],
         modelAccountAssignments: {
-          "gpt-4.1": ["charlie", "alice"],
-          "claude-3.7": ["alice", "charlie"],
+          "gpt-4.1": ["charlie"],
+          "claude-3.7": ["alice"],
         },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -358,11 +354,13 @@ test("status command success sorts model groups by model key and keeps configure
 
   const claudeRow = lines[claudeIndex + 1] ?? ""
   const gptRow = lines[gptIndex + 1] ?? ""
-  assert.equal(claudeRow.indexOf("alice 2/9") < claudeRow.indexOf("charlie 1/9"), true)
-  assert.equal(gptRow.indexOf("charlie 1/9") < gptRow.indexOf("alice 2/9"), true)
+  assert.match(claudeRow, /alice 2\/9/)
+  assert.doesNotMatch(claudeRow, /charlie 1\/9/)
+  assert.match(gptRow, /charlie 1\/9/)
+  assert.doesNotMatch(gptRow, /alice 2\/9/)
 })
 
-test("status command success renders explicit empty states for missing default and route groups", async () => {
+test("status command success renders active default and explicit empty route state", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -375,7 +373,6 @@ test("status command success renders explicit empty states for missing default a
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: [],
         modelAccountAssignments: {},
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -396,7 +393,7 @@ test("status command success renders explicit empty states for missing default a
   const message = calls.at(-1)?.body?.message ?? ""
   const lines = message.split("\n")
   assert.equal(lines[0] ?? "", "[default]")
-  assert.equal(lines[1] ?? "", "(none)")
+  assert.match(lines[1] ?? "", /alice 2\/9/)
   assert.equal(lines[2] ?? "", "[routes]")
   assert.equal(lines[3] ?? "", "(none)")
 })
@@ -416,9 +413,8 @@ test("status command refreshes quota, persists store, and ends with controlled i
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: ["alice", "bob"],
         modelAccountAssignments: {
-          "gpt-4.1": ["bob", "alice"],
+          "gpt-4.1": ["bob"],
           "claude-3.7": ["alice"],
         },
         accounts: {
@@ -467,7 +463,7 @@ test("status command refreshes quota, persists store, and ends with controlled i
   assert.equal(writes[0]?.store?.accounts?.alice?.quota?.snapshots?.premium?.remaining, 10)
 })
 
-test("status command success shows none when routing group is not configured", async () => {
+test("status command success shows none when routing override is not configured", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -480,7 +476,6 @@ test("status command success shows none when routing group is not configured", a
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: ["alice"],
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
         },
@@ -512,7 +507,7 @@ test("status command success shows none when routing group is not configured", a
   assert.equal(messageLines.length, 4)
 })
 
-test("status command success shows active group none when activeAccountNames is absent", async () => {
+test("status command success uses active account when no model override exists", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -550,7 +545,7 @@ test("status command success shows active group none when activeAccountNames is 
   const successMessage = calls[1]?.body?.message ?? ""
   const messageLines = successMessage.split("\n")
   assert.equal(messageLines[0] ?? "", "[default]")
-  assert.equal(messageLines[1] ?? "", "(none)")
+  assert.match(messageLines[1] ?? "", /alice 10\/50/)
   assert.equal(messageLines[2] ?? "", "[routes]")
   assert.equal(messageLines[3] ?? "", "(none)")
   assert.equal(messageLines.length, 4)
@@ -569,9 +564,8 @@ test("status command success renders routing assignment names directly from mode
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: ["alice"],
         modelAccountAssignments: {
-          "gpt-4.1": ["ghost", "alice"],
+          "gpt-4.1": ["ghost"],
         },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -618,7 +612,6 @@ test("status command success skips empty model groups instead of rendering blank
       },
       loadStore: async () => ({
         active: "alice",
-        activeAccountNames: ["alice"],
         modelAccountAssignments: {
           "gpt-4.1": [],
           "claude-3.7": ["alice"],
@@ -651,7 +644,7 @@ test("status command success skips empty model groups instead of rendering blank
   assert.doesNotMatch(successMessage, /\n\s{50}\n/)
 })
 
-test("status command success renders grouped premium rows with fixed 50-width, 3-column cells", async () => {
+test("status command success renders single-account premium rows with fixed-width cells", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -667,14 +660,8 @@ test("status command success renders grouped premium rows with fixed 50-width, 3
       },
       loadStore: async () => ({
         active: "alpha.super.long.username",
-        activeAccountNames: [
-          "alpha.super.long.username",
-          "bravo",
-          "charlie",
-          "delta",
-        ],
         modelAccountAssignments: {
-          "gpt-4.1": ["charlie", "echo"],
+          "gpt-4.1": ["charlie"],
         },
         accounts: {
           "alpha.super.long.username": { name: "alpha.super.long.username", refresh: "r1", access: "a1", expires: 0 },
@@ -727,39 +714,14 @@ test("status command success renders grouped premium rows with fixed 50-width, 3
   assert.equal(routeIndex > defaultIndex, true)
 
   const defaultRow1 = lines[defaultIndex + 1] ?? ""
-  const defaultRow2 = lines[defaultIndex + 2] ?? ""
   const routeRow1 = lines[routeIndex + 1] ?? ""
 
   assert.equal(defaultRow1.length, 50)
-  assert.equal(defaultRow2.length, 50)
   assert.equal(routeRow1.length, 50)
 
   assert.match(defaultRow1, /…/)
-  assert.match(defaultRow1, /n\/a/)
-
-  const defaultCellsRow1 = [
-    defaultRow1.slice(0, 16),
-    defaultRow1.slice(17, 33),
-    defaultRow1.slice(34, 50),
-  ]
-  assert.equal(defaultCellsRow1.length, 3)
-  assert.equal(defaultCellsRow1[2], longQuotaTail)
-
-  const defaultCellsRow2 = [
-    defaultRow2.slice(0, 16),
-    defaultRow2.slice(17, 33),
-    defaultRow2.slice(34, 50),
-  ]
-  assert.equal(defaultCellsRow2.length, 3)
-  assert.match(defaultCellsRow2[0], /2000\/2000/)
-
-  const routeCells = [
-    routeRow1.slice(0, 16),
-    routeRow1.slice(17, 33),
-    routeRow1.slice(34, 50),
-  ]
-  assert.equal(routeCells.length, 3)
-  assert.equal(routeCells[2]?.trim(), "")
+  assert.match(defaultRow1, /1234\/5678/)
+  assert.match(routeRow1, /token-XYZ\/999999/)
 })
 
 test("status command success truncates overflow username with middle ellipsis inside 16-char cell", async () => {
@@ -775,7 +737,6 @@ test("status command success truncates overflow username with middle ellipsis in
       },
       loadStore: async () => ({
         active: "verylongusername_tail",
-        activeAccountNames: ["verylongusername_tail"],
         modelAccountAssignments: {
           "gpt-4.1": ["verylongusername_tail"],
         },
@@ -992,7 +953,7 @@ test("status command reports store persistence failure separately from controlle
   assert.equal(calls[1]?.body?.variant, "error")
   assert.match(calls[1]?.body?.message ?? "", /persist failed|保存失败/i)
   assert.match(calls[1]?.body?.message ?? "", /已刷新|刷新成功|latest quota/i)
-  assert.match(calls[1]?.body?.message ?? "", /\[default\]\n\(none\)/)
+  assert.match(calls[1]?.body?.message ?? "", /\[default\]\nalice 10\/50/)
   assert.match(calls[1]?.body?.message ?? "", /\[routes\]\n\(none\)/)
   assert.doesNotMatch(calls[1]?.body?.message ?? "", /StatusCommandHandledError|status-command-handled|handled/i)
 })

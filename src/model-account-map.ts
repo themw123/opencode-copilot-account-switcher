@@ -15,10 +15,10 @@ export function listKnownCopilotModels(store: StoreFile): string[] {
 }
 
 export function listAssignableAccountsForModel(store: StoreFile, modelID: string): Array<{ name: string; entry: AccountEntry }> {
-  const mapped = new Set(store.modelAccountAssignments?.[modelID] ?? [])
+  const assignedName = store.modelAccountAssignments?.[modelID]?.[0]
   const names = [...new Set(
     Object.entries(store.accounts)
-      .filter(([name, entry]) => (entry.models?.available ?? []).includes(modelID) || mapped.has(name))
+      .filter(([name, entry]) => (entry.models?.available ?? []).includes(modelID) || assignedName === name)
       .map(([name]) => name),
   )]
 
@@ -70,13 +70,8 @@ export function resolveCopilotModelAccounts(store: StoreFile, modelID?: string):
   )
 
   if (hasMappedGroup) {
-    const mapped = resolveCandidatesFromNames(store, store.modelAccountAssignments?.[modelID!] ?? [], "model", modelID)
-    if (mapped.length > 0) return mapped
-  }
-
-  if (Array.isArray(store.activeAccountNames)) {
-    const fromActiveGroup = resolveCandidatesFromNames(store, store.activeAccountNames, "active", modelID)
-    if (fromActiveGroup.length > 0) return fromActiveGroup
+    const mapped = resolveCandidatesFromNames(store, (store.modelAccountAssignments?.[modelID!] ?? []).slice(0, 1), "model", modelID)
+    return mapped
   }
 
   return resolveCandidatesFromNames(store, store.active ? [store.active] : [], "active", modelID)
@@ -104,6 +99,7 @@ export function rewriteModelAccountAssignments(store: StoreFile, rename: Record<
           if (typeof mappedName !== "string" || !store.accounts[mappedName] || seen.has(mappedName)) continue
           seen.add(mappedName)
           resolvedNames.push(mappedName)
+          break
         }
         return [modelID, resolvedNames] as const
       })

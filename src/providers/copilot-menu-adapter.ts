@@ -51,12 +51,6 @@ type AdapterDependencies = {
   fetchUser?: (entry: AccountEntry) => Promise<{ login?: string; email?: string; orgs?: string[] } | undefined>
   fetchModels?: (entry: AccountEntry) => Promise<AccountEntry["models"]>
   fetchQuota?: (entry: AccountEntry) => Promise<AccountEntry["quota"]>
-  configureDefaultAccountGroup?: (
-    store: StoreFile,
-    selectors?: {
-      selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
-    },
-  ) => Promise<boolean>
   configureModelAccountAssignments?: (
     store: StoreFile,
     selectors?: {
@@ -829,18 +823,6 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
           reason: "check-models",
           source: "plugin.runMenu",
           actionType: "check-models",
-        })
-        return false
-      }
-
-      if (action.name === "configure-default-group") {
-        if (!inputDeps.configureDefaultAccountGroup) return false
-        const changed = await inputDeps.configureDefaultAccountGroup(store)
-        if (!changed) return false
-        await persistStore(store, {
-          reason: "configure-default-account-group",
-          source: "plugin.runMenu",
-          actionType: "configure-default-account-group",
         })
         return false
       }
