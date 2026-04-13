@@ -206,7 +206,7 @@ export async function configureDefaultAccountGroup(
         },
       )
 
-  if (!selected || selected.length === 0) return false
+  if (!selected) return false
 
   const next = [...new Set(selected)]
     .filter((name) => Boolean(store.accounts[name]))

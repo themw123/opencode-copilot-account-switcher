@@ -77,7 +77,6 @@ export interface SelectOptions {
 }
 
 export interface SelectManyOptions extends SelectOptions {
-  doneLabel?: string
   backLabel?: string
   minSelected?: number
   initialSelected?: number[]
@@ -349,18 +348,11 @@ export async function selectMany<T>(items: MenuItem<T>[], options: SelectManyOpt
     }
   }
 
-  const DONE = "__select_many_done__"
   const BACK = "__select_many_back__"
 
   while (true) {
     const menuItems: MenuItem<string>[] = [
       { label: options.backLabel ?? "Back", value: BACK },
-      {
-        label: options.doneLabel ?? "Done",
-        value: DONE,
-        color: "cyan",
-        hint: `${selected.size} selected`,
-      },
       { label: "", value: "", separator: true },
       ...selectable.map(({ item }, index) => {
         const marker = selected.has(index) ? "[x]" : "[ ]"
@@ -376,12 +368,10 @@ export async function selectMany<T>(items: MenuItem<T>[], options: SelectManyOpt
     const choice = await select(menuItems, {
       ...options,
       autoSelectSingle: false,
-      help: options.help ?? "Up/Down to select | Enter: toggle | Choose Done to confirm | Esc: back",
+      help: options.help ?? "Up/Down to select | Enter: toggle | Esc: back & save",
     })
 
-    if (choice === null || choice === BACK) return null
-    if (choice === DONE) {
-      if ((options.minSelected ?? 0) > selected.size) continue
+    if (choice === null || choice === BACK) {
       return selectable
         .map(({ item }, index) => ({ item, index }))
         .filter(({ index }) => selected.has(index))

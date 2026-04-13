@@ -39,7 +39,6 @@ export type MenuAction =
   | { type: "assign-models" }
   | { type: "toggle-refresh" }
   | { type: "set-interval" }
-  | { type: "toggle-language" }
   | { type: "toggle-loop-safety" }
   | { type: "toggle-loop-safety-provider-scope" }
   | { type: "toggle-experimental-slash-commands" }
@@ -59,7 +58,7 @@ export type MenuAction =
   | { type: "remove-all" }
   | { type: "cancel" }
 
-export type MenuLanguage = "zh" | "en"
+export type MenuLanguage = "en"
 
 export type MenuProvider = "copilot" | "codex"
 
@@ -147,126 +146,18 @@ function defaultMenuCapabilities(provider: MenuProvider): MenuCapabilities {
   }
 }
 
-export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvider = "copilot") {
+export function getMenuCopy(provider: MenuProvider = "copilot") {
   if (provider === "codex") {
-    if (language === "en") {
-      return {
-        menuTitle: "OpenAI Codex accounts",
-        menuSubtitle: "Select an action or account",
-        switchLanguageLabel: "切换到中文",
-        actionsHeading: "Actions",
-        commonSettingsHeading: "Common settings",
-        providerSettingsHeading: "Provider settings",
-        addAccount: "Add account",
-        addAccountHint: "OpenAI OAuth login",
-        importAuth: "Import from auth.json",
-        checkQuotas: "Refresh snapshots",
-        refreshIdentity: "Sync account identity",
-        checkModels: "Sync available models",
-        defaultAccountGroup: "Default account group",
-        assignModels: "Assign account groups per model",
-        autoRefreshOn: "Auto refresh: On",
-        autoRefreshOff: "Auto refresh: Off",
-        setRefresh: "Set refresh interval",
-        loopSafetyOn: "Guided Loop Safety: On",
-        loopSafetyOff: "Guided Loop Safety: Off",
-        loopSafetyHint: "Reduce unnecessary handoff replies while work can continue",
-        policyScopeCopilotOnly: "Policy default scope: Current provider only",
-        policyScopeAllModels: "Policy default scope: All models",
-        policyScopeHint: "Choose whether Guided Loop Safety applies only to the current provider by default or to all models",
-        experimentalSlashCommandsOn: "Experimental slash commands: On",
-        experimentalSlashCommandsOff: "Experimental slash commands: Off",
-        experimentalSlashCommandsHint: "Experimental provider-specific slash commands",
-        retryOn: "Network Retry: On",
-        retryOff: "Network Retry: Off",
-        retryHint: "Helps recover some requests after retries or malformed responses",
-        syntheticInitiatorOn: "Send synthetic messages as agent: On",
-        syntheticInitiatorOff: "Send synthetic messages as agent: Off",
-        syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
-         wechatNotificationsHeading: "WeChat notifications",
-         wechatBind: "Bind / Rebind WeChat",
-         wechatExportDebugBundle: "Export WeChat debug bundle",
-         wechatDebugBundleModeTitle: "Choose debug bundle type",
-         wechatDebugBundleSanitized: "Sanitized bundle",
-         wechatDebugBundleFull: "Full bundle",
-         wechatNotificationsOn: "WeChat notifications: On",
-         wechatNotificationsOff: "WeChat notifications: Off",
-         wechatQuestionNotifyOn: "Question notifications: On",
-        wechatQuestionNotifyOff: "Question notifications: Off",
-        wechatPermissionNotifyOn: "Permission notifications: On",
-        wechatPermissionNotifyOff: "Permission notifications: Off",
-        wechatSessionErrorNotifyOn: "Session error notifications: On",
-        wechatSessionErrorNotifyOff: "Session error notifications: Off",
-        accountsHeading: "Accounts",
-        dangerHeading: "Danger zone",
-        removeAll: "Remove all accounts",
-      }
-    }
     return {
-      menuTitle: "OpenAI Codex 账号",
-      menuSubtitle: "请选择操作或账号",
-      switchLanguageLabel: "Switch to English",
-      actionsHeading: "操作",
-      commonSettingsHeading: "通用设置",
-      providerSettingsHeading: "Provider 专属设置",
-      addAccount: "添加账号",
-      addAccountHint: "OpenAI OAuth 登录",
-      importAuth: "从 auth.json 导入",
-      checkQuotas: "刷新快照",
-      refreshIdentity: "同步账号身份信息",
-      checkModels: "同步可用模型列表",
-      defaultAccountGroup: "配置默认账号组",
-      assignModels: "为模型配置账号组",
-      autoRefreshOn: "自动刷新：已开启",
-      autoRefreshOff: "自动刷新：已关闭",
-      setRefresh: "设置刷新间隔",
-      loopSafetyOn: "Guided Loop Safety：已开启",
-      loopSafetyOff: "Guided Loop Safety：已关闭",
-      loopSafetyHint: "让模型更少无谓汇报，没做完前优先继续干活",
-      policyScopeCopilotOnly: "Policy 默认注入范围：仅当前 provider",
-      policyScopeAllModels: "Policy 默认注入范围：所有模型",
-      policyScopeHint: "决定 Guided Loop Safety 默认只作用于当前 provider，还是扩展到所有模型",
-      experimentalSlashCommandsOn: "实验性 Slash Commands：已开启",
-      experimentalSlashCommandsOff: "实验性 Slash Commands：已关闭",
-      experimentalSlashCommandsHint: "当前 provider 的实验性 Slash Commands 开关",
-      retryOn: "Network Retry：已开启",
-      retryOff: "Network Retry：已关闭",
-      retryHint: "请求异常时可自动重试并修复部分请求",
-      syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
-      syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
-      syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
-       wechatNotificationsHeading: "微信通知",
-       wechatBind: "绑定 / 重绑微信",
-       wechatExportDebugBundle: "导出微信调试包",
-       wechatDebugBundleModeTitle: "选择调试包类型",
-       wechatDebugBundleSanitized: "脱敏包",
-       wechatDebugBundleFull: "完整包",
-       wechatNotificationsOn: "微信通知总开关：已开启",
-       wechatNotificationsOff: "微信通知总开关：已关闭",
-       wechatQuestionNotifyOn: "问题通知：已开启",
-      wechatQuestionNotifyOff: "问题通知：已关闭",
-      wechatPermissionNotifyOn: "权限通知：已开启",
-      wechatPermissionNotifyOff: "权限通知：已关闭",
-      wechatSessionErrorNotifyOn: "会话错误通知：已开启",
-      wechatSessionErrorNotifyOff: "会话错误通知：已关闭",
-      accountsHeading: "账号",
-      dangerHeading: "危险操作",
-      removeAll: "删除全部账号",
-    }
-  }
-
-  if (language === "en") {
-    return {
-      menuTitle: "GitHub Copilot accounts",
+      menuTitle: "OpenAI Codex accounts",
       menuSubtitle: "Select an action or account",
-      switchLanguageLabel: "切换到中文",
       actionsHeading: "Actions",
       commonSettingsHeading: "Common settings",
       providerSettingsHeading: "Provider settings",
       addAccount: "Add account",
-      addAccountHint: "device login or manual",
+      addAccountHint: "OpenAI OAuth login",
       importAuth: "Import from auth.json",
-      checkQuotas: "Refresh quota info",
+      checkQuotas: "Refresh snapshots",
       refreshIdentity: "Sync account identity",
       checkModels: "Sync available models",
       defaultAccountGroup: "Default account group",
@@ -277,28 +168,27 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       loopSafetyOn: "Guided Loop Safety: On",
       loopSafetyOff: "Guided Loop Safety: Off",
       loopSafetyHint: "Reduce unnecessary handoff replies while work can continue",
-      policyScopeCopilotOnly: "Policy default scope: Copilot only",
+      policyScopeCopilotOnly: "Policy default scope: Current provider only",
       policyScopeAllModels: "Policy default scope: All models",
-      policyScopeHint: "Choose whether Guided Loop Safety applies only to Copilot by default or to all models",
+      policyScopeHint: "Choose whether Guided Loop Safety applies only to Codex by default or to all models",
       experimentalSlashCommandsOn: "Experimental slash commands: On",
       experimentalSlashCommandsOff: "Experimental slash commands: Off",
-      experimentalSlashCommandsHint:
-        "Controls whether /copilot-status, /copilot-compact, /copilot-stop-tool, /copilot-inject, and /copilot-policy-all-models are registered",
+      experimentalSlashCommandsHint: "Controls whether /codex-status is registered",
       retryOn: "Network Retry: On",
       retryOff: "Network Retry: Off",
       retryHint: "Helps recover some requests after retries or malformed responses",
       syntheticInitiatorOn: "Send synthetic messages as agent: On",
       syntheticInitiatorOff: "Send synthetic messages as agent: Off",
       syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
-       wechatNotificationsHeading: "WeChat notifications",
-       wechatBind: "Bind / Rebind WeChat",
-       wechatExportDebugBundle: "Export WeChat debug bundle",
-       wechatDebugBundleModeTitle: "Choose debug bundle type",
-       wechatDebugBundleSanitized: "Sanitized bundle",
-       wechatDebugBundleFull: "Full bundle",
-       wechatNotificationsOn: "WeChat notifications: On",
-       wechatNotificationsOff: "WeChat notifications: Off",
-       wechatQuestionNotifyOn: "Question notifications: On",
+      wechatNotificationsHeading: "WeChat notifications",
+      wechatBind: "Bind / Rebind WeChat",
+      wechatExportDebugBundle: "Export WeChat debug bundle",
+      wechatDebugBundleModeTitle: "Choose debug bundle type",
+      wechatDebugBundleSanitized: "Sanitized bundle",
+      wechatDebugBundleFull: "Full bundle",
+      wechatNotificationsOn: "WeChat notifications: On",
+      wechatNotificationsOff: "WeChat notifications: Off",
+      wechatQuestionNotifyOn: "Question notifications: On",
       wechatQuestionNotifyOff: "Question notifications: Off",
       wechatPermissionNotifyOn: "Permission notifications: On",
       wechatPermissionNotifyOff: "Permission notifications: Off",
@@ -309,58 +199,57 @@ export function getMenuCopy(language: MenuLanguage = "zh", provider: MenuProvide
       removeAll: "Remove all accounts",
     }
   }
-
+  
   return {
-    menuTitle: "GitHub Copilot 账号",
-    menuSubtitle: "请选择操作或账号",
-    switchLanguageLabel: "Switch to English",
-    actionsHeading: "操作",
-    commonSettingsHeading: "通用设置",
-    providerSettingsHeading: "Provider 专属设置",
-    addAccount: "添加账号",
-    addAccountHint: "设备登录或手动录入",
-    importAuth: "从 auth.json 导入",
-    checkQuotas: "刷新配额信息",
-    refreshIdentity: "同步账号身份信息",
-    checkModels: "同步可用模型列表",
-    defaultAccountGroup: "配置默认账号组",
-    assignModels: "为模型配置账号组",
-    autoRefreshOn: "自动刷新：已开启",
-    autoRefreshOff: "自动刷新：已关闭",
-    setRefresh: "设置刷新间隔",
-    loopSafetyOn: "Guided Loop Safety：已开启",
-    loopSafetyOff: "Guided Loop Safety：已关闭",
-    loopSafetyHint: "让模型更少无谓汇报，没做完前优先继续干活",
-    policyScopeCopilotOnly: "Policy 默认注入范围：仅 Copilot",
-    policyScopeAllModels: "Policy 默认注入范围：所有模型",
-    policyScopeHint: "决定 Guided Loop Safety 默认只作用于 Copilot，还是扩展到所有模型",
-    experimentalSlashCommandsOn: "实验性 Slash Commands：已开启",
-    experimentalSlashCommandsOff: "实验性 Slash Commands：已关闭",
+    menuTitle: "GitHub Copilot accounts",
+    menuSubtitle: "Select an action or account",
+    actionsHeading: "Actions",
+    commonSettingsHeading: "Common settings",
+    providerSettingsHeading: "Provider settings",
+    addAccount: "Add account",
+    addAccountHint: "device login or manual",
+    importAuth: "Import from auth.json",
+    checkQuotas: "Refresh quota info",
+    refreshIdentity: "Sync account identity",
+    checkModels: "Sync available models",
+    defaultAccountGroup: "Default account group",
+    assignModels: "Assign account groups per model",
+    autoRefreshOn: "Auto refresh: On",
+    autoRefreshOff: "Auto refresh: Off",
+    setRefresh: "Set refresh interval",
+    loopSafetyOn: "Guided Loop Safety: On",
+    loopSafetyOff: "Guided Loop Safety: Off",
+    loopSafetyHint: "Reduce unnecessary handoff replies while work can continue",
+    policyScopeCopilotOnly: "Policy default scope: Copilot only",
+    policyScopeAllModels: "Policy default scope: All models",
+    policyScopeHint: "Choose whether Guided Loop Safety applies only to Copilot by default or to all models",
+    experimentalSlashCommandsOn: "Experimental slash commands: On",
+    experimentalSlashCommandsOff: "Experimental slash commands: Off",
     experimentalSlashCommandsHint:
-      "控制 /copilot-status、/copilot-compact、/copilot-stop-tool、/copilot-inject、/copilot-policy-all-models 是否注册",
-    retryOn: "Network Retry：已开启",
-    retryOff: "Network Retry：已关闭",
-    retryHint: "请求异常时可自动重试并修复部分请求",
-    syntheticInitiatorOn: "synthetic 消息按 agent 身份发送：已开启",
-    syntheticInitiatorOff: "synthetic 消息按 agent 身份发送：已关闭",
-    syntheticInitiatorHint: "会改变与 upstream 的默认行为；误用可能带来异常计费或 abuse 风险",
-     wechatNotificationsHeading: "微信通知",
-     wechatBind: "绑定 / 重绑微信",
-     wechatExportDebugBundle: "导出微信调试包",
-     wechatDebugBundleModeTitle: "选择调试包类型",
-     wechatDebugBundleSanitized: "脱敏包",
-     wechatDebugBundleFull: "完整包",
-     wechatNotificationsOn: "微信通知总开关：已开启",
-     wechatNotificationsOff: "微信通知总开关：已关闭",
-     wechatQuestionNotifyOn: "问题通知：已开启",
-    wechatQuestionNotifyOff: "问题通知：已关闭",
-    wechatPermissionNotifyOn: "权限通知：已开启",
-    wechatPermissionNotifyOff: "权限通知：已关闭",
-    wechatSessionErrorNotifyOn: "会话错误通知：已开启",
-    wechatSessionErrorNotifyOff: "会话错误通知：已关闭",
-    accountsHeading: "账号",
-    dangerHeading: "危险操作",
-    removeAll: "删除全部账号",
+      "Controls whether /copilot-status, /copilot-compact, /copilot-stop-tool, /copilot-inject, and /copilot-policy-all-models are registered",
+    retryOn: "Network Retry: On",
+    retryOff: "Network Retry: Off",
+    retryHint: "Helps recover some requests after retries or malformed responses",
+    syntheticInitiatorOn: "Send synthetic messages as agent: On",
+    syntheticInitiatorOff: "Send synthetic messages as agent: Off",
+    syntheticInitiatorHint: "Changes upstream behavior; misuse may increase billing risk or trigger abuse signals",
+     wechatNotificationsHeading: "WeChat notifications",
+     wechatBind: "Bind / Rebind WeChat",
+     wechatExportDebugBundle: "Export WeChat debug bundle",
+     wechatDebugBundleModeTitle: "Choose debug bundle type",
+     wechatDebugBundleSanitized: "Sanitized bundle",
+     wechatDebugBundleFull: "Full bundle",
+     wechatNotificationsOn: "WeChat notifications: On",
+     wechatNotificationsOff: "WeChat notifications: Off",
+     wechatQuestionNotifyOn: "Question notifications: On",
+    wechatQuestionNotifyOff: "Question notifications: Off",
+    wechatPermissionNotifyOn: "Permission notifications: On",
+    wechatPermissionNotifyOff: "Permission notifications: Off",
+    wechatSessionErrorNotifyOn: "Session error notifications: On",
+    wechatSessionErrorNotifyOff: "Session error notifications: Off",
+    accountsHeading: "Accounts",
+    dangerHeading: "Danger zone",
+    removeAll: "Remove all accounts",
   }
 }
 
@@ -406,7 +295,7 @@ export function buildMenuItems(input: {
   language?: MenuLanguage
 }): MenuItem<MenuAction>[] {
   const provider = input.provider ?? "copilot"
-  const copy = getMenuCopy(input.language, provider)
+  const copy = getMenuCopy(provider)
   const capabilities = {
     ...defaultMenuCapabilities(provider),
     ...input.capabilities,
@@ -428,7 +317,6 @@ export function buildMenuItems(input: {
 
   const providerActions: MenuItem<MenuAction>[] = [
     { label: copy.actionsHeading, value: { type: "cancel" }, kind: "heading" },
-    { label: copy.switchLanguageLabel, value: { type: "toggle-language" }, color: "cyan" },
     { label: copy.addAccount, value: { type: "add" }, color: "cyan", hint: copy.addAccountHint },
   ]
 
@@ -565,9 +453,8 @@ function buildWechatSubmenuItems(copy: ReturnType<typeof getMenuCopy>, input: {
   wechatPrimaryBinding?: MenuWechatPrimaryBinding
   wechatOperatorBinding?: MenuWechatOperatorBinding
   capabilities: MenuCapabilities
-  language: MenuLanguage
 }): MenuItem<MenuAction>[] {
-  const backLabel = input.language === "en" ? "Back" : "返回上级"
+  const backLabel = "Back"
   const effectiveBinding = input.wechatPrimaryBinding
     ? {
         accountId: input.wechatPrimaryBinding.accountId,
@@ -591,7 +478,7 @@ function buildWechatSubmenuItems(copy: ReturnType<typeof getMenuCopy>, input: {
       ? new Date(effectiveBinding.boundAt).toLocaleString()
       : "unknown"
     bindingRows.push(
-      { label: input.language === "en" ? "Current binding" : "当前绑定账号", value: { type: "cancel" }, kind: "heading" },
+      { label: "Current binding", value: { type: "cancel" }, kind: "heading" },
       {
         label: `accountId: ${effectiveBinding.accountId}`,
         value: { type: "cancel" },
@@ -666,10 +553,9 @@ function buildWechatSubmenuItems(copy: ReturnType<typeof getMenuCopy>, input: {
 }
 
 function buildWechatDebugBundleModeItems(copy: ReturnType<typeof getMenuCopy>, input: {
-  language: MenuLanguage
   capabilities: MenuCapabilities
 }): MenuItem<MenuAction>[] {
-  const backLabel = input.language === "en" ? "Back" : "返回上级"
+  const backLabel = "Back"
   return [
     { label: backLabel, value: { type: "cancel" } },
     { label: "", value: { type: "cancel" }, separator: true },
@@ -731,11 +617,11 @@ export async function showMenuWithDeps(
   const selectMenu = deps.select ?? select
   const confirmAction = deps.confirm ?? confirm
   const showAccountActionMenu = deps.showAccountActions ?? showAccountActions
-  let currentLanguage = input.language ?? "zh"
+  let currentLanguage = "en" as const
 
   while (true) {
     const provider = input.provider ?? "copilot"
-    const copy = getMenuCopy(currentLanguage, provider)
+    const copy = getMenuCopy(provider)
     const items = buildMenuItems({
       provider,
       accounts,
@@ -786,7 +672,6 @@ export async function showMenuWithDeps(
           wechatPrimaryBinding: input.wechatPrimaryBinding ?? pickPrimaryBindingFromSettings(commonSettings),
           wechatOperatorBinding: input.wechatOperatorBinding ?? pickOperatorBinding(operatorBinding),
           capabilities,
-          language: currentLanguage,
         })
         const wechatResult = await selectMenu(wechatItems, {
           message: copy.wechatNotificationsHeading,
@@ -798,7 +683,6 @@ export async function showMenuWithDeps(
         }
         if (wechatResult.type === "wechat-export-debug-bundle-menu") {
           const debugBundleMode = await selectMenu(buildWechatDebugBundleModeItems(copy, {
-            language: currentLanguage,
             capabilities,
           }), {
             message: copy.wechatExportDebugBundle,
@@ -812,10 +696,6 @@ export async function showMenuWithDeps(
         }
         return wechatResult
       }
-      continue
-    }
-    if (result.type === "toggle-language") {
-      currentLanguage = currentLanguage === "zh" ? "en" : "zh"
       continue
     }
     if (result.type === "switch") {

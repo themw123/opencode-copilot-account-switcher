@@ -39,20 +39,20 @@ test("wechat entry is under common settings and detailed wechat actions are not 
   })
 
   const labels = items.map((item) => item.label)
-  const commonHeading = labels.indexOf("通用设置")
+  const commonHeading = labels.indexOf("Common settings")
   const commonEnd = items.findIndex((item, index) => index > commonHeading && item.separator === true)
-  const wechatEntry = labels.indexOf("微信通知")
+  const wechatEntry = labels.indexOf("WeChat notifications")
 
   assert.notEqual(commonHeading, -1)
   assert.notEqual(commonEnd, -1)
   assert.notEqual(wechatEntry, -1)
   assert.equal(wechatEntry > commonHeading, true)
   assert.equal(wechatEntry < commonEnd, true)
-  assert.equal(labels.includes("绑定 / 重绑微信"), false)
-  assert.equal(labels.includes("微信通知总开关：已开启"), false)
-  assert.equal(labels.includes("问题通知：已关闭"), false)
-  assert.equal(labels.includes("权限通知：已开启"), false)
-  assert.equal(labels.includes("会话错误通知：已关闭"), false)
+  assert.equal(labels.includes("Bind / Rebind WeChat"), false)
+  assert.equal(labels.includes("WeChat notifications: On"), false)
+  assert.equal(labels.includes("Question notifications: Off"), false)
+  assert.equal(labels.includes("Permission notifications: On"), false)
+  assert.equal(labels.includes("Session error notifications: Off"), false)
 })
 
 test("wechat submenu selection returns explicit wechat-bind action", async () => {
@@ -80,12 +80,12 @@ test("wechat submenu selection returns explicit wechat-bind action", async () =>
   })
 
   assert.equal(menuCalls.length, 2)
-  assert.equal(menuCalls[0].includes("绑定 / 重绑微信"), false)
-  assert.equal(menuCalls[1].includes("绑定 / 重绑微信"), true)
-  assert.equal(menuCalls[1].includes("微信通知总开关：已开启"), true)
-  assert.equal(menuCalls[1].includes("问题通知：已关闭"), true)
-  assert.equal(menuCalls[1].includes("权限通知：已开启"), true)
-  assert.equal(menuCalls[1].includes("会话错误通知：已关闭"), true)
+  assert.equal(menuCalls[0].includes("Bind / Rebind WeChat"), false)
+  assert.equal(menuCalls[1].includes("Bind / Rebind WeChat"), true)
+  assert.equal(menuCalls[1].includes("WeChat notifications: On"), true)
+  assert.equal(menuCalls[1].includes("Question notifications: Off"), true)
+  assert.equal(menuCalls[1].includes("Permission notifications: On"), true)
+  assert.equal(menuCalls[1].includes("Session error notifications: Off"), true)
   assert.deepEqual(result, { type: "wechat-bind" })
 })
 
@@ -123,7 +123,7 @@ test("wechat submenu shows bound account info and hides internal baseUrl", async
 
   assert.equal(calls.length, 3)
   const labels = calls[1]
-  assert.equal(labels.some((label) => label.includes("当前绑定账号")), true)
+  assert.equal(labels.some((label) => label.includes("Current binding")), true)
   assert.equal(labels.some((label) => label.includes("acc-main")), true)
   assert.equal(labels.some((label) => label.includes("主账号")), true)
   assert.equal(labels.some((label) => label.includes("user-1")), true)
@@ -162,7 +162,7 @@ test("wechat submenu treats operator binding as bound when settings binding is m
 
   assert.deepEqual(result, { type: "wechat-rebind" })
   const labels = calls[1]
-  assert.equal(labels.some((label) => label.includes("当前绑定账号")), true)
+  assert.equal(labels.some((label) => label.includes("Current binding")), true)
   assert.equal(labels.some((label) => label.includes("acc-op-only")), true)
   assert.equal(labels.some((label) => label.includes("user-op")), true)
 })
@@ -216,7 +216,7 @@ test("wechat submenu hydrates binding details from settings/operator deps when m
 
   assert.deepEqual(result, { type: "wechat-rebind" })
   const labels = calls[1]
-  assert.equal(labels.some((label) => label.includes("当前绑定账号")), true)
+  assert.equal(labels.some((label) => label.includes("Current binding")), true)
   assert.equal(labels.some((label) => label.includes("acc-from-settings")), true)
   assert.equal(labels.some((label) => label.includes("settings account")), true)
   assert.equal(labels.some((label) => label.includes("user-from-settings")), true)
@@ -244,9 +244,9 @@ test("wechat submenu cancel returns to main menu and keeps back behavior stable"
   })
 
   assert.equal(calls.length, 3)
-  assert.equal(calls[0].includes("微信通知"), true)
-  assert.equal(calls[1].includes("绑定 / 重绑微信"), true)
-  assert.equal(calls[2].includes("微信通知"), true)
+  assert.equal(calls[0].includes("WeChat notifications"), true)
+  assert.equal(calls[1].includes("Bind / Rebind WeChat"), true)
+  assert.equal(calls[2].includes("WeChat notifications"), true)
   assert.deepEqual(result, { type: "cancel" })
 })
 
@@ -342,9 +342,9 @@ test("wechat debug bundle menu prompts for mode and returns explicit action", as
   })
 
   assert.equal(menuCalls.length, 3)
-  assert.equal(menuCalls[1].includes("导出微信调试包"), true)
-  assert.equal(menuCalls[2].includes("脱敏包"), true)
-  assert.equal(menuCalls[2].includes("完整包"), true)
+  assert.equal(menuCalls[1].includes("Export WeChat debug bundle"), true)
+  assert.equal(menuCalls[2].includes("Sanitized bundle"), true)
+  assert.equal(menuCalls[2].includes("Full bundle"), true)
   assert.deepEqual(result, { type: "wechat-export-debug-bundle", mode: "sanitized" })
 })
 

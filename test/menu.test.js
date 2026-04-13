@@ -3,37 +3,29 @@ import assert from "node:assert/strict"
 
 import { buildAccountActionItems, buildMenuItems, getMenuCopy, showMenuWithDeps } from "../dist/ui/menu.js"
 
-test("getMenuCopy returns Chinese copy by default", () => {
-  const copy = getMenuCopy()
-
-  assert.equal(copy.menuTitle, "GitHub Copilot 账号")
-  assert.equal(copy.switchLanguageLabel, "Switch to English")
-})
-
-test("getMenuCopy returns English copy when requested", () => {
-  const copy = getMenuCopy("en")
+test("getMenuCopy returns English copy", () => {
+  const copy = getMenuCopy("copilot")
 
   assert.equal(copy.menuTitle, "GitHub Copilot accounts")
-  assert.equal(copy.switchLanguageLabel, "切换到中文")
+  assert.equal(copy.actionsHeading, "Actions")
+  assert.equal(copy.commonSettingsHeading, "Common settings")
+  assert.equal(copy.addAccount, "Add account")
 })
 
 test("getMenuCopy returns Codex-specific titles without Copilot-only wording", () => {
-  const enCopy = getMenuCopy("en", "codex")
-  const zhCopy = getMenuCopy("zh", "codex")
+  const enCopy = getMenuCopy("codex")
 
   assert.equal(enCopy.menuTitle, "OpenAI Codex accounts")
-  assert.equal(zhCopy.menuTitle, "OpenAI Codex 账号")
   assert.doesNotMatch(enCopy.retryOff, /Copilot/i)
-  assert.doesNotMatch(zhCopy.retryOff, /Copilot/i)
 })
 
 test("getMenuCopy keeps network retry copy provider-agnostic for Copilot", () => {
-  const enCopy = getMenuCopy("en", "copilot")
-  const zhCopy = getMenuCopy("zh", "copilot")
+  const enCopy = getMenuCopy("copilot")
 
   assert.doesNotMatch(enCopy.retryOff, /Copilot/i)
-  assert.doesNotMatch(zhCopy.retryOff, /Copilot/i)
 })
+
+
 
 test("buildMenuItems shows Guided Loop Safety off state when disabled", () => {
   const items = buildMenuItems({
@@ -41,7 +33,6 @@ test("buildMenuItems shows Guided Loop Safety off state when disabled", () => {
     refresh: { enabled: false, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Guided Loop Safety: Off")
@@ -55,7 +46,6 @@ test("buildMenuItems shows Guided Loop Safety on state when enabled", () => {
     refresh: { enabled: true, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: true,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Guided Loop Safety: On")
@@ -68,7 +58,6 @@ test("guided loop safety toggle is placed in common settings section", () => {
     refresh: { enabled: false, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -84,7 +73,6 @@ test("guided loop safety toggle stays inside the Common settings section", () =>
     refresh: { enabled: false, minutes: 15 },
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
-    language: "en",
   })
 
   const toggleIndex = items.findIndex((item) => item.label === "Guided Loop Safety: Off")
@@ -107,7 +95,6 @@ test("buildMenuItems shows default policy scope when value is omitted", () => {
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Policy default scope: Copilot only")
@@ -122,7 +109,6 @@ test("buildMenuItems shows all-models policy scope when enabled", () => {
     loopSafetyEnabled: false,
     loopSafetyProviderScope: "all-models",
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Policy default scope: All models")
@@ -138,7 +124,6 @@ test("policy scope toggle is placed after guided loop safety", () => {
     loopSafetyEnabled: false,
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -156,7 +141,6 @@ test("buildMenuItems shows default experimental slash command state when value i
     loopSafetyEnabled: false,
     loopSafetyProviderScope: "copilot-only",
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Experimental slash commands: On")
@@ -172,7 +156,6 @@ test("buildMenuItems shows experimental slash command off state when disabled", 
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: false,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Experimental slash commands: Off")
@@ -191,7 +174,6 @@ test("experimental slash commands toggle is placed after policy scope and before
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -212,7 +194,6 @@ test("buildMenuItems shows Network Retry off state when disabled", () => {
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Network Retry: Off")
@@ -229,7 +210,6 @@ test("buildMenuItems shows Network Retry on state when enabled", () => {
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: true,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Network Retry: On")
@@ -246,7 +226,6 @@ test("Copilot network retry toggle is placed after slash toggle in common settin
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -272,7 +251,6 @@ test("assign models action is placed after default account group", () => {
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -291,7 +269,6 @@ test("buildMenuItems uses the updated action copy for sync-oriented items", () =
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -343,7 +320,6 @@ test("buildMenuItems shows synthetic initiator off state and risk hint when disa
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
     syntheticAgentInitiatorEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Send synthetic messages as agent: Off")
@@ -363,7 +339,6 @@ test("buildMenuItems shows synthetic initiator on state when enabled", () => {
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
     syntheticAgentInitiatorEnabled: true,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Send synthetic messages as agent: On")
@@ -380,7 +355,6 @@ test("synthetic initiator toggle is placed after network retry and before the se
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
     syntheticAgentInitiatorEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -399,19 +373,6 @@ test("synthetic initiator toggle is placed after network retry and before the se
   assert.equal(syntheticIndex < providerSectionEnd, true)
 })
 
-test("buildMenuItems includes a language switch action", () => {
-  const items = buildMenuItems({
-    accounts: [],
-    refresh: { enabled: false, minutes: 15 },
-    lastQuotaRefresh: undefined,
-    loopSafetyEnabled: true,
-    networkRetryEnabled: false,
-  })
-
-  const toggle = items.find((item) => item.label === "Switch to English")
-  assert.ok(toggle)
-})
-
 test("experimental slash commands hint includes compact and stop-tool commands", () => {
   const items = buildMenuItems({
     accounts: [],
@@ -421,7 +382,6 @@ test("experimental slash commands hint includes compact and stop-tool commands",
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: false,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const toggle = items.find((item) => item.label === "Experimental slash commands: Off")
@@ -440,7 +400,6 @@ test("buildMenuItems keeps common settings visible for Codex provider", () => {
     loopSafetyProviderScope: "copilot-only",
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -467,7 +426,6 @@ test("buildMenuItems ignores provider-only capability overrides for Codex provid
     lastQuotaRefresh: undefined,
     loopSafetyEnabled: false,
     networkRetryEnabled: true,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
@@ -487,7 +445,6 @@ test("buildMenuItems keeps section order stable for Copilot", () => {
     experimentalSlashCommandsEnabled: true,
     networkRetryEnabled: false,
     syntheticAgentInitiatorEnabled: false,
-    language: "en",
   })
 
   const labels = items.map((item) => item.label)
