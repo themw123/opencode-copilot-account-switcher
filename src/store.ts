@@ -70,7 +70,7 @@ export type StoreFile = {
   // legacy read-only field; Copilot routing now uses only `active`
   activeAccountNames?: string[]
   accounts: Record<string, AccountEntry>
-  modelAccountAssignments?: Record<string, string[]>
+  modelAccountAssignments?: Record<string, string>
   autoRefresh?: boolean
   refreshMinutes?: number
   lastAccountSwitchAt?: number
@@ -169,7 +169,7 @@ function normalizeKnownAccountName(name: unknown, accounts: Record<string, Accou
 
 function normalizeModelAccountAssignments(raw: unknown, accounts: Record<string, AccountEntry>) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
-  const normalized: Record<string, string[]> = {}
+  const normalized: Record<string, string> = {}
   for (const [modelID, accountNames] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof modelID !== "string" || modelID.length === 0) continue
     const candidate = typeof accountNames === "string"
@@ -178,7 +178,7 @@ function normalizeModelAccountAssignments(raw: unknown, accounts: Record<string,
       ? normalizeKnownAccountName(accountNames[0], accounts)
       : undefined
     if (!candidate) continue
-    normalized[modelID] = [candidate]
+    normalized[modelID] = candidate
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined
 }

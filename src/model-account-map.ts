@@ -15,7 +15,7 @@ export function listKnownCopilotModels(store: StoreFile): string[] {
 }
 
 export function listAssignableAccountsForModel(store: StoreFile, modelID: string): Array<{ name: string; entry: AccountEntry }> {
-  const assignedName = store.modelAccountAssignments?.[modelID]?.[0]
+  const assignedName = store.modelAccountAssignments?.[modelID]
   const names = [...new Set(
     Object.entries(store.accounts)
       .filter(([name, entry]) => (entry.models?.available ?? []).includes(modelID) || assignedName === name)
@@ -63,14 +63,15 @@ function resolveCandidatesFromNames(
 }
 
 export function resolveCopilotModelAccounts(store: StoreFile, modelID?: string): ResolvedModelAccountCandidate[] {
-  const hasMappedGroup = Boolean(
+  const hasExplicitAssignment = Boolean(
     modelID
     && store.modelAccountAssignments
     && Object.prototype.hasOwnProperty.call(store.modelAccountAssignments, modelID),
   )
 
-  if (hasMappedGroup) {
-    const mapped = resolveCandidatesFromNames(store, (store.modelAccountAssignments?.[modelID!] ?? []).slice(0, 1), "model", modelID)
+  if (hasExplicitAssignment) {
+    const mappedName = store.modelAccountAssignments?.[modelID!]
+    const mapped = resolveCandidatesFromNames(store, mappedName ? [mappedName] : [], "model", modelID)
     return mapped
   }
 
@@ -87,24 +88,14 @@ export function rewriteModelAccountAssignments(store: StoreFile, rename: Record<
   const current = store.modelAccountAssignments
   if (!current) return
 
-  const next = Object.fromEntries(
-    Object.entries(current)
-      .map(([modelID, accountNames]) => {
-        const seen = new Set<string>()
-        const resolvedNames: string[] = []
-        for (const originalName of accountNames) {
-          const mappedName = Object.prototype.hasOwnProperty.call(rename, originalName)
-            ? rename[originalName]
-            : originalName
-          if (typeof mappedName !== "string" || !store.accounts[mappedName] || seen.has(mappedName)) continue
-          seen.add(mappedName)
-          resolvedNames.push(mappedName)
-          break
-        }
-        return [modelID, resolvedNames] as const
-      })
-      .filter(([, accountNames]) => accountNames.length > 0),
-  )
+  const next: Record<string, string> = {}
+  for (const [modelID, originalName] of Object.entries(current)) {
+    const mappedName = Object.prototype.hasOwnProperty.call(rename, originalName)
+      ? rename[originalName]
+      : originalName
+    if (typeof mappedName !== "string" || !store.accounts[mappedName]) continue
+    next[modelID] = mappedName
+  }
 
   if (Object.keys(next).length === 0) {
     delete store.modelAccountAssignments

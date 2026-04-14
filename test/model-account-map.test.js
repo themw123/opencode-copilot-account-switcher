@@ -61,7 +61,7 @@ test("resolveCopilotModelAccounts prefers mapped account and otherwise uses acti
   const store = {
     active: "main",
     modelAccountAssignments: {
-      "gpt-5": ["alt"],
+      "gpt-5": "alt",
     },
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
@@ -128,7 +128,7 @@ test("resolveCopilotModelAccounts returns no candidates when mapped account is u
   const store = {
     active: "main",
     modelAccountAssignments: {
-      "gpt-5": ["missing"],
+      "gpt-5": "missing",
     },
     accounts: {
       main: {
@@ -157,11 +157,11 @@ test("resolveCopilotModelAccounts returns no candidates when mapped account is u
   assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), [])
 })
 
-test("resolveCopilotModelAccounts returns no candidates when explicit model mapping is empty", () => {
+test("resolveCopilotModelAccounts returns no candidates when explicit model mapping is blank", () => {
   const store = {
     active: "main",
     modelAccountAssignments: {
-      "gpt-5": [],
+      "gpt-5": "",
     },
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
@@ -204,11 +204,11 @@ test("resolveCopilotModelAccounts uses active even when legacy activeAccountName
   assert.deepEqual(resolveCopilotModelAccounts(store, "gpt-5").map((item) => item.name), ["main"])
 })
 
-test("resolveCopilotModelAccount returns the first candidate from group resolution", () => {
+test("resolveCopilotModelAccount returns the mapped candidate", () => {
   const store = {
     active: "main",
     modelAccountAssignments: {
-      "gpt-5": ["alt"],
+      "gpt-5": "alt",
     },
     accounts: {
       main: { name: "main", refresh: "r1", access: "a1", expires: 0 },
@@ -234,8 +234,8 @@ test("rewriteModelAccountAssignments renames and drops stale account mappings", 
       renamed: { name: "renamed", refresh: "r3", access: "a3", expires: 0 },
     },
     modelAccountAssignments: {
-      "gpt-5": ["alt", "missing"],
-      "o3": ["missing"],
+      "gpt-5": "alt",
+      "o3": "missing",
     },
   }
 
@@ -245,6 +245,6 @@ test("rewriteModelAccountAssignments renames and drops stale account mappings", 
   })
 
   assert.deepEqual(store.modelAccountAssignments, {
-    "gpt-5": ["renamed"],
+    "gpt-5": "renamed",
   })
 })

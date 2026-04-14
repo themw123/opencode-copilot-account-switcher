@@ -55,7 +55,7 @@ type AdapterDependencies = {
     store: StoreFile,
     selectors?: {
       selectModel?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
-      selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
+      selectAccount?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
     },
   ) => Promise<boolean>
   clearAllAccounts?: (store: StoreFile) => void

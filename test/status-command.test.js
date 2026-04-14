@@ -321,8 +321,8 @@ test("status command success sorts model groups by model key and shows one confi
       loadStore: async () => ({
         active: "alice",
         modelAccountAssignments: {
-          "gpt-4.1": ["charlie"],
-          "claude-3.7": ["alice"],
+          "gpt-4.1": "charlie",
+          "claude-3.7": "alice",
         },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -414,8 +414,8 @@ test("status command refreshes quota, persists store, and ends with controlled i
       loadStore: async () => ({
         active: "alice",
         modelAccountAssignments: {
-          "gpt-4.1": ["bob"],
-          "claude-3.7": ["alice"],
+          "gpt-4.1": "bob",
+          "claude-3.7": "alice",
         },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -565,7 +565,7 @@ test("status command success renders routing assignment names directly from mode
       loadStore: async () => ({
         active: "alice",
         modelAccountAssignments: {
-          "gpt-4.1": ["ghost"],
+          "gpt-4.1": "ghost",
         },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -599,7 +599,7 @@ test("status command success renders routing assignment names directly from mode
   assert.doesNotMatch(successMessage, /^路由组:/m)
 })
 
-test("status command success skips empty model groups instead of rendering blank 50-char row", async () => {
+test("status command success skips blank model assignments instead of rendering blank 50-char row", async () => {
   const calls = []
   const { handleStatusCommand } = await import("../dist/status-command.js")
 
@@ -613,8 +613,8 @@ test("status command success skips empty model groups instead of rendering blank
       loadStore: async () => ({
         active: "alice",
         modelAccountAssignments: {
-          "gpt-4.1": [],
-          "claude-3.7": ["alice"],
+          "gpt-4.1": "",
+          "claude-3.7": "alice",
         },
         accounts: {
           alice: { name: "alice", refresh: "ghu_x", access: "ghu_x", expires: 0 },
@@ -661,7 +661,7 @@ test("status command success renders single-account premium rows with fixed-widt
       loadStore: async () => ({
         active: "alpha.super.long.username",
         modelAccountAssignments: {
-          "gpt-4.1": ["charlie"],
+          "gpt-4.1": "charlie",
         },
         accounts: {
           "alpha.super.long.username": { name: "alpha.super.long.username", refresh: "r1", access: "a1", expires: 0 },
@@ -738,7 +738,7 @@ test("status command success truncates overflow username with middle ellipsis in
       loadStore: async () => ({
         active: "verylongusername_tail",
         modelAccountAssignments: {
-          "gpt-4.1": ["verylongusername_tail"],
+          "gpt-4.1": "verylongusername_tail",
         },
         accounts: {
           verylongusername_tail: { name: "verylongusername_tail", refresh: "r", access: "a", expires: 0 },

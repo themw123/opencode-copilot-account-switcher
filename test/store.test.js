@@ -170,10 +170,10 @@ test("parseStore keeps only the first valid model assignment and ignores legacy 
   )
 
   assert.equal(store.activeAccountNames, undefined)
-  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["main"] })
+  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": "main" })
 })
 
-test("parseStore migrates legacy string model assignment into single-element array", () => {
+test("parseStore preserves legacy string model assignment as single account", () => {
   const store = parseStore(
     JSON.stringify({
       active: "main",
@@ -187,7 +187,7 @@ test("parseStore migrates legacy string model assignment into single-element arr
     }),
   )
 
-  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": ["alt"] })
+  assert.deepEqual(store.modelAccountAssignments, { "gpt-5": "alt" })
 })
 
 test("parseStore throws on malformed JSON for strict readers", () => {

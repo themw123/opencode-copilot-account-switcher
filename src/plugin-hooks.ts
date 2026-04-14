@@ -108,7 +108,6 @@ type WechatBridgeClientShape = WechatBridgeLifecycleInput["client"]
 const SESSION_BINDING_IDLE_TTL_MS = 30 * 60 * 1000
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000
 const RATE_LIMIT_HIT_THRESHOLD = 3
-const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000
 const MAX_SESSION_BINDINGS = 256
 const TOUCH_WRITE_CACHE_IDLE_TTL_MS = 30 * 60 * 1000
 const MAX_TOUCH_WRITE_CACHE_ENTRIES = 2048
@@ -704,14 +703,14 @@ function normalizeStoreForRouting(store: StoreFile) {
   if (!assignments) return store
 
   let changed = false
-  const normalized: Record<string, string[]> = {}
+  const normalized: Record<string, string> = {}
   for (const [modelID, candidate] of Object.entries(assignments as Record<string, unknown>)) {
-    if (Array.isArray(candidate)) {
+    if (typeof candidate === "string" && candidate.length > 0) {
       normalized[modelID] = candidate
       continue
     }
-    if (typeof candidate === "string" && candidate.length > 0) {
-      normalized[modelID] = [candidate]
+    if (Array.isArray(candidate) && typeof candidate[0] === "string" && candidate[0].length > 0) {
+      normalized[modelID] = candidate[0]
       changed = true
       continue
     }
@@ -1208,7 +1207,7 @@ export function buildPluginHooks(input: {
         : {
             reason: toReasonByInitiator(initiator),
           }
-      const hasExplicitModelGroup = Boolean(
+      const hasExplicitModelAssignment = Boolean(
         latestStore
         && typeof modelID === "string"
         && modelID.length > 0
@@ -1216,7 +1215,7 @@ export function buildPluginHooks(input: {
         && Object.prototype.hasOwnProperty.call(latestStore.modelAccountAssignments, modelID),
       )
       const hasUsableExplicitModelCandidate = candidates.some((item) => item.source === "model")
-      if (hasExplicitModelGroup && !hasUsableExplicitModelCandidate) {
+      if (hasExplicitModelAssignment && !hasUsableExplicitModelCandidate) {
         throw new Error(`No usable account for model ${modelID}`)
       }
       const resolved = candidates[0]

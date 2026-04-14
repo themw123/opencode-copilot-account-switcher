@@ -99,19 +99,19 @@ function buildSuccessMessage(store: StoreFile, _name: string) {
     }))))
   }
 
-  let hasModelRouteGroup = false
+  let hasModelAssignment = false
   for (const modelID of modelIDs) {
-    const names = store.modelAccountAssignments?.[modelID]?.slice(0, 1) ?? []
-    if (names.length === 0) continue
-    hasModelRouteGroup = true
+    const assignedName = store.modelAccountAssignments?.[modelID]
+    if (!assignedName) continue
+    hasModelAssignment = true
     lines.push(`[${modelID}]`)
-    lines.push(...renderAccountGrid(names.map((name) => ({
-      name,
-      quota: formatPremiumQuota(store.accounts[name]?.quota),
-    }))))
+    lines.push(...renderAccountGrid([{
+      name: assignedName,
+      quota: formatPremiumQuota(store.accounts[assignedName]?.quota),
+    }]))
   }
 
-  if (!hasModelRouteGroup) {
+  if (!hasModelAssignment) {
     lines.push("[routes]")
     lines.push("(none)")
   }

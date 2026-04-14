@@ -1885,7 +1885,7 @@ test("openai provider chain never executes copilot routing or auth-loader semant
       loopSafetyEnabled: false,
       networkRetryEnabled: true,
       activeAccountNames: ["main"],
-      modelAccountAssignments: { "gpt-5": ["main"] },
+      modelAccountAssignments: { "gpt-5": "main" },
     }),
     loadCommonSettings: async () => ({
       networkRetryEnabled: true,
@@ -4922,7 +4922,7 @@ test("surfaces a clear error when an explicit model account has no usable accoun
       active: "main",
       activeAccountNames: ["main"],
       modelAccountAssignments: {
-        "gpt-5": ["alt"],
+        "gpt-5": "alt",
       },
       accounts: {
         main: {
@@ -5206,7 +5206,7 @@ test("plugin auth loader evicts stale session bindings when binding cache grows 
   assert.equal(lastCall?.auth?.refresh, "main-refresh")
 })
 
-test("configureModelAccountAssignments stores only the first selected account", async () => {
+test("configureModelAccountAssignments stores the selected account", async () => {
   const { configureModelAccountAssignments } = await import("../dist/plugin.js")
 
   const store = {
@@ -5243,12 +5243,12 @@ test("configureModelAccountAssignments stores only the first selected account", 
       modelSelections += 1
       return modelSelections === 1 ? "gpt-5" : null
     },
-    selectAccounts: async () => ["alt", "org"],
+    selectAccount: async () => "alt",
   })
 
   assert.equal(changed, true)
   assert.equal(modelSelections, 2)
-  assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt"])
+  assert.equal(store.modelAccountAssignments?.["gpt-5"], "alt")
 })
 
 test("configureModelAccountAssignments stays in the model submenu after saving an assignment", async () => {
@@ -5284,12 +5284,12 @@ test("configureModelAccountAssignments stays in the model submenu after saving a
       if (modelSelections === 1) return "gpt-5"
       return null
     },
-    selectAccounts: async () => ["alt"],
+    selectAccount: async () => "alt",
   })
 
   assert.equal(changed, true)
   assert.deepEqual(seenModelHints, ["uses selected account: main", "uses alt"])
-  assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt"])
+  assert.equal(store.modelAccountAssignments?.["gpt-5"], "alt")
 })
 
 test("configureModelAccountAssignments hint uses selected account wording", async () => {
@@ -5346,7 +5346,7 @@ test("clearAllAccounts clears active selection and model overrides", async () =>
       alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
     },
     modelAccountAssignments: {
-      "gpt-5": ["alt"],
+      "gpt-5": "alt",
     },
   }
 
@@ -5396,16 +5396,14 @@ test("removeAccountFromStore immediately removes deleted account from modelAccou
       alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
     },
     modelAccountAssignments: {
-      "gpt-5": ["main"],
-      "claude-3.7": ["main"],
+      "gpt-5": "main",
+      "claude-3.7": "main",
     },
   }
 
   removeAccountFromStore(store, "main")
 
-  const stillContainsDeleted = Object.values(store.modelAccountAssignments ?? {}).some((entry) => Array.isArray(entry)
-    ? entry.includes("main")
-    : entry === "main")
+  const stillContainsDeleted = Object.values(store.modelAccountAssignments ?? {}).some((entry) => entry === "main")
   assert.equal(stillContainsDeleted, false)
 })
 

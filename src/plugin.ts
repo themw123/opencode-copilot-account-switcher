@@ -191,7 +191,7 @@ export async function configureModelAccountAssignments(
   store: StoreFile,
   selectors?: {
     selectModel?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
-    selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
+    selectAccount?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
   },
 ) {
   return configureModelAccountAssignmentsWithSelection(store, selectors)
@@ -201,7 +201,7 @@ async function configureModelAccountAssignmentsWithSelection(
   store: StoreFile,
   selectors?: {
     selectModel?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
-    selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
+    selectAccount?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string | null>
   },
 ) {
   const models = listKnownCopilotModels(store)
@@ -217,8 +217,8 @@ async function configureModelAccountAssignmentsWithSelection(
     const modelOptions = models.map((model) => ({
       label: model,
       value: model,
-      hint: store.modelAccountAssignments?.[model]?.[0]
-        ? `uses ${store.modelAccountAssignments[model]?.[0]}`
+      hint: store.modelAccountAssignments?.[model]
+        ? `uses ${store.modelAccountAssignments[model]}`
         : `uses selected account: ${fallbackLabel}`,
     }))
 
@@ -250,8 +250,8 @@ async function configureModelAccountAssignmentsWithSelection(
       hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
     }))
 
-    const selected = selectors?.selectAccounts
-      ? await selectors.selectAccounts(accountOptions)
+    const selected = selectors?.selectAccount
+      ? await selectors.selectAccount(accountOptions)
       : await select(
           [
             { label: "Use selected account", value: "" },
@@ -263,7 +263,7 @@ async function configureModelAccountAssignmentsWithSelection(
             clearScreen: true,
             autoSelectSingle: false,
           },
-        ).then((value) => value === null ? null : value ? [value] : [])
+        )
 
     if (selected === null) continue
 
@@ -276,13 +276,11 @@ async function configureModelAccountAssignmentsWithSelection(
       continue
     }
 
-    const assigned = selected
-      .filter((name) => Boolean(store.accounts[name]))
-    if (assigned.length === 0) continue
+    if (!store.accounts[selected]) continue
 
     store.modelAccountAssignments = {
       ...(store.modelAccountAssignments ?? {}),
-      [modelID]: [assigned[0]!],
+      [modelID]: selected,
     }
     changed = true
   }
