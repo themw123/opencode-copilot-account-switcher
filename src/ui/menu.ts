@@ -266,6 +266,49 @@ function getStatusBadge(status: AccountStatus | undefined): string {
   return ""
 }
 
+type QuotaSnapshot = {
+  remaining?: number
+  entitlement?: number
+  unlimited?: boolean
+}
+
+function getPrimaryQuotaSnapshot(account: AccountInfo): QuotaSnapshot | undefined {
+  return account.quota?.premium ?? account.quota?.chat ?? account.quota?.completions
+}
+
+function getUsedQuotaPercent(snapshot?: QuotaSnapshot): number | undefined {
+  if (!snapshot || snapshot.unlimited) return undefined
+  if (typeof snapshot.entitlement !== "number" || !Number.isFinite(snapshot.entitlement) || snapshot.entitlement <= 0) {
+    return undefined
+  }
+  if (typeof snapshot.remaining !== "number" || !Number.isFinite(snapshot.remaining)) {
+    return undefined
+  }
+
+  const used = ((snapshot.entitlement - snapshot.remaining) / snapshot.entitlement) * 100
+  return Math.max(0, Math.min(100, used))
+}
+
+function formatUsedQuotaPercent(snapshot?: QuotaSnapshot): string {
+  const percent = getUsedQuotaPercent(snapshot)
+  return percent === undefined ? "Quota n/a" : `${percent.toFixed(1).replace(".", ",")} %`
+}
+
+function renderQuotaMeter(snapshot?: QuotaSnapshot): string {
+  const percent = getUsedQuotaPercent(snapshot)
+  if (percent === undefined) return "[----------]"
+  const filled = Math.max(0, Math.min(10, Math.round(percent / 10)))
+  return `[${"#".repeat(filled)}${"-".repeat(10 - filled)}]`
+}
+
+function getQuotaColor(snapshot?: QuotaSnapshot): MenuItem<MenuAction>["color"] {
+  const percent = getUsedQuotaPercent(snapshot)
+  if (percent === undefined) return "cyan"
+  if (percent >= 80) return "red"
+  if (percent >= 50) return "yellow"
+  return "green"
+}
+
 export function buildMenuItems(input: {
   provider?: MenuProvider
   accounts: AccountInfo[]
@@ -391,37 +434,26 @@ export function buildMenuItems(input: {
   }
 
   return [
+    { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
+    ...input.accounts.map((account) => {
+      const statusBadge = getStatusBadge(account.status)
+      const currentBadge = account.isCurrent ? ` ${ANSI.cyan}*${ANSI.reset}` : ""
+      const primaryQuota = getPrimaryQuotaSnapshot(account)
+      const numbered = `${account.index + 1}. ${account.name}`
+      const label = `${numbered}${currentBadge}${statusBadge ? " " + statusBadge : ""} ${formatUsedQuotaPercent(primaryQuota)}`
+      return {
+        label,
+        hint: renderQuotaMeter(primaryQuota),
+        value: { type: "switch" as const, account },
+        color: getQuotaColor(primaryQuota),
+      }
+    }),
+    { label: "", value: { type: "cancel" }, separator: true },
     ...providerActions,
     { label: "", value: { type: "cancel" }, separator: true },
     ...commonSettings,
     { label: "", value: { type: "cancel" }, separator: true },
     ...providerSettings,
-    { label: "", value: { type: "cancel" }, separator: true },
-    { label: copy.accountsHeading, value: { type: "cancel" }, kind: "heading" },
-    ...input.accounts.map((account) => {
-      const statusBadge = getStatusBadge(account.status)
-      const currentBadge = account.isCurrent ? ` ${ANSI.cyan}*${ANSI.reset}` : ""
-      const format = (s?: { remaining?: number; entitlement?: number; unlimited?: boolean }) =>
-        s?.unlimited ? "∞" : s?.remaining !== undefined && s?.entitlement !== undefined ? `${s.remaining}/${s.entitlement}` : "?"
-      const quotaBadge = account.quota
-        ? ` ${ANSI.dim}[${format(account.quota.premium)}|${format(account.quota.chat)}|${format(account.quota.completions)}]${ANSI.reset}`
-        : ""
-      const numbered = `${account.index + 1}. ${account.name}`
-      const label = `${numbered}${currentBadge}${statusBadge ? " " + statusBadge : ""}${quotaBadge}`
-      const detail = [
-        account.workspaceName,
-        account.lastUsed ? formatRelativeTime(account.lastUsed) : undefined,
-        account.plan,
-        account.models ? `${account.models.enabled}/${account.models.enabled + account.models.disabled} mods` : undefined,
-      ]
-        .filter(Boolean)
-        .join(" • ")
-      return {
-        label,
-        hint: detail || undefined,
-        value: { type: "switch" as const, account },
-      }
-    }),
     { label: "", value: { type: "cancel" }, separator: true },
     { label: copy.dangerHeading, value: { type: "cancel" }, kind: "heading" },
     { label: copy.removeAll, value: { type: "remove-all" }, color: "red" },

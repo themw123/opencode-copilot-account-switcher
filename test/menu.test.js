@@ -441,10 +441,55 @@ test("buildMenuItems keeps section order stable for Copilot", () => {
   assert.notEqual(providerHeadingIndex, -1)
   assert.notEqual(accountsHeadingIndex, -1)
   assert.notEqual(dangerHeadingIndex, -1)
-  assert.equal(actionsHeadingIndex < commonHeadingIndex, true)
-  assert.equal(commonHeadingIndex < providerHeadingIndex, true)
-  assert.equal(providerHeadingIndex < accountsHeadingIndex, true)
-  assert.equal(accountsHeadingIndex < dangerHeadingIndex, true)
+   assert.equal(accountsHeadingIndex < actionsHeadingIndex, true)
+   assert.equal(actionsHeadingIndex < commonHeadingIndex, true)
+   assert.equal(commonHeadingIndex < providerHeadingIndex, true)
+   assert.equal(accountsHeadingIndex < dangerHeadingIndex, true)
+})
+
+test("buildMenuItems renders account quota as used percentage with a meter hint", () => {
+  const items = buildMenuItems({
+    provider: "copilot",
+    accounts: [{
+      name: "alice",
+      index: 0,
+      quota: {
+        premium: { remaining: 17, entitlement: 34 },
+      },
+    }],
+    refresh: { enabled: false, minutes: 15 },
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+  })
+
+  const accountItem = items.find((item) => item.label.includes("alice"))
+  assert.equal(accountItem?.label, "1. alice 50,0 %")
+  assert.equal(accountItem?.hint, "[#####-----]")
+  assert.equal(accountItem?.color, "yellow")
+})
+
+test("buildMenuItems removes legacy account detail hint text", () => {
+  const items = buildMenuItems({
+    provider: "copilot",
+    accounts: [{
+      name: "alice",
+      index: 0,
+      workspaceName: "individual",
+      lastUsed: Date.now(),
+      models: { enabled: 17, disabled: 17 },
+      quota: {
+        premium: { remaining: 34, entitlement: 34 },
+      },
+    }],
+    refresh: { enabled: false, minutes: 15 },
+    loopSafetyEnabled: false,
+    networkRetryEnabled: false,
+  })
+
+  const accountItem = items.find((item) => item.label.includes("alice"))
+  assert.equal(accountItem?.label.includes("17/34 mods"), false)
+  assert.equal(accountItem?.hint?.includes("individual"), false)
+  assert.equal(accountItem?.hint?.includes("today"), false)
 })
 
 test("buildAccountActionItems keeps Codex account submenu free of Copilot-only model wording", () => {
@@ -530,7 +575,7 @@ test("showMenu keeps provider-specific account submenu dispatch for codex and co
   assert.deepEqual(providers, ["copilot", "codex"])
 })
 
-test("buildMenuItems shows codex workspaceName first in account hint", () => {
+test("buildMenuItems shows codex quota meter instead of workspace hint", () => {
   const items = buildMenuItems({
     provider: "codex",
     accounts: [{
@@ -547,5 +592,6 @@ test("buildMenuItems shows codex workspaceName first in account hint", () => {
   })
 
   const accountItem = items.find((item) => item.label.includes("acct_workspace"))
-  assert.equal(accountItem?.hint, "workspace-visible • team")
+  assert.equal(accountItem?.label, "1. acct_workspace 58,0 %")
+  assert.equal(accountItem?.hint, "[######----]")
 })
