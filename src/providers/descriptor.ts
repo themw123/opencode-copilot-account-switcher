@@ -47,7 +47,6 @@ export const COPILOT_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
     "add-account",
     "import-auth",
     "quota-refresh",
-    "configure-default-account-group",
     "assign-model-account",
     "toggle-loop-safety",
     "toggle-network-retry",

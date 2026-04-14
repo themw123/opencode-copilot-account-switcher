@@ -8,7 +8,6 @@ import {
   appendRoutingEvent,
   appendRouteDecisionEvent,
   appendSessionTouchEvent,
-  buildCandidateAccountLoads,
   compactRoutingState,
   compactRoutingSnapshot,
   foldRoutingEvents,
@@ -333,73 +332,6 @@ test("session-touch write path supports injected append handler", async () => {
   assert.equal(captured[0]?.event?.sessionID, "s1")
 })
 
-test("load comparison sums touch counts within 30 minutes", () => {
-  const now = 2_000_000
-  const loads = buildCandidateAccountLoads({
-    snapshot: {
-      accounts: {
-        main: {
-          touchBuckets: {
-            [String(Math.floor((now - 10_000) / 60_000) * 60_000)]: 2,
-            [String(Math.floor((now - (30 * 60 * 1000) - 1) / 60_000) * 60_000)]: 1,
-          },
-        },
-        alt: {
-          touchBuckets: {
-            [String(Math.floor((now - 5_000) / 60_000) * 60_000)]: 1,
-          },
-        },
-      },
-      appliedSegments: [],
-    },
-    candidateAccountNames: ["main", "alt", "missing"],
-    now,
-  })
-
-  assert.equal(loads.get("main"), 3)
-  assert.equal(loads.get("alt"), 1)
-  assert.equal(loads.get("missing"), 0)
-})
-
-test("buildCandidateAccountLoads sums touch buckets within the rolling window", async () => {
-  const { buildCandidateAccountLoads } = await import("../dist/routing-state.js")
-
-  const loads = buildCandidateAccountLoads({
-    snapshot: {
-      accounts: {
-        main: { touchBuckets: { "1000": 2, "61000": 3 } },
-        alt: { touchBuckets: { "1000": 1 } },
-      },
-      appliedSegments: [],
-    },
-    candidateAccountNames: ["main", "alt"],
-    now: 61_000,
-  })
-
-  assert.equal(loads.get("main"), 5)
-  assert.equal(loads.get("alt"), 1)
-})
-
-test("buildCandidateAccountLoads includes the bucket overlapping the rolling cutoff", () => {
-  const now = (30 * 60 * 1000) + 60_001
-  const loads = buildCandidateAccountLoads({
-    snapshot: {
-      accounts: {
-        main: {
-          touchBuckets: {
-            "0": 2,
-            "60000": 4,
-          },
-        },
-      },
-      appliedSegments: [],
-    },
-    candidateAccountNames: ["main"],
-    now,
-  })
-
-  assert.equal(loads.get("main"), 4)
-})
 
 test("readRoutingState converts legacy sessions into touch buckets", async () => {
   await withRoutingStateDir(async (dir) => {

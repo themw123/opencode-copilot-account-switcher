@@ -10,6 +10,7 @@ import { promisify } from "node:util"
 const execFile = promisify(execFileCallback)
 const fakeCommit = "89abcdef0123456789abcdef0123456789abcdef"
 const syncScriptPath = fileURLToPath(new URL("../scripts/sync-codex-upstream.mjs", import.meta.url))
+const supportsExperimentalStripTypes = Number(process.versions.node.split(".")[0] ?? "0") >= 22
 
 function createCodexFixtureSource() {
   return `import { Log } from "../util/log"
@@ -147,6 +148,11 @@ test("codex sync script generates snapshot from fixture source", async () => {
 })
 
 test("generated snapshot executes browser and headless auth methods through runtime shims", async () => {
+  if (!supportsExperimentalStripTypes) {
+    test.skip("current Node does not support --experimental-strip-types")
+    return
+  }
+
   const fixture = await makeSyncFixture()
   const runtimeOutput = join(fixture.dir, "codex-plugin.snapshot.ts")
   const runtimeCheck = join(fixture.dir, "runtime-check.mjs")

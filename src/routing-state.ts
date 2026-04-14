@@ -102,11 +102,7 @@ export type RouteDecisionEvent = {
   sessionIDPresent: boolean
   groupSource: "model" | "active"
   candidateNames: string[]
-  loads: Record<string, number>
-  reason: "regular" | "subagent" | "compaction" | "user-reselect" | "unbound-fallback" | "rate-limit-switch"
-  switched: boolean
-  switchFrom?: string
-  switchBlockedBy?: "no-cooled-down-candidate" | "replacement-load-higher" | "routing-state-read-failed" | "no-replacement-candidate"
+  reason: "regular" | "subagent" | "compaction" | "user-reselect"
   touchWriteOutcome: "written" | "throttled" | "skipped-missing-session" | "failed"
   touchWriteError?: string
   rateLimitMatched: boolean
@@ -225,54 +221,10 @@ export async function appendSessionTouchEvent(input: AppendSessionTouchEventInpu
   return true
 }
 
-export function buildCandidateAccountLoads(input: {
-  snapshot: RoutingSnapshot
-  candidateAccountNames: string[]
-  now: number
-}) {
-  const loads = new Map<string, number>()
-  const cutoff = input.now - SESSION_WINDOW_MS
-
-  for (const accountName of input.candidateAccountNames) {
-    const touchBuckets = input.snapshot.accounts[accountName]?.touchBuckets
-    if (!touchBuckets) {
-      loads.set(accountName, 0)
-      continue
-    }
-
-    let total = 0
-    for (const [bucket, count] of Object.entries(touchBuckets)) {
-      const at = Number(bucket)
-      if (
-        Number.isFinite(at)
-        && bucketOverlapsWindow(at, cutoff)
-        && typeof count === "number"
-        && Number.isFinite(count)
-      ) {
-        total += count
-      }
-    }
-    loads.set(accountName, total)
-  }
-
-  return loads
-}
-
 export function getAccountLastRateLimitedAt(snapshot: RoutingSnapshot, accountName: string): number | undefined {
   const value = snapshot.accounts[accountName]?.lastRateLimitedAt
   if (typeof value !== "number" || Number.isFinite(value) === false) return undefined
   return value
-}
-
-export function isAccountRateLimitCooledDown(input: {
-  snapshot: RoutingSnapshot
-  accountName: string
-  now: number
-  cooldownMs: number
-}) {
-  const lastRateLimitedAt = getAccountLastRateLimitedAt(input.snapshot, input.accountName)
-  if (lastRateLimitedAt === undefined) return true
-  return input.now - lastRateLimitedAt >= input.cooldownMs
 }
 
 function cloneSnapshot(input: RoutingSnapshot): RoutingSnapshot {

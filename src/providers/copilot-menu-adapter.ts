@@ -15,7 +15,7 @@ import {
   type CommonSettingsStore,
 } from "../common-settings-store.js"
 import type { AccountInfo } from "../ui/menu.js"
-import { select, selectMany } from "../ui/select.js"
+import { select } from "../ui/select.js"
 import { authPath, readAuth, readStore, type AccountEntry, type StoreFile, type StoreWriteDebugMeta } from "../store.js"
 
 const CLIENT_ID = "Ov23li8tweQw6odWQebz"
@@ -903,38 +903,6 @@ export function createCopilotMenuAdapter(inputDeps: AdapterDependencies): Provid
             result,
           }
         }
-      }
-
-      if (action.name === "list-models") {
-        const modelID = await select(
-          [
-            { label: "Back", value: "" },
-            ...listKnownCopilotModels(store).map((name) => ({ label: name, value: name })),
-          ],
-          {
-            message: "Choose a Copilot model",
-            subtitle: "Inspect current assignment candidates",
-            clearScreen: true,
-            autoSelectSingle: false,
-          },
-        )
-        if (!modelID) return false
-        const options = listAssignableAccountsForModel(store, modelID)
-        await selectMany(
-          options.map((item) => ({
-            label: item.name,
-            value: item.name,
-            hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
-          })),
-          {
-            message: modelID,
-            subtitle: "Inspect accounts exposing this model",
-            clearScreen: true,
-            autoSelectSingle: false,
-            minSelected: 0,
-          },
-        )
-        return false
       }
 
       return false

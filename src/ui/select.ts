@@ -76,12 +76,6 @@ export interface SelectOptions {
   autoSelectSingle?: boolean
 }
 
-export interface SelectManyOptions extends SelectOptions {
-  backLabel?: string
-  minSelected?: number
-  initialSelected?: number[]
-}
-
 const ESCAPE_TIMEOUT_MS = 50
 
 const ANSI_REGEX = new RegExp("\\x1b\\[[0-9;]*m", "g")
@@ -332,55 +326,4 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions): P
     render()
     stdin.on("data", onKey)
   })
-}
-
-export async function selectMany<T>(items: MenuItem<T>[], options: SelectManyOptions): Promise<T[] | null> {
-  const selectable = items
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => !item.disabled && !item.separator && item.kind !== "heading")
-
-  if (selectable.length === 0) return []
-
-  const selected = new Set<number>()
-  for (const index of options.initialSelected ?? []) {
-    if (Number.isInteger(index) && index >= 0 && index < selectable.length) {
-      selected.add(index)
-    }
-  }
-
-  const BACK = "__select_many_back__"
-
-  while (true) {
-    const menuItems: MenuItem<string>[] = [
-      { label: options.backLabel ?? "Back", value: BACK },
-      { label: "", value: "", separator: true },
-      ...selectable.map(({ item }, index) => {
-        const marker = selected.has(index) ? "[x]" : "[ ]"
-        return {
-          label: `${marker} ${item.label}`,
-          value: String(index),
-          hint: item.hint,
-          color: item.color,
-        } satisfies MenuItem<string>
-      }),
-    ]
-
-    const choice = await select(menuItems, {
-      ...options,
-      autoSelectSingle: false,
-      help: options.help ?? "Up/Down to select | Enter: toggle | Esc: back & save",
-    })
-
-    if (choice === null || choice === BACK) {
-      return selectable
-        .map(({ item }, index) => ({ item, index }))
-        .filter(({ index }) => selected.has(index))
-        .map(({ item }) => item.value)
-    }
-
-    const index = Number(choice)
-    if (!Number.isInteger(index) || index < 0 || index >= selectable.length) continue
-    if (selected.has(index)) selected.delete(index)
-    else selected.add(index)
-  }
 }

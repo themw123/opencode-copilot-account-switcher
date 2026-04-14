@@ -655,26 +655,6 @@ function stripInternalSessionHeader(request: Request | URL | string, init?: Requ
   })
 }
 
-function toLoadMap(value: Record<string, number> | Map<string, number> | undefined) {
-  if (value instanceof Map) return value
-
-  const loads = new Map<string, number>()
-  if (!value) return loads
-  for (const [name, count] of Object.entries(value)) {
-    if (typeof count !== "number" || Number.isFinite(count) === false) continue
-    loads.set(name, count)
-  }
-  return loads
-}
-
-function loadMapToRecord(loads: Map<string, number>, candidateNames: string[]) {
-  const result: Record<string, number> = {}
-  for (const name of candidateNames) {
-    result[name] = loads.get(name) ?? 0
-  }
-  return result
-}
-
 function toReasonByInitiator(initiator: string | null): RouteDecisionEvent["reason"] {
   if (initiator === "agent") return "subagent"
   if (initiator === "user") return "user-reselect"
@@ -700,9 +680,7 @@ function toConsumptionReasonText(reason: RouteDecisionEvent["reason"]) {
 function buildConsumptionToast(input: {
   accountName: string
   reason: RouteDecisionEvent["reason"]
-  switchFrom?: string
 }) {
-  void input.switchFrom
   return {
     message: `已使用 ${input.accountName}（${toConsumptionReasonText(input.reason)}）`,
     variant: "info" as const,
@@ -1029,7 +1007,6 @@ export function buildPluginHooks(input: {
 
   const classifyRequestReason = async (requestInput: {
     sessionID: string
-    hasExistingBinding: boolean
     request: Request | URL | string
     init?: RequestInit
   }): Promise<RequestClassification> => {
@@ -1084,7 +1061,6 @@ export function buildPluginHooks(input: {
     const canDetermineSessionAncestry = session !== undefined
     const isTrueChildSession = typeof session?.data?.parentID === "string" && session.data.parentID.length > 0
     void canDetermineSessionAncestry
-    void requestInput.hasExistingBinding
     return {
       reason: isTrueChildSession ? "subagent" : "regular",
     }
@@ -1223,11 +1199,9 @@ export function buildPluginHooks(input: {
         throw new Error("No active Copilot account configured")
       }
 
-      const hasExistingBinding = sessionID.length > 0 && sessionAccountBindings.has(sessionID)
       const classification = sessionID.length > 0
         ? await classifyRequestReason({
             sessionID,
-            hasExistingBinding,
             request: selectionRequest,
             init: selectionInit,
           })
@@ -1245,18 +1219,13 @@ export function buildPluginHooks(input: {
       if (hasExplicitModelGroup && !hasUsableExplicitModelCandidate) {
         throw new Error(`No usable account for model ${modelID}`)
       }
-      const loads = new Map<string, number>()
       const resolved = candidates[0]
       if (!resolved) {
         throw new Error("No usable Copilot account configured")
       }
 
       const candidateNames = candidates.map((item) => item.name)
-      let decisionLoads = loadMapToRecord(loads, candidateNames)
       let decisionReason: RouteDecisionEvent["reason"] = classification.reason
-      let decisionSwitched = false
-      let decisionSwitchFrom: string | undefined
-      let decisionSwitchBlockedBy: RouteDecisionEvent["switchBlockedBy"]
       let decisionRateLimitMatched = false
       let decisionRetryAfterMs: number | undefined
       let decisionTouchWriteOutcome: RouteDecisionEvent["touchWriteOutcome"] = "skipped-missing-session"
@@ -1404,15 +1373,11 @@ export function buildPluginHooks(input: {
           sessionIDPresent: sessionID.length > 0,
           groupSource: resolved.source,
           candidateNames,
-          loads: decisionLoads,
           chosenAccount: finalChosenAccount,
           chosenAccountAuthFingerprint,
           debugLinkId,
           networkRequestUsedInitHeaders,
           reason: decisionReason,
-          switched: decisionSwitched,
-          switchFrom: decisionSwitchFrom,
-          switchBlockedBy: decisionSwitchBlockedBy,
           touchWriteOutcome: decisionTouchWriteOutcome,
           touchWriteError: decisionTouchWriteError,
           rateLimitMatched: decisionRateLimitMatched,
@@ -1426,7 +1391,6 @@ export function buildPluginHooks(input: {
         const consumptionToast = buildConsumptionToast({
           accountName: finalChosenAccount,
           reason: decisionReason,
-          switchFrom: decisionSwitchFrom,
         })
         await showStatusToast({
           client: input.client,

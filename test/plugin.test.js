@@ -13,7 +13,6 @@ import { applyMenuAction } from "../dist/plugin-actions.js"
 import { buildPluginHooks as buildPluginHooksRaw } from "../dist/plugin-hooks.js"
 import { CODEX_PROVIDER_DESCRIPTOR, COPILOT_PROVIDER_DESCRIPTOR } from "../dist/providers/descriptor.js"
 import { getProviderDescriptorByKey, getProviderDescriptorByProviderID, listProviderDescriptors } from "../dist/providers/registry.js"
-import { buildCandidateAccountLoads } from "../dist/routing-state.js"
 import { LOOP_SAFETY_POLICY } from "../dist/loop-safety-plugin.js"
 import { setupIsolatedWechatStateRoot } from "./helpers/wechat-state-root.js"
 
@@ -1844,10 +1843,6 @@ test("openai provider loader uses codex official adapter and codex retry enhance
       calls.copilotFinalize += 1
       return undefined
     },
-    loadCandidateAccountLoads: async () => {
-      calls.copilotRouting += 1
-      return undefined
-    },
     loadOfficialChatHeaders: async () => {
       calls.copilotOfficial += 1
       return async () => {}
@@ -1904,9 +1899,6 @@ test("openai provider chain never executes copilot routing or auth-loader semant
     }),
     finalizeRequestForSelection: async () => {
       throw new Error("copilot finalize should not run")
-    },
-    loadCandidateAccountLoads: async () => {
-      throw new Error("copilot routing should not run")
     },
     appendRouteDecisionEventImpl: async () => {
       throw new Error("copilot route decision should not run")
@@ -3841,7 +3833,6 @@ test("plugin auth loader does not treat bare 429 responses as rate-limit hits wi
   assert.equal(decisions[2]?.rateLimitMatched, false)
   assert.equal(decisions[2]?.retryAfterMs, undefined)
   assert.equal(decisions[2]?.reason, "subagent")
-  assert.equal(decisions[2]?.switched, false)
 })
 
 test("records route decision evidence for request with successful touch write", async () => {
@@ -3873,12 +3864,8 @@ test("records route decision evidence for request with successful touch write", 
   assert.equal(decisions[0]?.sessionIDPresent, true)
   assert.equal(decisions[0]?.groupSource, "active")
   assert.deepEqual(decisions[0]?.candidateNames, ["main"])
-  assert.deepEqual(decisions[0]?.loads, { main: 0 })
   assert.equal(decisions[0]?.chosenAccount, "main")
   assert.equal(decisions[0]?.reason, "subagent")
-  assert.equal(decisions[0]?.switched, false)
-  assert.equal(decisions[0]?.switchFrom, undefined)
-  assert.equal(decisions[0]?.switchBlockedBy, undefined)
   assert.equal(decisions[0]?.touchWriteOutcome, "written")
   assert.equal(decisions[0]?.touchWriteError, undefined)
   assert.equal(decisions[0]?.rateLimitMatched, false)
@@ -4473,8 +4460,6 @@ test("rate-limit evidence no longer switches accounts after prior regular decisi
   assert.equal(decisions[0]?.reason, "regular")
   assert.equal(decisions[1]?.reason, "regular")
   assert.equal(decisions[2]?.reason, "regular")
-  assert.equal(decisions[2]?.switched, false)
-  assert.equal(decisions[2]?.switchFrom, undefined)
   assert.equal(decisions[2]?.chosenAccount, "main")
 })
 
@@ -4496,7 +4481,7 @@ test("keeps request fail-open when route decision append fails", async () => {
   assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
-test("records rate-limit evidence without switchFrom when switching is disabled", async () => {
+test("records rate-limit evidence without switch metadata when switching is disabled", async () => {
   let now = 8_000_000
   const decisions = []
   const harness = createSessionBindingHarness({
@@ -4530,16 +4515,13 @@ test("records rate-limit evidence without switchFrom when switching is disabled"
   assert.equal(decisions.length, 3)
   const event = decisions[2]
   assert.equal(event?.reason, "regular")
-  assert.equal(event?.switched, false)
-  assert.equal(event?.switchFrom, undefined)
-  assert.equal(event?.switchBlockedBy, undefined)
   assert.equal(event?.chosenAccount, "main")
-  assert.deepEqual(event?.loads, { main: 0 })
+  assert.deepEqual(event?.candidateNames, ["main"])
   assert.equal(event?.rateLimitMatched, true)
   assert.equal(event?.retryAfterMs, 5_000)
 })
 
-test("records route decision evidence without switch blockage when switching is disabled", async () => {
+test("records route decision evidence without switch bookkeeping when switching is disabled", async () => {
   let now = 9_000_000
   const decisions = []
   const harness = createSessionBindingHarness({
@@ -4571,9 +4553,6 @@ test("records route decision evidence without switch blockage when switching is 
   assert.equal(decisions.length, 3)
   const event = decisions[2]
   assert.equal(event?.reason, "subagent")
-  assert.equal(event?.switched, false)
-  assert.equal(event?.switchFrom, undefined)
-  assert.equal(event?.switchBlockedBy, undefined)
   assert.equal(event?.chosenAccount, "main")
   assert.equal(event?.rateLimitMatched, true)
 })
@@ -4937,83 +4916,6 @@ test("rate-limit responses stay fail-open when request body is already consumed"
   assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
 })
 
-test("keeps current account when no better candidate exists", async () => {
-  let currentNow = 2_000_000
-  const harness = createSessionBindingHarness({
-    now: () => currentNow,
-    loadCandidateAccountLoads: async () => ({
-      main: 0,
-      alt: 2,
-    }),
-    readRoutingStateImpl: async () => ({
-      accounts: {
-        main: {
-          sessions: {
-            s1: currentNow - 20_000,
-          },
-        },
-        alt: {
-          sessions: {
-            s9: currentNow - 10_000,
-          },
-          lastRateLimitedAt: currentNow - 5 * 60 * 1000,
-        },
-      },
-      appliedSegments: [],
-    }),
-    fetchImpl: async ({ auth }) => {
-      if (auth?.refresh === "main-refresh") {
-        return new Response(
-          JSON.stringify({ type: "error", error: { code: "rate_limit_exceeded" } }),
-          {
-            status: 429,
-            headers: {
-              "content-type": "application/json",
-            },
-          },
-        )
-      }
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-        },
-      })
-    },
-  })
-
-  await harness.sendRequest({ sessionID: "switch-2", initiator: "agent", model: "gpt-5" })
-  currentNow += 60_000
-  await harness.sendRequest({ sessionID: "switch-2", initiator: "agent", model: "gpt-5" })
-  currentNow += 60_000
-  const thirdResponse = await harness.sendRequest({ sessionID: "switch-2", initiator: "agent", model: "gpt-5" })
-
-  assert.equal(thirdResponse?.status, 429)
-  assert.equal(harness.outgoing.at(-1)?.auth?.refresh, "main-refresh")
-})
-
-test("fails open when routing-state read fails during candidate selection", async () => {
-  const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async () => {
-      throw new Error("routing-state broken")
-    },
-    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-      },
-    }),
-  })
-
-  const response = await harness.sendRequest({
-    sessionID: "fail-open-routing-state",
-    initiator: "agent",
-    model: "gpt-5",
-  })
-
-  assert.equal(response?.status, 200)
-})
-
 test("surfaces a clear error when an explicit model account has no usable account", async () => {
   const harness = createSessionBindingHarness({
     store: {
@@ -5051,40 +4953,6 @@ test("surfaces a clear error when an explicit model account has no usable accoun
     }),
     /No usable account configured for model gpt-5/i,
   )
-})
-
-test("plugin auth loader selection path ignores routing-state-derived loads when routing is strict", async () => {
-  const now = 2_000_000
-  const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ candidates }) => buildCandidateAccountLoads({
-      snapshot: {
-        accounts: {
-          main: {
-            touchBuckets: {
-              [String(now - 60_000)]: 3,
-            },
-          },
-          alt: {
-            touchBuckets: {
-              [String(now - 60_000)]: 1,
-            },
-          },
-        },
-        appliedSegments: [],
-      },
-      candidateAccountNames: candidates.map((item) => item.name),
-      now,
-    }),
-  })
-
-  await harness.sendRequest({
-    sessionID: "child-routing-loads",
-    initiator: "agent",
-    model: "gpt-5",
-  })
-
-  assert.equal(harness.outgoing.length, 1)
-  assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
 })
 
 test("plugin auth loader supports injected routing-state write path", async () => {
@@ -5315,45 +5183,8 @@ test("plain buildPluginHooks test instances default routing-state to isolated te
   assert.doesNotMatch(directories[0].replaceAll("\\", "/"), /\/\.local\/share\/opencode\/copilot-routing-state\/?$/)
 })
 
-test("session binding harness keeps tie selection deterministic without explicit random", async () => {
-  const originalRandom = Math.random
-  Math.random = () => 0.9
-
-  try {
-    const harness = createSessionBindingHarness({
-      loadCandidateAccountLoads: async () => ({
-        main: 2,
-        alt: 2,
-      }),
-    })
-
-    await harness.sendRequest({
-      sessionID: "child-tie-default-random",
-      initiator: "agent",
-      model: "gpt-5",
-    })
-
-    assert.equal(harness.outgoing.length, 1)
-    assert.equal(harness.outgoing[0]?.auth?.refresh, "main-refresh")
-  } finally {
-    Math.random = originalRandom
-  }
-})
-
 test("plugin auth loader evicts stale session bindings when binding cache grows too large", async () => {
-  let child0Hits = 0
-  const harness = createSessionBindingHarness({
-    loadCandidateAccountLoads: async ({ sessionID }) => {
-      if (sessionID === "child-0") {
-        child0Hits += 1
-        if (child0Hits === 1) {
-          return { main: 10, alt: 0 }
-        }
-        return { main: 0, alt: 10 }
-      }
-      return { main: 5, alt: 1 }
-    },
-  })
+  const harness = createSessionBindingHarness()
 
   for (let index = 0; index < 260; index += 1) {
     await harness.sendRequest({
@@ -5461,26 +5292,6 @@ test("configureModelAccountAssignments stays in the model submenu after saving a
   assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt"])
 })
 
-test("configureDefaultAccountGroup is no-op under strict account routing", async () => {
-  const { configureDefaultAccountGroup } = await import("../dist/plugin.js")
-
-  const store = {
-    active: "main",
-    accounts: {
-      main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
-      "student-2": { name: "student-2", refresh: "s2-refresh", access: "s2-access", expires: 0 },
-    },
-  }
-
-  const changed = await configureDefaultAccountGroup(store, {
-    selectAccounts: async () => ["main", "student-2"],
-  })
-
-  assert.equal(changed, false)
-  assert.equal(store.activeAccountNames, undefined)
-  assert.equal(store.active, "main")
-})
-
 test("configureModelAccountAssignments hint uses selected account wording", async () => {
   const { configureModelAccountAssignments } = await import("../dist/plugin.js")
 
@@ -5523,26 +5334,6 @@ test("configureModelAccountAssignments hint uses selected account wording", asyn
   assert.match(capturedModelOptions[0]?.hint ?? "", /uses selected account: solo/)
 })
 
-test("configureDefaultAccountGroup leaves active account unchanged when disabled", async () => {
-  const { configureDefaultAccountGroup } = await import("../dist/plugin.js")
-
-  const store = {
-    active: "manual-current",
-    accounts: {
-      "manual-current": { name: "manual-current", refresh: "mc-refresh", access: "mc-access", expires: 0 },
-      "student-1": { name: "student-1", refresh: "s1-refresh", access: "s1-access", expires: 0 },
-      "student-2": { name: "student-2", refresh: "s2-refresh", access: "s2-access", expires: 0 },
-    },
-  }
-
-  const changed = await configureDefaultAccountGroup(store, {
-    selectAccounts: async () => ["student-1", "student-2"],
-  })
-
-  assert.equal(changed, false)
-  assert.equal(store.active, "manual-current")
-  assert.equal(store.activeAccountNames, undefined)
-})
 
 test("clearAllAccounts clears active selection and model overrides", async () => {
   const { clearAllAccounts } = await import("../dist/plugin.js")
@@ -5651,20 +5442,15 @@ test("plugin auth loader sends the finalized request headers it used for classif
         methods: [],
       },
       loadStore: async () => ({
-        active: "main",
-        activeAccountNames: ["main", "alt"],
-        accounts: {
-          main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
-          alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
-        },
-        loopSafetyEnabled: false,
-        networkRetryEnabled: false,
-      }),
-      loadCandidateAccountLoads: async () => {
-        const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
-        loadCall += 1
-        return loads
+      active: "main",
+      activeAccountNames: ["main", "alt"],
+      accounts: {
+        main: { name: "main", refresh: "main-refresh", access: "main-access", expires: 0 },
+        alt: { name: "alt", refresh: "alt-refresh", access: "alt-access", expires: 0 },
       },
+      loopSafetyEnabled: false,
+      networkRetryEnabled: false,
+    }),
       finalizeRequestForSelection: async ({ request, init }) => ({
         request,
         init: {
@@ -5750,7 +5536,6 @@ test("route decision logs chosen account auth fingerprint for routed user turns"
       loopSafetyEnabled: false,
       networkRetryEnabled: false,
     }),
-    loadCandidateAccountLoads: async () => ({ main: 1, alt: 5 }),
     finalizeRequestForSelection: async ({ request, init }) => ({
       request,
       init: {
@@ -5813,7 +5598,6 @@ test("route decision logs debug link id for routed user turns", async () => {
       loopSafetyEnabled: false,
       networkRetryEnabled: false,
     }),
-    loadCandidateAccountLoads: async () => ({ main: 1, alt: 5 }),
     finalizeRequestForSelection: async ({ request, init }) => ({
       request,
       init: {
@@ -5946,11 +5730,6 @@ test("plugin auth loader avoids duplicate finalized headers when request already
 test("user-reselect toast and outbound x-initiator stay aligned for routed user turns", async () => {
   const toasts = []
   const outgoing = []
-  let loadCall = 0
-  const loadsByCall = [
-    { main: 4, alt: 1 },
-    { main: 1, alt: 5 },
-  ]
 
   const { plugin } = createPluginHooksTestHarness({
     auth: {
@@ -5967,11 +5746,6 @@ test("user-reselect toast and outbound x-initiator stay aligned for routed user 
       loopSafetyEnabled: false,
       networkRetryEnabled: false,
     }),
-    loadCandidateAccountLoads: async () => {
-      const loads = loadsByCall[loadCall] ?? loadsByCall.at(-1)
-      loadCall += 1
-      return loads
-    },
     finalizeRequestForSelection: async ({ request, init }) => ({
       request,
       init: {

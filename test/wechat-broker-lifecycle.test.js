@@ -1024,18 +1024,17 @@ test("broker future message 错误优先级: invalidMessage -> unauthorized -> n
     assert.equal(typeof registerAck.payload.sessionToken, "string")
     assert.equal(registerAck.payload.sessionToken.length > 0, true)
 
-    const notImplemented = await sendFrameAndReadResponse(
-      endpoint,
-      protocol.serializeEnvelope({
-        id: "future-implemented-check",
-        type: "replyQuestion",
-        instanceID: "instance-priority",
-        sessionToken: registerAck.payload.sessionToken,
-        payload: { answer: "ok" },
-      }),
-    )
+    const conn = await createPersistentConnection(endpoint)
+    const notImplemented = await conn.send({
+      id: "future-implemented-check",
+      type: "replyQuestion",
+      instanceID: "instance-priority",
+      sessionToken: registerAck.payload.sessionToken,
+      payload: { answer: "ok" },
+    })
     assert.equal(notImplemented.type, "error")
     assert.equal(notImplemented.payload.code, "notImplemented")
+    await conn.close()
 
     const heartbeatUnauthorized = await sendFrameAndReadResponse(
       endpoint,

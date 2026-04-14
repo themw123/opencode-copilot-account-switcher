@@ -1047,6 +1047,14 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
       }
     })
   })
+  const sockets = new Set<net.Socket>()
+
+  server.on("connection", (socket) => {
+    sockets.add(socket)
+    socket.once("close", () => {
+      sockets.delete(socket)
+    })
+  })
 
   const boundEndpoint = await listenOnBrokerEndpoint(server, endpoint)
 
@@ -1210,6 +1218,12 @@ export async function startBrokerServer(endpoint: string): Promise<BrokerServerH
     for (const record of registrationByInstanceID.values()) {
       if (!record.socket.destroyed) {
         record.socket.destroy()
+      }
+    }
+
+    for (const socket of sockets) {
+      if (!socket.destroyed) {
+        socket.destroy()
       }
     }
 

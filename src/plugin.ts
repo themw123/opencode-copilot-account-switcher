@@ -169,17 +169,6 @@ function handleProviderActionResult(output: ProviderActionOutput) {
     ...(result.details && typeof result.details === "object" ? { details: result.details } : {}),
   }))
 }
-export async function configureDefaultAccountGroup(
-  store: StoreFile,
-  selectors?: {
-    selectAccounts?: (options: Array<{ label: string; value: string; hint?: string }>) => Promise<string[] | null>
-  },
-) {
-  void store
-  void selectors
-  return false
-}
-
 export function clearAllAccounts(store: StoreFile) {
   store.accounts = {}
   store.active = undefined
