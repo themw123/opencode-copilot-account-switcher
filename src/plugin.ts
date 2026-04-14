@@ -222,76 +222,81 @@ async function configureModelAccountAssignmentsWithSelection(
   }
 
   const fallbackLabel = store.active ? store.accounts[store.active]?.name ?? store.active : "none"
-  const modelOptions = models.map((model) => ({
-    label: model,
-    value: model,
-    hint: store.modelAccountAssignments?.[model]?.[0]
-      ? `uses ${store.modelAccountAssignments[model]?.[0]}`
-      : `uses selected account: ${fallbackLabel}`,
-  }))
+  let changed = false
 
-  const modelID = selectors?.selectModel
-    ? await selectors.selectModel(modelOptions)
-    : await select(
-        [
-          { label: "Back", value: "" },
-          ...modelOptions,
-        ],
-        {
-          message: "Choose a Copilot model",
-          subtitle: "Select which model should use a dedicated account override",
-          clearScreen: true,
-          autoSelectSingle: false,
-        },
-      )
-  if (!modelID) return false
+  while (true) {
+    const modelOptions = models.map((model) => ({
+      label: model,
+      value: model,
+      hint: store.modelAccountAssignments?.[model]?.[0]
+        ? `uses ${store.modelAccountAssignments[model]?.[0]}`
+        : `uses selected account: ${fallbackLabel}`,
+    }))
 
-  const options = listAssignableAccountsForModel(store, modelID)
-  if (options.length === 0) {
-    console.log(`No account currently exposes model ${modelID}. Run Check models first.`)
-    return false
-  }
+    const modelID = selectors?.selectModel
+      ? await selectors.selectModel(modelOptions)
+      : await select(
+          [
+            { label: "Back", value: "" },
+            ...modelOptions,
+          ],
+          {
+            message: "Choose a Copilot model",
+            subtitle: "Select which model should use a dedicated account override",
+            clearScreen: true,
+            autoSelectSingle: false,
+          },
+        )
+    if (!modelID) return changed
 
-  const accountOptions = options.map((item) => ({
-    label: item.name,
-    value: item.name,
-    hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
-  }))
-
-  const selected = selectors?.selectAccounts
-    ? await selectors.selectAccounts(accountOptions)
-    : await select(
-        [
-          { label: "Use selected account", value: "" },
-          ...accountOptions,
-        ],
-        {
-          message: modelID,
-          subtitle: "Pick one account override for this model",
-          clearScreen: true,
-          autoSelectSingle: false,
-        },
-      ).then((value) => value === null ? null : value ? [value] : [])
-
-  if (selected === null) return false
-
-  if (selected.length === 0) {
-    delete store.modelAccountAssignments?.[modelID]
-    if (store.modelAccountAssignments && Object.keys(store.modelAccountAssignments).length === 0) {
-      delete store.modelAccountAssignments
+    const options = listAssignableAccountsForModel(store, modelID)
+    if (options.length === 0) {
+      console.log(`No account currently exposes model ${modelID}. Run Check models first.`)
+      continue
     }
-    return true
-  }
 
-  const assigned = selected
-    .filter((name) => Boolean(store.accounts[name]))
-  if (assigned.length === 0) return false
+    const accountOptions = options.map((item) => ({
+      label: item.name,
+      value: item.name,
+      hint: item.entry.enterpriseUrl ? normalizeDomain(item.entry.enterpriseUrl) : "github.com",
+    }))
 
-  store.modelAccountAssignments = {
-    ...(store.modelAccountAssignments ?? {}),
-    [modelID]: [assigned[0]!],
+    const selected = selectors?.selectAccounts
+      ? await selectors.selectAccounts(accountOptions)
+      : await select(
+          [
+            { label: "Use selected account", value: "" },
+            ...accountOptions,
+          ],
+          {
+            message: modelID,
+            subtitle: "Pick one account override for this model",
+            clearScreen: true,
+            autoSelectSingle: false,
+          },
+        ).then((value) => value === null ? null : value ? [value] : [])
+
+    if (selected === null) continue
+
+    if (selected.length === 0) {
+      delete store.modelAccountAssignments?.[modelID]
+      if (store.modelAccountAssignments && Object.keys(store.modelAccountAssignments).length === 0) {
+        delete store.modelAccountAssignments
+      }
+      changed = true
+      continue
+    }
+
+    const assigned = selected
+      .filter((name) => Boolean(store.accounts[name]))
+    if (assigned.length === 0) continue
+
+    store.modelAccountAssignments = {
+      ...(store.modelAccountAssignments ?? {}),
+      [modelID]: [assigned[0]!],
+    }
+    changed = true
   }
-  return true
 }
 
 export async function activateAddedAccount(input: {

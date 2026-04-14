@@ -5405,12 +5405,59 @@ test("configureModelAccountAssignments stores only the first selected account", 
     },
   }
 
+  let modelSelections = 0
+
   const changed = await configureModelAccountAssignments(store, {
-    selectModel: async () => "gpt-5",
+    selectModel: async () => {
+      modelSelections += 1
+      return modelSelections === 1 ? "gpt-5" : null
+    },
     selectAccounts: async () => ["alt", "org"],
   })
 
   assert.equal(changed, true)
+  assert.equal(modelSelections, 2)
+  assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt"])
+})
+
+test("configureModelAccountAssignments stays in the model submenu after saving an assignment", async () => {
+  const { configureModelAccountAssignments } = await import("../dist/plugin.js")
+
+  const store = {
+    active: "main",
+    accounts: {
+      main: {
+        name: "main",
+        refresh: "main-refresh",
+        access: "main-access",
+        expires: 0,
+        models: { available: ["gpt-5", "gpt-4.1"], disabled: [] },
+      },
+      alt: {
+        name: "alt",
+        refresh: "alt-refresh",
+        access: "alt-access",
+        expires: 0,
+        models: { available: ["gpt-5", "gpt-4.1"], disabled: [] },
+      },
+    },
+  }
+
+  const seenModelHints = []
+  let modelSelections = 0
+
+  const changed = await configureModelAccountAssignments(store, {
+    selectModel: async (options) => {
+      seenModelHints.push(options.find((option) => option.value === "gpt-5")?.hint)
+      modelSelections += 1
+      if (modelSelections === 1) return "gpt-5"
+      return null
+    },
+    selectAccounts: async () => ["alt"],
+  })
+
+  assert.equal(changed, true)
+  assert.deepEqual(seenModelHints, ["uses selected account: main", "uses alt"])
   assert.deepEqual(store.modelAccountAssignments?.["gpt-5"], ["alt"])
 })
 
